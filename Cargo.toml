@@ -1,0 +1,26 @@
+[package]
+name = "vercel-rust-hello-world"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+vercel_runtime = { version = "2", features = ["axum"] }
+tokio = { version = "1", features = ["full"] }
+askama = "0.12"
+
+[[bin]]
+name = "page"
+path = "api/page.rs"
+
+[[bin]]
+name = "landing"
+path = "api/landing.rs"
+
+[[bin]]
+name = "readyz"
+path = "api/readyz.rs"
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
