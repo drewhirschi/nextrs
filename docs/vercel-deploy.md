@@ -235,7 +235,7 @@ Hand-wired `api/index.rs` + `vercel.json` + made the workspace root a `[package]
 
 `vercel_runtime::axum::VercelLayer` only treats a response as streaming when its `content-type` contains `text/event-stream` or `application/json`. We send `text/html`, so VercelLayer silently buffered the entire response via `axum::body::to_bytes(body, usize::MAX)` before returning. Symptom: TTFB == total response time on streaming routes; `curl --no-buffer --trace-time` showed a single `Recv data` event.
 
-**Fix:** custom Tower service `StreamingVercelService` in `api/index.rs` that mirrors `VercelService`'s request-side conversion (collect Vercel body bytes → `axum::Body`) but unconditionally calls `StreamingUtils::create_stream_body(body)` for the response, bypassing the content-type gate. ~60 lines. No downside for non-streaming responses — they just arrive as one frame.
+**Fix:** custom Tower service `StreamingVercelService` (now lives in `nextrs/src/vercel.rs`, gated behind a `vercel` cargo feature; `api/index.rs` opts in via `nextrs = { features = ["vercel"] }` and calls `nextrs::vercel::StreamingVercelLayer::new()`). Mirrors `VercelService`'s request-side conversion (collect Vercel body bytes → `axum::Body`) but unconditionally calls `StreamingUtils::create_stream_body(body)` for the response, bypassing the content-type gate. ~70 lines. No downside for non-streaming responses — they just arrive as one frame.
 
 Worth filing upstream eventually: either an `always_stream` flag on `VercelLayer`, or extend `is_streaming_response` to recognize `text/html`.
 

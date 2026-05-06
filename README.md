@@ -1,76 +1,130 @@
----
-name: Rust Hello World
-slug: rust-hello-world
-description: Next.js-style routing in Rust serverless functions, with htmx-driven loading states.
-framework:
-  - Other
-type:
-  - Starter
-css:
-  - None
-githubUrl: https://github.com/vercel/examples/tree/main/rust/hello-world
-demoUrl: https://rust-hello-world.vercel.dev
-deployUrl: https://vercel.com/new/clone?repository-url=https://github.com/vercel/examples/tree/main/rust/hello-world&project-name=rust-hello-world&repository-name=rust-hello-world
-publisher: Vercel
-relatedTemplates:
-  - rust-axum
----
+# nextrs
 
-# Rust Hello World
+A Next.js-style routing framework for Rust. File-based routes, `page` / `layout` / `loading` conventions, HTTP-level streaming for the loading shell — no client-side framework, no htmx, no React.
 
-Vercel Rust serverless functions arranged in a Next.js-like route folder convention, with htmx providing the `loading.tsx` + `page.tsx` experience.
+Built on Axum and Askama. Deploys to Vercel as a single Rust function with the loading→page swap streamed over chunked transfer encoding.
 
-## The pattern
-
-Each route is a folder under `api/` containing:
-
-- `loading.rs` — returned immediately, renders a shell with htmx attributes that fetch the real content.
-- `page.rs` — returned by the htmx swap, contains the actual page body.
-
-Hitting `/landing` returns the loading shell. The shell contains:
-
-```html
-<main hx-get="/api/landing/page" hx-trigger="load" hx-swap="innerHTML">
-  ...spinner...
-</main>
-```
-
-On load, htmx fetches `/api/landing/page` and swaps the response into the main element. Same idea as Next.js streaming with `loading.tsx` — instant first paint, content streams in.
-
-## Project structure
+## Quick look
 
 ```
-api/
-├── page.rs              # /     (homepage)
-└── landing/
-    ├── loading.rs       # /landing  (loading shell, served first)
-    └── page.rs          # /api/landing/page (htmx swap target)
-vercel.json              # rewrites: /landing → /api/landing/loading
-Cargo.toml               # one [[bin]] per .rs file
+example/app/
+├── page.{rs,html}              ← /
+├── layout.{rs,html}            ← root layout, applied to every route
+├── simple/
+│   └── page.{rs,html}          ← /simple — just a page
+├── with-loading/
+│   ├── page.{rs,html}          ← /with-loading — page + streaming loading shell
+│   └── loading.{rs,html}
+└── with-layout/
+    ├── layout.{rs,html}        ← /with-layout — adds a sidebar
+    ├── page.{rs,html}
+    └── loading.{rs,html}
 ```
 
-## Why `api/` and not `app/`?
+Each folder is a route segment. Each file is a convention slot:
 
-Vercel's Rust runtime hard-codes `api/` for function discovery — `vercel.json` `builds` doesn't redirect it. So sources live in `api/`, but the *folder convention inside it* is borrowed from Next.js: each route is a folder with `page.rs` and (optionally) `loading.rs`. `rewrites` give clean URLs (`/landing` instead of `/api/landing/loading`).
+| File | Purpose | Variants |
+|---|---|---|
+| `page.{rs,html}` | The main content | `.rs` (async handler) preferred; `.html` (static) fallback |
+| `layout.{rs,html}` | Wraps the segment's page and any nested segments | same |
+| `loading.{rs,html}` | Triggers streaming — shown while the page resolves | same |
+| `route.rs` | API method handlers (POST/PUT/etc.) | `.rs` only |
 
-## Adding a route
+`.rs` files are Rust handlers (typically askama templates with logic). `.html` files are static fallbacks. When both exist for a slot, `.rs` wins.
 
-1. Create `api/<route>/page.rs` and (optionally) `api/<route>/loading.rs`.
-2. Add `[[bin]]` entries to `Cargo.toml` for each file.
-3. Add a rewrite to `vercel.json`: `{ "source": "/<route>", "destination": "/api/<route>/loading" }`.
-4. In `loading.rs`, point htmx at `/api/<route>/page`.
+## How streaming works
 
-## Develop locally
+When a route has `loading.{rs,html}`, the response is chunked:
+
+```
+[layout-open]
+<div id="__nx_slot__"> …loading.html… </div>
+                                       ← server awaits the page handler here
+<template id="__nx_page__"> …page.html… </template>
+<script>// ~200 bytes that swap the slot with the template's content </script>
+[layout-close]
+```
+
+The browser sees the loading shell at TTFB (~250ms warm) and the page chunk arrives whenever the page handler resolves. No second HTTP request. Full architecture in [docs/streaming.md](docs/streaming.md).
+
+## Run locally
 
 ```bash
-# Install Rust if you haven't:
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Install Vercel CLI:
-npm i -g vercel
-
-# From this directory:
-vc dev
+cargo run -p nextrs-example
+# → http://localhost:3000
 ```
 
-Open http://localhost:3000 and click through to `/landing`.
+Three demo routes — `/simple`, `/with-loading`, `/with-layout` — each progressively adding one more convention file. Each demo page lists its own source files inline so you can see exactly what's involved.
+
+## Deploy to Vercel
+
+The repo is set up to deploy as-is:
+
+```bash
+vercel deploy
+```
+
+Single binary at `api/index.rs` wraps the framework's axum router with `nextrs::vercel::StreamingVercelLayer` (a drop-in replacement for `vercel_runtime::axum::VercelLayer` that doesn't buffer `text/html` streaming responses). One catch-all rewrite in `vercel.json` (`/(.*)` → `/api/index`) routes everything to it. Static files in `public/` are served from Vercel's CDN edge cache.
+
+Latency on a fresh preview deploy:
+
+| Route | TTFB (warm p50) | Total | Notes |
+|---|---|---|---|
+| `/` | ~250ms | ~250ms | overview + root layout |
+| `/simple` | ~220ms | ~220ms | no layout, no streaming |
+| `/with-loading` | ~230ms | ~1080ms | loading streamed; page after 800ms simulated work |
+| `/with-layout` | ~220ms | ~1090ms | nested layout + streamed loading + page |
+| `/style.css` | ~145ms | ~145ms | CDN edge cache (`x-vercel-cache: HIT`) |
+
+Cold start adds ~250-330ms above warm. Full deploy plan and details in [docs/vercel-deploy.md](docs/vercel-deploy.md).
+
+## Project layout
+
+Cargo workspace at root:
+
+```
+Cargo.toml         workspace + nextrs-deploy package (Vercel binary)
+api/index.rs       Vercel entry point — wraps router with StreamingVercelLayer
+vercel.json        catch-all rewrite to /api/index
+askama.toml        points askama at example/app/
+public/            static assets served by Vercel CDN
+nextrs/            framework crate (the lib)
+  src/lib.rs
+  src/conventions.rs    PageFn / LayoutFn / LoadingFn types + static helpers
+  src/discovery.rs      scans app/ → DiscoveredRoute list
+  src/router.rs         build_router(registry) → axum::Router; streaming
+  src/vercel.rs         StreamingVercelLayer (feature-gated)
+example/           consumer crate — local-dev binary + the demo routes
+  src/main.rs           registers routes, serves via axum
+  app/                  the convention tree
+  askama.toml           dirs = ["app"]
+docs/
+  streaming.md          architecture / how-to / verification
+  vercel-deploy.md      deployment plan + research findings
+```
+
+## Tests
+
+```bash
+cargo test --workspace --all-features
+```
+
+34 tests covering discovery (`.rs` + `.html` pairing, html-only, mixed nested, dynamic segments, API routes), conventions (static helpers), and router behavior (composition, layout-shell split, streaming chunk ordering, multi-frame body, **timing-based proof that the loading shell arrives before the page handler resolves**, nested layouts under streaming, API methods, page+route coexistence).
+
+## Status
+
+- Single-binary Vercel deployment ✓
+- HTML streaming through Fluid compute ✓
+- Static assets via CDN ✓
+- Nested layouts ✓
+- `.rs` and `.html` for every slot ✓
+
+Next: codegen so the user only writes convention files (no `#[path]` mod boilerplate in `main.rs` / `api/index.rs`). See [docs/vercel-deploy.md](docs/vercel-deploy.md#phase-1--workspace-codegen) for the plan.
+
+Not yet:
+
+- Codegen (Phase 1)
+- Per-route binaries on Vercel (Phase 4 — single-binary is fine for now)
+- `error.{rs,html}` convention
+- Suspense-style nested streaming boundaries
+- Dev-server file watching with auto-rebuild
