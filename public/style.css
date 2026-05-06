@@ -1,0 +1,11 @@
+/* Static CSS served from public/. On Vercel this is delivered from the CDN
+   edge cache — never hits the Rust function. Locally, the example's main.rs
+   uses tower-http ServeDir as a fallback to serve this directory. */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #0a0a0a; color: #fafafa; font-family: system-ui, sans-serif; min-height: 100vh; }
+a { color: #60a5fa; text-decoration: none; }
+a:hover { text-decoration: underline; }
+code { font-family: ui-monospace, SFMono-Regular, monospace; }
+nav { padding: 1rem 2rem; border-bottom: 1px solid #262626; display: flex; gap: 1.5rem; align-items: center; }
+nav .brand { font-weight: 600; color: #fff; }

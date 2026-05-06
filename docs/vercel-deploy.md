@@ -254,6 +254,14 @@ Worth filing upstream eventually: either an `always_stream` flag on `VercelLayer
 
 Cold start: first hit after deploy was 584ms TTFB; subsequent ~220-350ms, so cold added ~250-330ms. Tried to force a re-cold with 60s pause, function stayed warm — Fluid compute keeps Rust hot longer.
 
+### Static assets via `public/`
+
+Vercel serves files from a `public/` directory at the project root as static assets at root URL paths, before applying any rewrites. Confirmed for our Rust setup with a probe deploy: `public/probe.txt` was served at `/probe.txt` with `x-vercel-cache: HIT`, and our catch-all rewrite did not interfere.
+
+This is now wired up in the example: `public/style.css` holds the layout's CSS, the layout's `<head>` references it via `<link rel="stylesheet" href="/style.css">`, and locally the example's `main.rs` uses `tower-http::services::ServeDir` as a fallback so the same path resolves the same way in dev. On Vercel the file lives on the CDN edge cache (~145ms warm); locally it's served by tower-http.
+
+One asymmetry worth noting: locally, route matches win over static files (axum's `fallback_service` runs only when the router 404s). On Vercel, static files win over rewrites. This only matters if you name a route the same as a file, which is unusual — but worth knowing if you ever see different behavior between dev and prod for an overlapping name.
+
 ### What this changes for Phase 1 / 2b
 
 - Phase 2a is done in spirit (hand-wired). Phase 1's job now includes generating `api/index.rs` AND `vercel.json` AND the workspace-root `[package]`/`[[bin]]` setup.

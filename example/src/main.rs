@@ -1,5 +1,6 @@
 use nextrs::conventions::{RouteEntry, RouteRegistry};
 use nextrs::router::build_router;
+use tower_http::services::ServeDir;
 use tracing_subscriber::EnvFilter;
 
 // Until codegen exists, we wire the app/ convention files into the binary by
@@ -71,7 +72,13 @@ async fn main() {
         methods: vec![],
     });
 
-    let app = build_router(registry);
+    // Static files in `public/` are served at root paths. On Vercel these are
+    // delivered from the CDN (never reach the function); locally we serve them
+    // via tower-http's ServeDir as a fallback. Routes win over static files
+    // when both match the same path — opposite of Vercel's order, but the only
+    // way that conflicts in practice is if you name a route the same as a
+    // file, which you almost never do.
+    let app = build_router(registry).fallback_service(ServeDir::new("public"));
 
     #[cfg(debug_assertions)]
     let app = app.layer(tower_livereload::LiveReloadLayer::new());
