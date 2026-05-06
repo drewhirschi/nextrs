@@ -4,6 +4,19 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 
+[features]
+default = []
+# Enables the `nextrs::vercel` module: a Tower layer that adapts the framework's
+# axum router for `vercel_runtime::run` while preserving HTML streaming. (The
+# default `vercel_runtime::axum::VercelLayer` only streams text/event-stream
+# and application/json — see nextrs/src/vercel.rs for the workaround.)
+vercel = [
+    "dep:vercel_runtime",
+    "dep:http-body-util",
+    "dep:hyper",
+    "dep:tower",
+]
+
 [dependencies]
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
@@ -16,6 +29,12 @@ http = "1"
 async-stream = "0.3.6"
 bytes = "1.11.1"
 futures-core = "0.3.32"
+
+# Optional — only pulled in when the `vercel` feature is on.
+vercel_runtime = { version = "2", features = ["axum"], optional = true }
+http-body-util = { version = "0.1", optional = true }
+hyper = { version = "1", optional = true }
+tower = { version = "0.5", optional = true }
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

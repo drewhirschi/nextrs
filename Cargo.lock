@@ -639,6 +639,7 @@ dependencies = [
  "tower",
  "tower-http",
  "tracing",
+ "vercel_runtime",
 ]
 
 [[package]]
@@ -648,8 +649,6 @@ dependencies = [
  "askama",
  "axum",
  "http",
- "http-body-util",
- "hyper",
  "nextrs",
  "tokio",
  "tower",

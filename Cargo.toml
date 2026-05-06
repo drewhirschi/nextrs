@@ -18,15 +18,13 @@ name = "index"
 path = "api/index.rs"
 
 [dependencies]
-nextrs = { path = "nextrs" }
+nextrs = { path = "nextrs", features = ["vercel"] }
 vercel_runtime = { version = "2", features = ["axum"] }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
 askama = "0.15"
 http = "1"
-hyper = "1"
-http-body-util = "0.1"
 
 [profile.dev]
 debug = 0

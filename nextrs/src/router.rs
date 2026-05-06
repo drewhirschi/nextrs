@@ -610,6 +610,86 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_loading_arrives_before_page_resolves() {
+        // The whole point of streaming is that the loading shell reaches the
+        // client BEFORE the page handler finishes. We verify by reading body
+        // frames with timestamps and asserting:
+        //   1. The loading shell shows up well before the page sleep elapses.
+        //   2. The page content shows up only after the sleep — i.e. the
+        //      response is genuinely incremental, not buffered.
+        use std::time::{Duration, Instant};
+
+        let page_sleep_ms = 200;
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/dashboard".to_string(),
+            page: Some(slow_dyn_page("PAGE_CONTENT", page_sleep_ms)),
+            layout: None,
+            loading: Some(static_loading("LOADING_SHELL")),
+            methods: vec![],
+        });
+
+        let app = build_router(registry);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let start = Instant::now();
+        let mut body = resp.into_body();
+
+        // Drain frames, capturing each frame's content and the time it arrived.
+        let mut frames: Vec<(Duration, String)> = Vec::new();
+        while let Some(Ok(frame)) = http_body_util::BodyExt::frame(&mut body).await {
+            if let Ok(data) = frame.into_data() {
+                let elapsed = start.elapsed();
+                let text = String::from_utf8(data.to_vec()).unwrap();
+                frames.push((elapsed, text));
+            }
+        }
+
+        assert!(
+            frames.len() >= 2,
+            "expected ≥2 frames, got {}: {:?}",
+            frames.len(),
+            frames
+        );
+
+        // The loading shell must appear in some frame that arrived BEFORE the
+        // sleep elapsed — that's the proof of incremental streaming.
+        let loading_arrival = frames
+            .iter()
+            .find(|(_, text)| text.contains("LOADING_SHELL"))
+            .map(|(t, _)| *t)
+            .expect("no frame contained LOADING_SHELL");
+        assert!(
+            loading_arrival < Duration::from_millis(page_sleep_ms / 2),
+            "loading shell arrived at {}ms, expected <{}ms (page_sleep_ms/2)",
+            loading_arrival.as_millis(),
+            page_sleep_ms / 2,
+        );
+
+        // The page content must appear in some frame that arrived AFTER the
+        // sleep — proves we're actually waiting on the page, not pre-buffering.
+        let page_arrival = frames
+            .iter()
+            .find(|(_, text)| text.contains("PAGE_CONTENT"))
+            .map(|(t, _)| *t)
+            .expect("no frame contained PAGE_CONTENT");
+        assert!(
+            page_arrival >= Duration::from_millis(page_sleep_ms),
+            "page chunk arrived at {}ms, expected ≥{}ms (after page sleep)",
+            page_arrival.as_millis(),
+            page_sleep_ms,
+        );
+    }
+
+    #[tokio::test]
     async fn test_loading_with_nested_layouts() {
         let mut registry = RouteRegistry::new();
         registry.add(RouteEntry {
