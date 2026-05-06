@@ -643,6 +643,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "nextrs-build"
+version = "0.1.0"
+dependencies = [
+ "nextrs",
+ "tempfile",
+]
+
+[[package]]
 name = "nextrs-deploy"
 version = "0.1.0"
 dependencies = [
@@ -650,6 +658,7 @@ dependencies = [
  "axum",
  "http",
  "nextrs",
+ "nextrs-build",
  "tokio",
  "tower",
  "vercel_runtime",
@@ -664,6 +673,7 @@ dependencies = [
  "dotenvy",
  "http",
  "nextrs",
+ "nextrs-build",
  "tokio",
  "tower-http",
  "tower-livereload",

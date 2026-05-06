@@ -4,6 +4,9 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 
+[build-dependencies]
+nextrs-build = { path = "../nextrs-build" }
+
 [dependencies]
 nextrs = { path = "../nextrs" }
 axum = "0.8"

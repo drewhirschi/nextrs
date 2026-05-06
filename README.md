@@ -84,7 +84,8 @@ Cargo workspace at root:
 
 ```
 Cargo.toml         workspace + nextrs-deploy package (Vercel binary)
-api/index.rs       Vercel entry point — wraps router with StreamingVercelLayer
+build.rs           runs nextrs-build to generate the registry from example/app
+api/index.rs       Vercel entry point (22 lines) — generated registry + StreamingVercelLayer
 vercel.json        catch-all rewrite to /api/index
 askama.toml        points askama at example/app/
 public/            static assets served by Vercel CDN
@@ -94,8 +95,11 @@ nextrs/            framework crate (the lib)
   src/discovery.rs      scans app/ → DiscoveredRoute list
   src/router.rs         build_router(registry) → axum::Router; streaming
   src/vercel.rs         StreamingVercelLayer (feature-gated)
+nextrs-build/      codegen library called from build.rs
+  src/lib.rs            emit_registry(app_dir, _, out_name)
 example/           consumer crate — local-dev binary + the demo routes
-  src/main.rs           registers routes, serves via axum
+  build.rs              runs nextrs-build to generate the registry from app/
+  src/main.rs           33 lines: include! the generated registry, serve via axum
   app/                  the convention tree
   askama.toml           dirs = ["app"]
 docs/
@@ -103,13 +107,15 @@ docs/
   vercel-deploy.md      deployment plan + research findings
 ```
 
+User-facing files for adding a route: just files under `app/`. No mod declarations, no registry constructors. Codegen handles the wiring.
+
 ## Tests
 
 ```bash
 cargo test --workspace --all-features
 ```
 
-34 tests covering discovery (`.rs` + `.html` pairing, html-only, mixed nested, dynamic segments, API routes), conventions (static helpers), and router behavior (composition, layout-shell split, streaming chunk ordering, multi-frame body, **timing-based proof that the loading shell arrives before the page handler resolves**, nested layouts under streaming, API methods, page+route coexistence).
+37 tests covering discovery (`.rs` + `.html` pairing, html-only, mixed nested, dynamic segments, API routes), conventions (static helpers), router behavior (composition, layout-shell split, streaming chunk ordering, multi-frame body, **timing-based proof that the loading shell arrives before the page handler resolves**, nested layouts under streaming, API methods, page+route coexistence), and codegen (skeleton structure, `.rs`-precedence, absolute path emission).
 
 ## Status
 
@@ -118,13 +124,12 @@ cargo test --workspace --all-features
 - Static assets via CDN ✓
 - Nested layouts ✓
 - `.rs` and `.html` for every slot ✓
-
-Next: codegen so the user only writes convention files (no `#[path]` mod boilerplate in `main.rs` / `api/index.rs`). See [docs/vercel-deploy.md](docs/vercel-deploy.md#phase-1--workspace-codegen) for the plan.
+- Build-time codegen (no hand-wired `#[path]` mods or `RouteEntry` constructors) ✓
 
 Not yet:
 
-- Codegen (Phase 1)
-- Per-route binaries on Vercel (Phase 4 — single-binary is fine for now)
 - `error.{rs,html}` convention
+- Per-route binaries on Vercel (single-binary is fine for now)
 - Suspense-style nested streaming boundaries
 - Dev-server file watching with auto-rebuild
+- `route.rs` codegen (currently emits `methods: vec![]` for every route)
