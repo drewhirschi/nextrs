@@ -1,6 +1,6 @@
 # Plan: Vercel deployment for nextrs
 
-**Status:** Phase 0 done. Phase 2a hand-wired ahead of Phase 1 codegen — example deployed to Vercel and streaming verified end-to-end. Phase 1 (codegen) now the next thing to build.
+**Status:** Phases 0, 1, 2a all done. The example deploys to Vercel via single binary; streaming verified end-to-end; codegen wires the registry from `app/` so the user only writes convention files. Remaining items are roadmap (per-route binaries, error convention, route.rs codegen, dev-server file watching).
 
 ## Goal
 
@@ -114,11 +114,13 @@ In the single-binary model, dynamic segments are Axum's responsibility — we al
 
 Resolved (see findings above). One small follow-up: verify `axum::body::Body::from_stream` flows through `VercelLayer` cleanly. Defer to Phase 2's first deployment test.
 
-### Phase 1 — Workspace codegen
+### Phase 1 — Workspace codegen ✅ DONE (commit 5310d8a)
 
 Goal: replace the hand-wired `example/src/main.rs` with code generated from the `app/` tree. Same end-user behavior, but the user only writes convention files.
 
-**Concrete before/after.** Today the user writes:
+Shipped: `nextrs-build` workspace crate, `build.rs` files in `example/` and at the workspace root, `include!`-based registry consumption in `example/src/main.rs` (91 → 33 lines) and `api/index.rs` (76 → 22 lines). Generated code uses absolute paths in `#[path]` and `include_str!` (necessary because `#[path]` inside an `include!`-d file resolves relative to the included file's location in `OUT_DIR`, not the includer). Three codegen tests cover skeleton structure, `.rs` precedence, and absolute-path emission.
+
+**Concrete before/after.** Before:
 
 ```rust
 // example/src/main.rs (hand-wired)
@@ -144,7 +146,7 @@ async fn main() {
 }
 ```
 
-After Phase 1:
+After:
 
 ```rust
 // example/src/main.rs (generated registry, hand-written entry point)
@@ -262,11 +264,11 @@ This is now wired up in the example: `public/style.css` holds the layout's CSS, 
 
 One asymmetry worth noting: locally, route matches win over static files (axum's `fallback_service` runs only when the router 404s). On Vercel, static files win over rewrites. This only matters if you name a route the same as a file, which is unusual — but worth knowing if you ever see different behavior between dev and prod for an overlapping name.
 
-### What this changes for Phase 1 / 2b
+### What this changed for Phase 1 (now done)
 
-- Phase 2a is done in spirit (hand-wired). Phase 1's job now includes generating `api/index.rs` AND `vercel.json` AND the workspace-root `[package]`/`[[bin]]` setup.
-- The `StreamingVercelService` should probably move into the `nextrs` crate (gated by a `vercel` cargo feature) so codegen can `use nextrs::vercel::StreamingVercelService;` instead of inlining 60 lines.
-- The duplication between `example/src/main.rs` (local) and `api/index.rs` (Vercel) is exactly what Phase 1 codegen deletes — both should be generated from the same `RouteRegistry`.
+- Phase 2a was hand-wired ahead of Phase 1. Phase 1 came back and replaced the hand-wiring with codegen — both `example/src/main.rs` and `api/index.rs` now `include!` a generated registry instead of duplicating 8 `#[path]` mods + 4 `RouteEntry` constructors each.
+- `StreamingVercelService` moved into the `nextrs` crate as `nextrs::vercel::StreamingVercelLayer` (gated by the `vercel` cargo feature). `api/index.rs` consumes it with one `use` line.
+- `vercel.json` and the workspace-root `[package]`/`[[bin]]` setup are still hand-written (not generated). They don't change per-route, so codegen wouldn't add value there.
 
 ## Sources
 
