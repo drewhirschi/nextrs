@@ -1,0 +1,11 @@
+<div style="display: flex; min-height: calc(100vh - 57px);">
+  <aside style="width: 220px; padding: 1.5rem; border-right: 1px solid #262626;">
+    <h3 style="font-size: 0.75rem; text-transform: uppercase; color: #737373; margin-bottom: 0.75rem; letter-spacing: 0.05em;">Section nav</h3>
+    <p style="color: #525252; font-size: 0.75rem; line-height: 1.5;">
+      This sidebar is rendered by <code style="color: #737373;">with-layout/layout.html</code>. It wraps every page under <code style="color: #737373;">/with-layout</code>.
+    </p>
+  </aside>
+  <section style="flex: 1; padding: 2rem;">
+    {{ children|safe }}
+  </section>
+</div>

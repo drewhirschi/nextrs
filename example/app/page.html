@@ -1,0 +1,28 @@
+<main style="max-width: 720px; margin: 0 auto; padding: 3rem 2rem;">
+  <h1 style="font-size: 2rem; margin-bottom: 0.5rem;">nextrs</h1>
+  <p style="color: #a3a3a3; margin-bottom: 2rem; line-height: 1.6;">
+    File-based routing for Rust. Each folder under <code>app/</code> is a route segment; convention files <code>page.{rs,html}</code>, <code>layout.{rs,html}</code>, and <code>loading.{rs,html}</code> compose the response.
+  </p>
+
+  <h2 style="font-size: 0.75rem; text-transform: uppercase; color: #737373; letter-spacing: 0.08em; margin-bottom: 1rem;">Examples</h2>
+
+  <div style="display: flex; flex-direction: column; gap: 1rem;">
+    <a href="/simple" style="display: block; padding: 1.25rem 1.5rem; background: #171717; border: 1px solid #262626; border-radius: 8px; color: inherit;">
+      <div style="font-weight: 600; margin-bottom: 0.25rem;">1. Just a page</div>
+      <div style="color: #a3a3a3; font-size: 0.875rem; margin-bottom: 0.75rem;">A minimal route — only <code>page.rs</code> + <code>page.html</code>. Renders synchronously.</div>
+      <code style="font-size: 0.75rem; color: #525252;">app/simple/{page.rs, page.html}</code>
+    </a>
+
+    <a href="/with-loading" style="display: block; padding: 1.25rem 1.5rem; background: #171717; border: 1px solid #262626; border-radius: 8px; color: inherit;">
+      <div style="font-weight: 600; margin-bottom: 0.25rem;">2. Page with loading</div>
+      <div style="color: #a3a3a3; font-size: 0.875rem; margin-bottom: 0.75rem;">Adds <code>loading.{rs,html}</code>. The framework streams the loading shell first, then swaps in the page when it's ready.</div>
+      <code style="font-size: 0.75rem; color: #525252;">app/with-loading/{page.rs, page.html, loading.rs, loading.html}</code>
+    </a>
+
+    <a href="/with-layout" style="display: block; padding: 1.25rem 1.5rem; background: #171717; border: 1px solid #262626; border-radius: 8px; color: inherit;">
+      <div style="font-weight: 600; margin-bottom: 0.25rem;">3. Page with layout and loading</div>
+      <div style="color: #a3a3a3; font-size: 0.875rem; margin-bottom: 0.75rem;">Adds <code>layout.{rs,html}</code> on top of the previous example. The layout wraps just this section, on top of the root layout.</div>
+      <code style="font-size: 0.75rem; color: #525252;">app/with-layout/{layout.rs, layout.html, page.rs, page.html, loading.rs, loading.html}</code>
+    </a>
+  </div>
+</main>

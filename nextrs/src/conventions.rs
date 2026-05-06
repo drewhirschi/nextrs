@@ -1,0 +1,129 @@
+use axum::response::Response;
+use std::future::Future;
+use std::pin::Pin;
+
+/// A rendered HTML string (the output of an Askama template `.render()`)
+pub type HtmlString = String;
+
+/// Async function that produces page HTML (the main content)
+pub type PageFn = Box<
+    dyn Fn(http::Request<axum::body::Body>) -> Pin<Box<dyn Future<Output = HtmlString> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Sync function that wraps child HTML in a layout
+/// Takes child HTML, returns the full wrapped HTML
+pub type LayoutFn = Box<dyn Fn(&str) -> HtmlString + Send + Sync>;
+
+/// Sync function that returns loading skeleton HTML.
+/// The framework handles the loading→page swap; the loading content is just
+/// what the user sees while the page is being computed.
+pub type LoadingFn = Box<dyn Fn() -> HtmlString + Send + Sync>;
+
+/// Async handler for API routes (route.rs)
+pub type RouteFn = Box<
+    dyn Fn(http::Request<axum::body::Body>) -> Pin<Box<dyn Future<Output = Response> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// Represents a single route entry discovered from the app/ directory
+pub struct RouteEntry {
+    /// URL path, e.g. "/" or "/dashboard/settings"
+    pub path: String,
+    /// The page handler (from page.rs or page.html)
+    pub page: Option<PageFn>,
+    /// Layout wrapper (from layout.rs or layout.html) — applies to this segment and children
+    pub layout: Option<LayoutFn>,
+    /// Loading skeleton (from loading.rs or loading.html)
+    pub loading: Option<LoadingFn>,
+    /// API route handlers by method (from route.rs)
+    pub methods: Vec<(http::Method, RouteFn)>,
+}
+
+/// A collection of route entries that gets turned into an Axum router
+pub struct RouteRegistry {
+    pub entries: Vec<RouteEntry>,
+}
+
+impl RouteRegistry {
+    pub fn new() -> Self {
+        Self {
+            entries: Vec::new(),
+        }
+    }
+
+    pub fn add(&mut self, entry: RouteEntry) {
+        self.entries.push(entry);
+    }
+}
+
+// -- Static helpers -----------------------------------------------------------
+// Wrap raw HTML strings (typically from `.html` convention files via
+// `include_str!`) as the appropriate handler types. Codegen for `.html` files
+// uses these so the rest of the framework only deals with closures.
+
+/// Wrap a static HTML string as a [`PageFn`].
+pub fn static_page(html: &'static str) -> PageFn {
+    Box::new(move |_req| Box::pin(async move { html.to_string() }))
+}
+
+/// Wrap a static layout template as a [`LayoutFn`]. The template must contain
+/// `{{ children }}` (askama-compatible; surrounding whitespace optional),
+/// which is replaced with the rendered child content at request time.
+pub fn static_layout(template: &'static str) -> LayoutFn {
+    Box::new(move |children| {
+        template
+            .replace("{{ children }}", children)
+            .replace("{{children}}", children)
+    })
+}
+
+/// Wrap a static HTML string as a [`LoadingFn`].
+pub fn static_loading(html: &'static str) -> LoadingFn {
+    Box::new(move || html.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn test_static_page_returns_html_verbatim() {
+        let p = static_page("<h1>Hello</h1>");
+        let req = http::Request::builder().body(axum::body::Body::empty()).unwrap();
+        let html = p(req).await;
+        assert_eq!(html, "<h1>Hello</h1>");
+    }
+
+    #[test]
+    fn test_static_layout_substitutes_children() {
+        let l = static_layout("<html><body>{{children}}</body></html>");
+        let out = l("<h1>Hi</h1>");
+        assert_eq!(out, "<html><body><h1>Hi</h1></body></html>");
+    }
+
+    #[test]
+    fn test_static_layout_supports_askama_whitespace_form() {
+        let l = static_layout("<html>{{ children }}</html>");
+        let out = l("X");
+        assert_eq!(out, "<html>X</html>");
+    }
+
+    #[test]
+    fn test_static_layout_with_repeated_children_marker() {
+        // Multiple {{children}} in a template all get replaced — useful for
+        // when the same content needs to appear in multiple slots, but mostly
+        // documenting current behavior so it doesn't drift accidentally.
+        let l = static_layout("<a>{{children}}</a><b>{{children}}</b>");
+        let out = l("X");
+        assert_eq!(out, "<a>X</a><b>X</b>");
+    }
+
+    #[test]
+    fn test_static_loading_returns_html_verbatim() {
+        let l = static_loading("<div>Loading...</div>");
+        assert_eq!(l(), "<div>Loading...</div>");
+    }
+}

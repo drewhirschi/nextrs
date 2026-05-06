@@ -1,24 +1,9 @@
-[package]
-name = "vercel-rust-hello-world"
-version = "0.1.0"
-edition = "2024"
+[workspace]
+resolver = "3"
+members = ["nextrs", "example"]
 
-[dependencies]
-vercel_runtime = { version = "2", features = ["axum"] }
-tokio = { version = "1", features = ["full"] }
-askama = "0.12"
-
-[[bin]]
-name = "page"
-path = "api/page.rs"
-
-[[bin]]
-name = "landing"
-path = "api/landing.rs"
-
-[[bin]]
-name = "readyz"
-path = "api/readyz.rs"
+[profile.dev]
+debug = 0
 
 [profile.release]
 codegen-units = 1

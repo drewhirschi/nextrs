@@ -1,0 +1,17 @@
+<main style="max-width: 640px; margin: 0 auto; padding: 3rem 2rem;">
+  <a href="/" style="font-size: 0.875rem; color: #a3a3a3;">← Back to overview</a>
+  <h1 style="font-size: 2rem; margin: 1rem 0 0.5rem;">2. Page with loading</h1>
+  <p style="color: #a3a3a3; line-height: 1.6; margin-bottom: 2rem;">
+    The page handler sleeps 800ms to simulate a slow data fetch. While the page is being computed, the framework streams <code>loading.html</code> in its place. Once the page resolves, an inline script swaps the loading shell out for the real content — no client-side framework involved.
+  </p>
+
+  <div style="background: #171717; border: 1px solid #262626; border-radius: 8px; padding: 1.5rem;">
+    <div style="font-size: 0.75rem; text-transform: uppercase; color: #737373; margin-bottom: 0.75rem;">Files</div>
+    <ul style="list-style: none; display: flex; flex-direction: column; gap: 0.5rem; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.875rem;">
+      <li><code>app/with-loading/page.rs</code> <span style="color: #525252;">— sleeps 800ms then renders</span></li>
+      <li><code>app/with-loading/page.html</code> <span style="color: #525252;">— this template</span></li>
+      <li><code>app/with-loading/loading.rs</code> <span style="color: #525252;">— renders the loading shell</span></li>
+      <li><code>app/with-loading/loading.html</code> <span style="color: #525252;">— spinner shown while the page resolves</span></li>
+    </ul>
+  </div>
+</main>
