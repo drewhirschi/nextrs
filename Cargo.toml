@@ -2,6 +2,32 @@
 resolver = "3"
 members = ["nextrs", "example"]
 
+# The workspace root is also a package — it's the Vercel deployment target.
+# Its single binary (api/index.rs) wraps the same routes the local-dev
+# example serves, but exposes them via vercel_runtime instead of axum::serve.
+# This duplicates the registry construction once; codegen will dedupe later.
+[package]
+name = "nextrs-deploy"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+
+[[bin]]
+name = "index"
+path = "api/index.rs"
+
+[dependencies]
+nextrs = { path = "nextrs" }
+vercel_runtime = { version = "2", features = ["axum"] }
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+askama = "0.15"
+http = "1"
+hyper = "1"
+http-body-util = "0.1"
+
 [profile.dev]
 debug = 0
 
