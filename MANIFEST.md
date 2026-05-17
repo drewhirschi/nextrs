@@ -35,7 +35,7 @@ Dynamic URL segments use `[param]` directory naming (e.g. `app/users/[id]/page.r
 
 ## Static assets
 
-`public/` at the project root holds files served at root URL paths. On Vercel they go straight to the CDN edge cache (verified `x-vercel-cache: HIT`, ~145ms warm TTFB). Locally the site uses `tower-http::services::ServeDir` as a router fallback so the same path resolves the same way.
+`site/public/` (colocated with `site/app/`) holds files served at root URL paths. The workspace-root `build.rs` mirrors them into `public/` at the workspace root via `nextrs::build::sync_public_dir`, so Vercel's CDN picks them up (verified `x-vercel-cache: HIT`, ~145ms warm TTFB). The workspace-root mirror is gitignored — generated artifact. Locally, `nextrs::router::build_router_with_public(registry, dir)` wires `tower-http::services::ServeDir` as a router fallback so the same paths resolve the same way.
 
 ## Vercel deployment
 
@@ -61,11 +61,11 @@ Dynamic URL segments use `[param]` directory naming (e.g. `app/users/[id]/page.r
 
 ## Tests
 
-`cargo test --workspace --all-features` (37 tests):
+`cargo test --workspace --all-features` (39 tests):
 
 - Discovery (8): `.rs` + `.html` pairing, html-only segments, mixed nested, dynamic segments, API routes, empty-dir handling
 - Conventions (5): static helpers (`static_page`, `static_layout` with both `{{children}}` and `{{ children }}` forms, `static_loading`)
-- Router (20): synchronous render, layout composition (1 / 3 levels deep), mixed static/dynamic layouts, layout-shell split-on-marker, streaming chunk ordering, multi-frame body, **timing-based proof that the loading shell arrives before the page handler resolves**, nested layouts under streaming, API methods, page+route on same path
+- Router (22): synchronous render, layout composition (1 / 3 levels deep), mixed static/dynamic layouts, layout-shell split-on-marker, streaming chunk ordering, multi-frame body, **timing-based proof that the loading shell arrives before the page handler resolves**, nested layouts under streaming, API methods, page+route on same path, `build_router_with_public` serves public-dir files on route miss and no-ops when the dir is absent
 - Vercel (1): type-level smoke test that `StreamingVercelLayer` composes with axum routers
 - Codegen (3): generated skeleton mentions every route + slot helper, `.rs` wins over `.html` when both are present, all emitted paths are absolute
 

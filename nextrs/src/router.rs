@@ -72,6 +72,31 @@ fn layout_shell(layouts: &[&LayoutFn]) -> (String, String) {
     (before, after)
 }
 
+/// Build an Axum router from a [`RouteRegistry`], with a `public/` directory
+/// served as a fallback for paths the router doesn't match.
+///
+/// If `public_dir` exists, requests that miss every route are served from it
+/// via `tower-http::services::ServeDir`. If the directory doesn't exist this
+/// is equivalent to [`build_router`] — useful for crates that may not have any
+/// static assets yet.
+///
+/// On Vercel this fallback is irrelevant: the CDN matches static files
+/// *before* the catch-all rewrite to the function. This helper exists so dev
+/// (where the function-equivalent is `cargo run`) resolves the same URLs the
+/// same way as production.
+pub fn build_router_with_public(
+    registry: RouteRegistry,
+    public_dir: impl AsRef<std::path::Path>,
+) -> Router {
+    let router = build_router(registry);
+    let path = public_dir.as_ref();
+    if path.is_dir() {
+        router.fallback_service(tower_http::services::ServeDir::new(path))
+    } else {
+        router
+    }
+}
+
 /// Build an Axum router from a [`RouteRegistry`].
 pub fn build_router(registry: RouteRegistry) -> Router {
     let entries = Arc::new(registry.entries);
@@ -210,6 +235,69 @@ mod tests {
     }
 
     // -- Round 2 / synchronous render -----------------------------------------
+
+    #[tokio::test]
+    async fn build_router_with_public_serves_static_files_on_route_miss() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("hello.txt"), "hi from public").unwrap();
+
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/".to_string(),
+            page: Some(dyn_page("home")),
+            layout: None,
+            loading: None,
+            methods: vec![],
+        });
+
+        let app = build_router_with_public(registry, tmp.path());
+
+        // Route hit still wins.
+        let resp = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_to_string(resp.into_body()).await, "home");
+
+        // Path with no matching route falls through to ServeDir.
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/hello.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(body_to_string(resp.into_body()).await, "hi from public");
+    }
+
+    #[tokio::test]
+    async fn build_router_with_public_skips_serve_dir_when_path_missing() {
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/".to_string(),
+            page: Some(dyn_page("home")),
+            layout: None,
+            loading: None,
+            methods: vec![],
+        });
+
+        let app = build_router_with_public(registry, "/nonexistent/path/for/test");
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/missing.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
 
     #[tokio::test]
     async fn test_page_without_loading_returns_content() {

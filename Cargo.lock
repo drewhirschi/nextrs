@@ -897,7 +897,6 @@ dependencies = [
  "http",
  "nextrs",
  "tokio",
- "tower-http",
  "tower-livereload",
  "tracing",
  "tracing-subscriber",

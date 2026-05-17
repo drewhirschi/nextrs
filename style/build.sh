@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Build public/style.css from style/input.css using the vendored Tailwind
+# Build site/public/style.css from style/input.css using the vendored Tailwind
 # standalone CLI + DaisyUI bundle.
 #
 # Run this whenever you edit HTML/RS files that use new Tailwind/DaisyUI
@@ -25,5 +25,5 @@ if [ ! -x ./tailwindcss ]; then
   chmod +x tailwindcss
 fi
 
-./tailwindcss -i input.css -o ../public/style.css --minify "$@"
-echo "wrote public/style.css ($(wc -c < ../public/style.css) bytes)"
+./tailwindcss -i input.css -o ../site/public/style.css --minify "$@"
+echo "wrote site/public/style.css ($(wc -c < ../site/public/style.css) bytes)"

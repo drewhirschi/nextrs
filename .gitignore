@@ -6,3 +6,6 @@ node_modules/
 style/tailwindcss
 .claude/*
 !.claude/skills/
+# Generated at build time by nextrs::build::sync_public_dir — mirrors
+# site/public/ to the workspace root so Vercel's CDN picks it up.
+/public/

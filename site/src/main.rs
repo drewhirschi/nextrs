@@ -3,7 +3,6 @@
 // declarations and the `generated_registry()` function — is derived from a
 // scan of the `app/` directory. Add a file under `app/`, save, and the next
 // build picks it up.
-use tower_http::services::ServeDir;
 use tracing_subscriber::EnvFilter;
 
 include!(concat!(env!("OUT_DIR"), "/nextrs_routes.rs"));
@@ -16,11 +15,12 @@ async fn main() {
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
         .init();
 
-    // Static files in `public/` are served at root paths. On Vercel these go
-    // straight to the CDN; locally we serve them via tower-http's ServeDir as
-    // a fallback for paths the router doesn't match.
-    let app = nextrs::router::build_router(generated_registry())
-        .fallback_service(ServeDir::new("public"));
+    // public/ sits next to app/. On Vercel the CDN serves it directly; locally
+    // the framework wires ServeDir as a router fallback for the same URLs.
+    let app = nextrs::router::build_router_with_public(
+        generated_registry(),
+        concat!(env!("CARGO_MANIFEST_DIR"), "/public"),
+    );
 
     #[cfg(debug_assertions)]
     let app = app.layer(tower_livereload::LiveReloadLayer::new());

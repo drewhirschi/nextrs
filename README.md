@@ -64,7 +64,7 @@ The repo is set up to deploy as-is:
 vercel deploy
 ```
 
-Single binary at `api/index.rs` wraps the framework's axum router with `nextrs::vercel::StreamingVercelLayer` (a drop-in replacement for `vercel_runtime::axum::VercelLayer` that doesn't buffer `text/html` streaming responses). One catch-all rewrite in `vercel.json` (`/(.*)` → `/api/index`) routes everything to it. Static files in `public/` are served from Vercel's CDN edge cache.
+Single binary at `api/index.rs` wraps the framework's axum router with `nextrs::vercel::StreamingVercelLayer` (a drop-in replacement for `vercel_runtime::axum::VercelLayer` that doesn't buffer `text/html` streaming responses). One catch-all rewrite in `vercel.json` (`/(.*)` → `/api/index`) routes everything to it. Static files live in `site/public/`; the workspace-root `build.rs` mirrors them to `public/` so Vercel serves them from the CDN edge cache.
 
 Latency on a fresh preview deploy:
 
@@ -84,22 +84,23 @@ Cargo workspace at root:
 
 ```
 Cargo.toml         workspace + nextrs-deploy package (Vercel binary)
-build.rs           runs nextrs::build to generate the registry from site/app
+build.rs           emits the registry + mirrors site/public/ → public/ for Vercel
 api/index.rs       Vercel entry point (22 lines) — generated registry + StreamingVercelLayer
 vercel.json        catch-all rewrite to /api/index
 askama.toml        points askama at site/app/
-public/            static assets served by Vercel CDN
+public/            generated mirror of site/public/ (gitignored — CDN-served on Vercel)
 nextrs/            framework crate (the lib)
   src/lib.rs
   src/conventions.rs    PageFn / LayoutFn / LoadingFn types + static helpers
   src/discovery.rs      scans app/ → DiscoveredRoute list
-  src/router.rs         build_router(registry) → axum::Router; streaming
+  src/router.rs         build_router(_with_public)(registry) → axum::Router; streaming
   src/vercel.rs         StreamingVercelLayer  (feature-gated `vercel`)
-  src/build.rs          codegen — emit_registry (feature-gated `build`)
+  src/build.rs          codegen + sync_public_dir (feature-gated `build`)
 site/              consumer crate — local-dev binary + the demo routes
   build.rs              runs nextrs::build::emit_registry from app/
-  src/main.rs           33 lines: include! the generated registry, serve via axum
+  src/main.rs           include! the generated registry, serve via axum
   app/                  the convention tree
+  public/               static assets (CSS, images) served at root URLs
   askama.toml           dirs = ["app"]
 docs/
   streaming.md          architecture / how-to / verification

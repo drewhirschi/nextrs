@@ -29,6 +29,95 @@ use std::path::{Path, PathBuf};
 
 use crate::discovery::{DiscoveredRoute, discover_routes};
 
+/// Mirror a `public/` directory to a destination so a deploy target can serve
+/// it. Call from a consumer crate's `build.rs`:
+///
+/// ```ignore
+/// nextrs::build::sync_public_dir("site/public", "public")?;
+/// ```
+///
+/// Both paths are interpreted relative to `CARGO_MANIFEST_DIR`. Files in
+/// `src` are copied to `dst` only when missing or stale (mtime comparison);
+/// files in `dst` that are not in `src` are removed so the mirror stays
+/// authoritative. Hidden entries (names starting with `.`) are skipped.
+///
+/// The build.rs is also instructed to rerun whenever any file under `src`
+/// changes. If `src` doesn't exist this is a no-op (returns `Ok(())`).
+pub fn sync_public_dir(
+    src: impl AsRef<Path>,
+    dst: impl AsRef<Path>,
+) -> std::io::Result<()> {
+    let manifest_dir = PathBuf::from(
+        std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set in build.rs"),
+    );
+    let abs_src = manifest_dir.join(src.as_ref());
+    let abs_dst = manifest_dir.join(dst.as_ref());
+
+    if !abs_src.is_dir() {
+        return Ok(());
+    }
+
+    println!("cargo:rerun-if-changed={}", abs_src.display());
+
+    std::fs::create_dir_all(&abs_dst)?;
+    mirror_dir(&abs_src, &abs_dst)
+}
+
+fn mirror_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
+    use std::collections::HashSet;
+
+    let mut seen: HashSet<std::ffi::OsString> = HashSet::new();
+
+    for entry in std::fs::read_dir(src)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with('.') {
+            continue;
+        }
+        seen.insert(name.clone());
+
+        let from = entry.path();
+        let to = dst.join(&name);
+        let ft = entry.file_type()?;
+
+        if ft.is_dir() {
+            std::fs::create_dir_all(&to)?;
+            mirror_dir(&from, &to)?;
+        } else if ft.is_file() {
+            let needs_copy = match (std::fs::metadata(&to), std::fs::metadata(&from)) {
+                (Ok(dst_meta), Ok(src_meta)) => {
+                    dst_meta.len() != src_meta.len()
+                        || match (dst_meta.modified(), src_meta.modified()) {
+                            (Ok(d), Ok(s)) => d < s,
+                            _ => true,
+                        }
+                }
+                _ => true,
+            };
+            if needs_copy {
+                std::fs::copy(&from, &to)?;
+            }
+        }
+    }
+
+    // Prune entries in dst that no longer exist in src.
+    for entry in std::fs::read_dir(dst)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name.to_string_lossy().starts_with('.') || seen.contains(&name) {
+            continue;
+        }
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            std::fs::remove_dir_all(&path)?;
+        } else {
+            std::fs::remove_file(&path)?;
+        }
+    }
+
+    Ok(())
+}
+
 /// Scan `app_dir` and emit a `generated_registry()` function into
 /// `$OUT_DIR/<out_name>`.
 ///

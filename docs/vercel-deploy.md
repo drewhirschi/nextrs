@@ -259,7 +259,9 @@ Cold start: first hit after deploy was 584ms TTFB; subsequent ~220-350ms, so col
 
 Vercel serves files from a `public/` directory at the project root as static assets at root URL paths, before applying any rewrites. Confirmed for our Rust setup with a probe deploy: `public/probe.txt` was served at `/probe.txt` with `x-vercel-cache: HIT`, and our catch-all rewrite did not interfere.
 
-This is now wired up in the example: `public/style.css` holds the layout's CSS, the layout's `<head>` references it via `<link rel="stylesheet" href="/style.css">`, and locally the example's `main.rs` uses `tower-http::services::ServeDir` as a fallback so the same path resolves the same way in dev. On Vercel the file lives on the CDN edge cache (~145ms warm); locally it's served by tower-http.
+The framework convention: the source of truth lives at `site/public/`, colocated with `site/app/`. At build time the workspace-root `build.rs` calls `nextrs::build::sync_public_dir("site/public", "public")`, which mirrors files into `public/` at the workspace root for Vercel to pick up. The workspace-root `public/` is gitignored — it's a generated artifact.
+
+Locally, `nextrs::router::build_router_with_public(registry, public_dir)` wires `tower-http::services::ServeDir` as a router fallback so the same URLs resolve the same way in dev. On Vercel the file lives on the CDN edge cache (~145ms warm); locally it's served by tower-http.
 
 One asymmetry worth noting: locally, route matches win over static files (axum's `fallback_service` runs only when the router 404s). On Vercel, static files win over rewrites. This only matters if you name a route the same as a file, which is unusual — but worth knowing if you ever see different behavior between dev and prod for an overlapping name.
 
