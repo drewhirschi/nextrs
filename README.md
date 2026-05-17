@@ -50,7 +50,7 @@ The browser sees the loading shell at TTFB (~250ms warm) and the page chunk arri
 ## Run locally
 
 ```bash
-cargo run -p nextrs-site
+cargo run -p site
 # → http://localhost:3000
 ```
 

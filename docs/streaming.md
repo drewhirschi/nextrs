@@ -74,7 +74,7 @@ Body::from_stream(stream)
 
 ## Local vs Vercel
 
-### Local (`cargo run -p nextrs-site`)
+### Local (`cargo run -p site`)
 
 axum's native `Body::from_stream` does the right thing out of the box. The request hits the example's axum router, the response streams over hyper's HTTP/1.1 chunked transfer encoding, the browser parses incrementally. Nothing special required.
 

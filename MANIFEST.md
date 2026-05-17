@@ -13,7 +13,7 @@ Cargo workspace at the repo root. The root is also a package (the Vercel deploym
 | Member | Purpose |
 |---|---|
 | `nextrs/` | The framework crate (library). Source at `nextrs/src/{lib,conventions,discovery,router,vercel,build}.rs`. The `vercel` and `build` modules are feature-gated. |
-| `site/` | The consumer crate — currently the framework's own demo / docs site. Run with `cargo run -p nextrs-site` → http://localhost:3000. |
+| `site/` | The consumer crate — currently the framework's own demo / docs site. Run with `cargo run -p site` → http://localhost:3000. |
 | (root package) | `nextrs-deploy` — single binary at `api/index.rs` that wraps the framework's axum router for `vercel_runtime::run`. |
 
 The framework is a normal Rust library. The user writes only convention files (`app/.../{page,layout,loading}.{rs,html}`); `nextrs::build` (gated by the `build` feature, depended on from `[build-dependencies]`) runs at compile time via a tiny `build.rs` and emits the registry into `$OUT_DIR/nextrs_routes.rs`. The user's `main.rs` (or `api/index.rs`) does `include!(concat!(env!("OUT_DIR"), "/nextrs_routes.rs"))` and calls `generated_registry()`. No `#[path]` mod declarations or `RouteEntry` constructors by hand.
