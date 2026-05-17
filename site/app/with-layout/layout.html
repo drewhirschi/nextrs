@@ -1,11 +1,12 @@
-<div style="display: flex; min-height: calc(100vh - 57px);">
-  <aside style="width: 220px; padding: 1.5rem; border-right: 1px solid #262626;">
-    <h3 style="font-size: 0.75rem; text-transform: uppercase; color: #737373; margin-bottom: 0.75rem; letter-spacing: 0.05em;">Section nav</h3>
-    <p style="color: #525252; font-size: 0.75rem; line-height: 1.5;">
-      This sidebar is rendered by <code style="color: #737373;">with-layout/layout.html</code>. It wraps every page under <code style="color: #737373;">/with-layout</code>.
+<div class="flex min-h-[calc(100vh-8rem)] max-w-6xl mx-auto w-full">
+  <aside class="w-56 shrink-0 p-6 border-r border-base-300">
+    <div class="text-xs uppercase tracking-wider text-base-content/50 mb-3">Section nav</div>
+    <p class="text-xs text-base-content/40 leading-relaxed">
+      This sidebar is rendered by <code class="text-xs">with-layout/layout.html</code>.
+      It wraps every page under <code class="text-xs">/with-layout</code>.
     </p>
   </aside>
-  <section style="flex: 1; padding: 2rem;">
+  <section class="flex-1 p-8">
     {{ children|safe }}
   </section>
 </div>

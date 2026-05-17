@@ -1,20 +1,31 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-theme="dim">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>nextrs example</title>
+  <title>nextrs</title>
   <link rel="stylesheet" href="/style.css">
 </head>
-<body>
-  <nav>
-    <a href="/" class="brand">nextrs</a>
-    <a href="/simple">1. Page</a>
-    <a href="/with-loading">2. + Loading</a>
-    <a href="/with-layout">3. + Layout</a>
-  </nav>
-  <div id="content">
-    {{ children|safe }}
+<body class="min-h-screen flex flex-col">
+  <div class="navbar bg-base-200 border-b border-base-300 px-6">
+    <div class="flex-1">
+      <a href="/" class="text-xl font-semibold tracking-tight">nextrs</a>
+    </div>
+    <div class="flex gap-1">
+      <a href="/simple" class="btn btn-ghost btn-sm">Page</a>
+      <a href="/with-loading" class="btn btn-ghost btn-sm">+ Loading</a>
+      <a href="/with-layout" class="btn btn-ghost btn-sm">+ Layout</a>
+      <a href="https://github.com/drewhirschi/nextrs" class="btn btn-ghost btn-sm" rel="noopener">GitHub</a>
+    </div>
   </div>
+
+  <main class="flex-1">
+    {{ children|safe }}
+  </main>
+
+  <footer class="border-t border-base-300 py-6 px-6 text-sm text-base-content/60 text-center">
+    A Next.js-style routing framework for Rust ·
+    <a href="https://github.com/drewhirschi/nextrs" class="link link-hover">drewhirschi/nextrs</a>
+  </footer>
 </body>
 </html>

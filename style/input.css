@@ -1,0 +1,20 @@
+@import "tailwindcss";
+
+/* Tell Tailwind where to scan for class usage. Paths are relative to this
+   input.css. We scan the site's templates and Rust handlers, plus the api
+   entry point — anywhere a Tailwind/DaisyUI class might appear. */
+@source "../site/app/**/*.html";
+@source "../site/app/**/*.rs";
+@source "../api/**/*.rs";
+
+/* Exclude the build tooling from being scanned. */
+@source not "./tailwindcss";
+@source not "./daisyui{,*}.mjs";
+
+@plugin "./daisyui.mjs" {
+  themes: dim --default;
+}
+
+@plugin "./daisyui-theme.mjs" {
+  /* No theme overrides yet — DaisyUI's "dim" is a nice neutral dark. */
+}

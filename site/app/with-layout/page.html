@@ -1,17 +1,31 @@
-<a href="/" style="font-size: 0.875rem; color: #a3a3a3;">← Back to overview</a>
-<h1 style="font-size: 2rem; margin: 1rem 0 0.5rem;">3. Page with layout and loading</h1>
-<p style="color: #a3a3a3; line-height: 1.6; margin-bottom: 2rem; max-width: 640px;">
-  The full set of conventions. The root layout (nav bar) still wraps everything. On top of that, this route's <code>layout.html</code> adds the sidebar to the left. The <code>loading.html</code> renders inside the sidebar layout while <code>page.rs</code> sleeps 800ms.
+<a href="/" class="link link-hover text-sm text-base-content/60">← Back to overview</a>
+
+<div class="flex items-center gap-3 mt-4 mb-2">
+  <span class="badge badge-primary">3</span>
+  <h1 class="text-3xl font-bold">Page with layout and loading</h1>
+</div>
+<p class="text-base-content/70 mb-8 max-w-2xl">
+  The full set of conventions. The root layout (nav bar) still wraps everything. On top of that,
+  this route's <code class="text-sm">layout.html</code> adds the sidebar to the left.
+  The <code class="text-sm">loading.html</code> renders inside the sidebar layout while
+  <code class="text-sm">page.rs</code> sleeps 800ms.
 </p>
 
-<div style="background: #171717; border: 1px solid #262626; border-radius: 8px; padding: 1.5rem; max-width: 640px;">
-  <div style="font-size: 0.75rem; text-transform: uppercase; color: #737373; margin-bottom: 0.75rem;">Files</div>
-  <ul style="list-style: none; display: flex; flex-direction: column; gap: 0.5rem; font-family: ui-monospace, SFMono-Regular, monospace; font-size: 0.875rem;">
-    <li><code>app/with-layout/layout.rs</code> <span style="color: #525252;">— renders the sidebar wrapper around child content</span></li>
-    <li><code>app/with-layout/layout.html</code> <span style="color: #525252;">— sidebar template; uses <code>{% raw %}{{ children|safe }}{% endraw %}</code></span></li>
-    <li><code>app/with-layout/page.rs</code> <span style="color: #525252;">— sleeps 800ms then renders</span></li>
-    <li><code>app/with-layout/page.html</code> <span style="color: #525252;">— this template</span></li>
-    <li><code>app/with-layout/loading.rs</code> <span style="color: #525252;">— renders the loading shell</span></li>
-    <li><code>app/with-layout/loading.html</code> <span style="color: #525252;">— spinner shown inside the sidebar while the page resolves</span></li>
-  </ul>
+<div class="card bg-base-200 max-w-2xl">
+  <div class="card-body">
+    <div class="flex items-center gap-2 mb-3 flex-wrap">
+      <h2 class="card-title text-base">Files</h2>
+      <span class="badge badge-ghost badge-sm">page</span>
+      <span class="badge badge-info badge-sm">+ loading</span>
+      <span class="badge badge-secondary badge-sm">+ layout</span>
+    </div>
+    <ul class="space-y-2 font-mono text-sm">
+      <li><code>app/with-layout/layout.rs</code> <span class="text-base-content/50">— renders the sidebar wrapper around child content</span></li>
+      <li><code>app/with-layout/layout.html</code> <span class="text-base-content/50">— sidebar template; uses <code>{% raw %}{{ children|safe }}{% endraw %}</code></span></li>
+      <li><code>app/with-layout/page.rs</code> <span class="text-base-content/50">— sleeps 800ms then renders</span></li>
+      <li><code>app/with-layout/page.html</code> <span class="text-base-content/50">— this template</span></li>
+      <li><code>app/with-layout/loading.rs</code> <span class="text-base-content/50">— renders the loading shell</span></li>
+      <li><code>app/with-layout/loading.html</code> <span class="text-base-content/50">— spinner shown inside the sidebar while the page resolves</span></li>
+    </ul>
+  </div>
 </div>
