@@ -7,7 +7,7 @@ Built on Axum and Askama. Deploys to Vercel as a single Rust function with the l
 ## Quick look
 
 ```
-example/app/
+site/app/
 ├── page.{rs,html}              ← /
 ├── layout.{rs,html}            ← root layout, applied to every route
 ├── simple/
@@ -50,7 +50,7 @@ The browser sees the loading shell at TTFB (~250ms warm) and the page chunk arri
 ## Run locally
 
 ```bash
-cargo run -p nextrs-example
+cargo run -p nextrs-site
 # → http://localhost:3000
 ```
 
@@ -84,27 +84,27 @@ Cargo workspace at root:
 
 ```
 Cargo.toml         workspace + nextrs-deploy package (Vercel binary)
-build.rs           runs nextrs-build to generate the registry from example/app
+build.rs           runs nextrs::build to generate the registry from site/app
 api/index.rs       Vercel entry point (22 lines) — generated registry + StreamingVercelLayer
 vercel.json        catch-all rewrite to /api/index
-askama.toml        points askama at example/app/
+askama.toml        points askama at site/app/
 public/            static assets served by Vercel CDN
 nextrs/            framework crate (the lib)
   src/lib.rs
   src/conventions.rs    PageFn / LayoutFn / LoadingFn types + static helpers
   src/discovery.rs      scans app/ → DiscoveredRoute list
   src/router.rs         build_router(registry) → axum::Router; streaming
-  src/vercel.rs         StreamingVercelLayer (feature-gated)
-nextrs-build/      codegen library called from build.rs
-  src/lib.rs            emit_registry(app_dir, _, out_name)
-example/           consumer crate — local-dev binary + the demo routes
-  build.rs              runs nextrs-build to generate the registry from app/
+  src/vercel.rs         StreamingVercelLayer  (feature-gated `vercel`)
+  src/build.rs          codegen — emit_registry (feature-gated `build`)
+site/              consumer crate — local-dev binary + the demo routes
+  build.rs              runs nextrs::build::emit_registry from app/
   src/main.rs           33 lines: include! the generated registry, serve via axum
   app/                  the convention tree
   askama.toml           dirs = ["app"]
 docs/
   streaming.md          architecture / how-to / verification
   vercel-deploy.md      deployment plan + research findings
+  latency.md            latency breakdown + path to sub-100ms
 ```
 
 User-facing files for adding a route: just files under `app/`. No mod declarations, no registry constructors. Codegen handles the wiring.

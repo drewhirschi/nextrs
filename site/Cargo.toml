@@ -1,11 +1,11 @@
 [package]
-name = "nextrs-example"
+name = "nextrs-site"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 
 [build-dependencies]
-nextrs-build = { path = "../nextrs-build" }
+nextrs = { path = "../nextrs", features = ["build"] }
 
 [dependencies]
 nextrs = { path = "../nextrs" }

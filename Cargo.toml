@@ -1,11 +1,11 @@
 [workspace]
 resolver = "3"
-members = ["nextrs", "nextrs-build", "example"]
+members = ["nextrs", "site"]
 
 # The workspace root is also a package — it's the Vercel deployment target.
-# Its single binary (api/index.rs) wraps the same routes the local-dev
-# example serves, but exposes them via vercel_runtime instead of axum::serve.
-# This duplicates the registry construction once; codegen will dedupe later.
+# Its single binary (api/index.rs) wraps the framework's axum router for
+# vercel_runtime::run. The route registry is generated at build time by
+# nextrs::build (see build.rs) from a scan of site/app/.
 [package]
 name = "nextrs-deploy"
 version = "0.1.0"
@@ -18,7 +18,7 @@ name = "index"
 path = "api/index.rs"
 
 [build-dependencies]
-nextrs-build = { path = "nextrs-build" }
+nextrs = { path = "nextrs", features = ["build"] }
 
 [dependencies]
 nextrs = { path = "nextrs", features = ["vercel"] }

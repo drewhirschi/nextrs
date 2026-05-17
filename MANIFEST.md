@@ -12,12 +12,11 @@ Cargo workspace at the repo root. The root is also a package (the Vercel deploym
 
 | Member | Purpose |
 |---|---|
-| `nextrs/` | The framework crate (library). Source at `nextrs/src/{lib,conventions,discovery,router,vercel}.rs`. The `vercel` module is feature-gated. |
-| `nextrs-build/` | Build-time codegen library. Called from a user crate's `build.rs`, scans `app/` and emits a `generated_registry()` function that wires every convention file into a `RouteRegistry`. |
-| `example/` | A working consumer crate that demonstrates the conventions. Run with `cargo run -p nextrs-example` → http://localhost:3000. |
+| `nextrs/` | The framework crate (library). Source at `nextrs/src/{lib,conventions,discovery,router,vercel,build}.rs`. The `vercel` and `build` modules are feature-gated. |
+| `site/` | The consumer crate — currently the framework's own demo / docs site. Run with `cargo run -p nextrs-site` → http://localhost:3000. |
 | (root package) | `nextrs-deploy` — single binary at `api/index.rs` that wraps the framework's axum router for `vercel_runtime::run`. |
 
-The framework is a normal Rust library. The user writes only convention files (`app/.../{page,layout,loading}.{rs,html}`); `nextrs-build` runs at compile time via `build.rs` and emits the registry into `$OUT_DIR/nextrs_routes.rs`. The user's `main.rs` (or `api/index.rs`) does `include!(concat!(env!("OUT_DIR"), "/nextrs_routes.rs"))` and calls `generated_registry()`. No `#[path]` mod declarations or `RouteEntry` constructors by hand.
+The framework is a normal Rust library. The user writes only convention files (`app/.../{page,layout,loading}.{rs,html}`); `nextrs::build` (gated by the `build` feature, depended on from `[build-dependencies]`) runs at compile time via a tiny `build.rs` and emits the registry into `$OUT_DIR/nextrs_routes.rs`. The user's `main.rs` (or `api/index.rs`) does `include!(concat!(env!("OUT_DIR"), "/nextrs_routes.rs"))` and calls `generated_registry()`. No `#[path]` mod declarations or `RouteEntry` constructors by hand.
 
 ## Conventions
 
@@ -36,7 +35,7 @@ Dynamic URL segments use `[param]` directory naming (e.g. `app/users/[id]/page.r
 
 ## Static assets
 
-`public/` at the project root holds files served at root URL paths. On Vercel they go straight to the CDN edge cache (verified `x-vercel-cache: HIT`, ~145ms warm TTFB). Locally the example uses `tower-http::services::ServeDir` as a router fallback so the same path resolves the same way.
+`public/` at the project root holds files served at root URL paths. On Vercel they go straight to the CDN edge cache (verified `x-vercel-cache: HIT`, ~145ms warm TTFB). Locally the site uses `tower-http::services::ServeDir` as a router fallback so the same path resolves the same way.
 
 ## Vercel deployment
 
@@ -52,11 +51,11 @@ Dynamic URL segments use `[param]` directory naming (e.g. `app/users/[id]/page.r
 | Route handler types | `nextrs/src/conventions.rs` — `PageFn`, `LayoutFn`, `LoadingFn`, `RouteFn`; static helpers `static_page`, `static_layout`, `static_loading` |
 | Routing + streaming | `nextrs/src/router.rs` — `build_router(registry) -> axum::Router`. Composes layouts around a content marker, splits on the marker, streams loading-then-page when a loading slot is present |
 | Vercel adapter | `nextrs/src/vercel.rs` — `StreamingVercelLayer` (feature-gated by `vercel`). Drop-in replacement for `vercel_runtime::axum::VercelLayer` that doesn't buffer text/html |
-| Progressive demo | `example/app/{simple, with-loading, with-layout}/` — three routes that progressively add `loading.{rs,html}` and `layout.{rs,html}`. The home page (`example/app/page.html`) is an overview with links and a per-route file listing |
-| Codegen | `nextrs-build/src/lib.rs` — `emit_registry(app_dir, _, out_name)` walks `discover_routes` output and emits Rust source: `#[path]` mods for `.rs` slots, `static_*(include_str!(...))` for `.html` slots, and a `generated_registry()` function. Both paths emitted as absolute (necessary because `#[path]` inside an `include!`-d file resolves relative to the included file's location, not the includer). |
-| Local example wiring | `example/src/main.rs` (33 lines) and `example/build.rs` — `include!` the generated file, call `generated_registry()` |
+| Progressive demo | `site/app/{simple, with-loading, with-layout}/` — three routes that progressively add `loading.{rs,html}` and `layout.{rs,html}`. The home page (`site/app/page.html`) is an overview with links and a per-route file listing |
+| Codegen | `nextrs/src/build.rs` (feature `build`) — `emit_registry(app_dir, _, out_name)` walks `discover_routes` output and emits Rust source: `#[path]` mods for `.rs` slots, `static_*(include_str!(...))` for `.html` slots, and a `generated_registry()` function. Both paths emitted as absolute (necessary because `#[path]` inside an `include!`-d file resolves relative to the included file's location, not the includer). |
+| Local site wiring | `site/src/main.rs` (33 lines) and `site/build.rs` — `include!` the generated file, call `generated_registry()` |
 | Vercel deploy wiring | `api/index.rs` (22 lines) and root `build.rs` — same generated file, wrapped with `StreamingVercelLayer` for `vercel_runtime::run` |
-| Askama configs | `example/askama.toml` (dirs = ["app"]); `askama.toml` at root (dirs = ["example/app"]) for the deploy binary |
+| Askama configs | `site/askama.toml` (dirs = ["app"]); `askama.toml` at root (dirs = ["site/app"]) for the deploy binary |
 | Streaming reference doc | `docs/streaming.md` — the model, layout-shell split, local vs Vercel, verification |
 | Vercel deploy plan & results | `docs/vercel-deploy.md` — research findings, latency measurements, the VercelLayer bug story |
 

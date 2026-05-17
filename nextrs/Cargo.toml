@@ -16,6 +16,11 @@ vercel = [
     "dep:hyper",
     "dep:tower",
 ]
+# Enables the `nextrs::build` module: codegen invoked from a consumer crate's
+# `build.rs` to emit a `generated_registry()` function from a scan of `app/`.
+# Only depend on this in `[build-dependencies]`, not in `[dependencies]` — it
+# pulls in std::path / std::fs APIs that don't belong in the runtime tree.
+build = []
 
 [dependencies]
 axum = "0.8"

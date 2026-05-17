@@ -8,9 +8,8 @@ Make a nextrs app deployable to Vercel. The user runs `vercel deploy` (or `vc de
 
 ## Current state (relevant pieces)
 
-- Workspace at root: `nextrs/` (lib) + `example/` (single Axum binary). One process, all routes registered with one `RouteRegistry` and served from one `Router`.
-- Convention discovery exists (`nextrs/src/discovery.rs`) and produces `Vec<DiscoveredRoute>` with `.rs` and `.html` paths per slot.
-- The example wires its routes by hand in `main.rs` using `#[path]` mod declarations. **There is no codegen yet.** Removing this boilerplate is the bulk of Phase 1.
+- Workspace at root: `nextrs/` (framework lib, with feature-gated `vercel` and `build` modules) + `site/` (the consumer crate, single Axum binary). Root is also the `nextrs-deploy` package — the Vercel entry point.
+- Convention discovery (`nextrs/src/discovery.rs`) produces `Vec<DiscoveredRoute>` with `.rs` and `.html` paths per slot. The codegen (`nextrs::build`) walks that and emits the `generated_registry()` consumed by both `site/src/main.rs` and `api/index.rs`.
 - Streaming uses `axum::body::Body::from_stream` + `async-stream`. The framework owns the chunk format (`<div id="__nx_slot__">…loading…</div>` then `<template id="__nx_page__">…page…</template>` + ~200-byte swap script).
 
 ## Research findings (Phase 0)
