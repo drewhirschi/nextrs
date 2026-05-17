@@ -1,6 +1,0 @@
-{
-  "private": true,
-  "devDependencies": {
-    "vercel-rust": "4.0.11"
-  }
-}
