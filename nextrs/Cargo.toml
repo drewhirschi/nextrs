@@ -1,8 +1,14 @@
 [package]
 name = "nextrs"
 version = "0.1.0"
+description = "A Next.js-style routing framework for Rust built on Axum and Askama."
 edition = "2024"
 rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/drewhirschi/nextrs"
+homepage = "https://github.com/drewhirschi/nextrs"
+documentation = "https://docs.rs/nextrs"
+readme = "../README.md"
 
 [features]
 default = []
