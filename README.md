@@ -32,6 +32,30 @@ Each folder is a route segment. Each file is a convention slot:
 
 `.rs` files are Rust handlers (typically askama templates with logic). `.html` files are static fallbacks. When both exist for a slot, `.rs` wins.
 
+## API routes
+
+Add a `route.rs` file under `app/` to handle non-page HTTP endpoints:
+
+```text
+site/app/api/ping/route.rs   ← /api/ping
+```
+
+```rust
+use axum::body::Body;
+use axum::response::IntoResponse;
+use http::{Request, StatusCode};
+
+pub async fn get(_req: Request<Body>) -> impl IntoResponse {
+    StatusCode::OK
+}
+
+pub async fn post(_req: Request<Body>) -> impl IntoResponse {
+    StatusCode::CREATED
+}
+```
+
+Supported method function names are `get`, `post`, `put`, `patch`, `delete`, `head`, and `options`. `page.rs` owns `GET` for UI routes, so `page.rs` and `route.rs` may coexist only when `route.rs` does not export `get`.
+
 ## How streaming works
 
 When a route has `loading.{rs,html}`, the response is chunked:
@@ -116,7 +140,7 @@ User-facing files for adding a route: just files under `app/`. No mod declaratio
 cargo test --workspace --all-features
 ```
 
-37 tests covering discovery (`.rs` + `.html` pairing, html-only, mixed nested, dynamic segments, API routes), conventions (static helpers), router behavior (composition, layout-shell split, streaming chunk ordering, multi-frame body, **timing-based proof that the loading shell arrives before the page handler resolves**, nested layouts under streaming, API methods, page+route coexistence), and codegen (skeleton structure, `.rs`-precedence, absolute path emission).
+44 tests covering discovery (`.rs` + `.html` pairing, html-only, mixed nested, dynamic segments, API routes), conventions (static helpers), router behavior (composition, layout-shell split, streaming chunk ordering, multi-frame body, **timing-based proof that the loading shell arrives before the page handler resolves**, nested layouts under streaming, API methods, page+route coexistence), and codegen (skeleton structure, `.rs`-precedence, absolute path emission, route.rs methods).
 
 ## Status
 
@@ -133,4 +157,3 @@ Not yet:
 - Per-route binaries on Vercel (single-binary is fine for now)
 - Suspense-style nested streaming boundaries
 - Dev-server file watching with auto-rebuild
-- `route.rs` codegen (currently emits `methods: vec![]` for every route)
