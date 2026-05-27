@@ -1,4 +1,4 @@
-use axum::response::Response;
+use axum::response::{IntoResponse, Response};
 use std::future::Future;
 use std::pin::Pin;
 
@@ -85,6 +85,26 @@ pub fn static_loading(html: &'static str) -> LoadingFn {
     Box::new(move || html.to_string())
 }
 
+/// Wrap an async `route.rs` method function as a [`RouteFn`].
+///
+/// Codegen uses this for exported functions such as:
+///
+/// ```ignore
+/// pub async fn post(req: Request<Body>) -> impl IntoResponse { ... }
+/// ```
+pub fn route_method<F, Fut, R>(f: F) -> RouteFn
+where
+    F: Fn(http::Request<axum::body::Body>) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = R> + Send + 'static,
+    R: IntoResponse + 'static,
+{
+    Box::new(move |req| {
+        let fut = f(req);
+        Box::pin(async move { fut.await.into_response() })
+            as Pin<Box<dyn Future<Output = Response> + Send>>
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,7 +112,9 @@ mod tests {
     #[tokio::test]
     async fn test_static_page_returns_html_verbatim() {
         let p = static_page("<h1>Hello</h1>");
-        let req = http::Request::builder().body(axum::body::Body::empty()).unwrap();
+        let req = http::Request::builder()
+            .body(axum::body::Body::empty())
+            .unwrap();
         let html = p(req).await;
         assert_eq!(html, "<h1>Hello</h1>");
     }
@@ -125,5 +147,20 @@ mod tests {
     fn test_static_loading_returns_html_verbatim() {
         let l = static_loading("<div>Loading...</div>");
         assert_eq!(l(), "<div>Loading...</div>");
+    }
+
+    #[tokio::test]
+    async fn test_route_method_wraps_into_response() {
+        async fn handler(_req: http::Request<axum::body::Body>) -> impl IntoResponse {
+            axum::http::StatusCode::CREATED
+        }
+
+        let route = route_method(handler);
+        let req = http::Request::builder()
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let resp = route(req).await;
+
+        assert_eq!(resp.status(), axum::http::StatusCode::CREATED);
     }
 }

@@ -29,6 +29,22 @@ use std::path::{Path, PathBuf};
 
 use crate::discovery::{DiscoveredRoute, discover_routes};
 
+const ROUTE_METHODS: &[(&str, &str)] = &[
+    ("get", "GET"),
+    ("post", "POST"),
+    ("put", "PUT"),
+    ("patch", "PATCH"),
+    ("delete", "DELETE"),
+    ("head", "HEAD"),
+    ("options", "OPTIONS"),
+];
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct RouteMethod {
+    fn_name: &'static str,
+    method_const: &'static str,
+}
+
 /// Mirror a `public/` directory to a destination so a deploy target can serve
 /// it. Call from a consumer crate's `build.rs`:
 ///
@@ -43,10 +59,7 @@ use crate::discovery::{DiscoveredRoute, discover_routes};
 ///
 /// The build.rs is also instructed to rerun whenever any file under `src`
 /// changes. If `src` doesn't exist this is a no-op (returns `Ok(())`).
-pub fn sync_public_dir(
-    src: impl AsRef<Path>,
-    dst: impl AsRef<Path>,
-) -> std::io::Result<()> {
+pub fn sync_public_dir(src: impl AsRef<Path>, dst: impl AsRef<Path>) -> std::io::Result<()> {
     let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set in build.rs"),
     );
@@ -143,8 +156,7 @@ pub fn emit_registry(
     let routes = discover_routes(&abs_app);
     let code = generate_code(&routes);
 
-    let out_dir =
-        std::env::var_os("OUT_DIR").expect("OUT_DIR must be set in build.rs");
+    let out_dir = std::env::var_os("OUT_DIR").expect("OUT_DIR must be set in build.rs");
     let out_path = Path::new(&out_dir).join(out_name);
     std::fs::write(&out_path, &code)?;
 
@@ -152,7 +164,11 @@ pub fn emit_registry(
     // and hard to find by hand.
     if let Some(target_dir) = manifest_dir.ancestors().find_map(|p| {
         let candidate = p.join("target");
-        if candidate.is_dir() { Some(candidate) } else { None }
+        if candidate.is_dir() {
+            Some(candidate)
+        } else {
+            None
+        }
     }) {
         let inspect_dir = target_dir.join("nextrs");
         if std::fs::create_dir_all(&inspect_dir).is_ok() {
@@ -180,6 +196,9 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
         if let Some(p) = &route.loading.rs {
             emit_path_mod(&mut out, &mod_name(i, "loading"), p);
         }
+        if let Some(p) = &route.route {
+            emit_path_mod(&mut out, &mod_name(i, "route"), p);
+        }
     }
 
     // ---- generated_registry() --------------------------------------------
@@ -194,12 +213,80 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
         emit_slot(&mut out, "layout", i, &route.layout);
         emit_slot(&mut out, "loading", i, &route.loading);
 
-        out.push_str("        methods: vec![],\n");
+        emit_methods(&mut out, i, route);
         out.push_str("    });\n");
     }
 
     out.push_str("    registry\n}\n");
     out
+}
+
+fn discover_route_methods(path: &Path) -> Vec<RouteMethod> {
+    let Ok(source) = std::fs::read_to_string(path) else {
+        return Vec::new();
+    };
+
+    ROUTE_METHODS
+        .iter()
+        .filter_map(|(fn_name, method_const)| {
+            if has_public_async_method(&source, fn_name) {
+                Some(RouteMethod {
+                    fn_name,
+                    method_const,
+                })
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
+fn has_public_async_method(source: &str, fn_name: &str) -> bool {
+    // This is intentionally lightweight. It recognizes the public async method
+    // functions nextrs documents for route.rs without pulling a Rust parser
+    // into the build feature.
+    let needles = [
+        format!("pub async fn {}", fn_name),
+        format!("pub(crate) async fn {}", fn_name),
+        format!("pub(super) async fn {}", fn_name),
+    ];
+    needles.iter().any(|needle| source.contains(needle))
+}
+
+fn emit_methods(out: &mut String, idx: usize, route: &DiscoveredRoute) {
+    let Some(route_file) = &route.route else {
+        out.push_str("        methods: vec![],\n");
+        return;
+    };
+
+    let methods = discover_route_methods(route_file);
+    if methods.is_empty() {
+        out.push_str("        methods: vec![],\n");
+        return;
+    }
+
+    if route.page.exists() && methods.iter().any(|m| m.method_const == "GET") {
+        let _ = writeln!(
+            out,
+            "        methods: {{ compile_error!({:?}); vec![] }},",
+            format!(
+                "nextrs route conflict at {}: page.rs/page.html owns GET, so route.rs cannot export get()",
+                route.url_path
+            )
+        );
+        return;
+    }
+
+    let m = mod_name(idx, "route");
+    out.push_str("        methods: vec![\n");
+    for method in methods {
+        let _ = writeln!(
+            out,
+            "            (::nextrs::http::Method::{}, ::nextrs::conventions::route_method({}::{})),",
+            method.method_const, m, method.fn_name
+        );
+    }
+    out.push_str("        ],\n");
 }
 
 fn mod_name(idx: usize, slot: &str) -> String {
@@ -211,17 +298,14 @@ fn emit_path_mod(out: &mut String, name: &str, target: &Path) {
     // to the included file's location (OUT_DIR) — and since OUT_DIR is buried
     // many levels deep under `target/`, computing a stable relative path is
     // brittle. Absolute paths are unambiguous; rustc accepts them.
-    let abs = target.canonicalize().unwrap_or_else(|_| target.to_path_buf());
+    let abs = target
+        .canonicalize()
+        .unwrap_or_else(|_| target.to_path_buf());
     let _ = writeln!(out, "#[path = {:?}]", abs.display().to_string());
     let _ = writeln!(out, "mod {};\n", name);
 }
 
-fn emit_slot(
-    out: &mut String,
-    slot: &str,
-    idx: usize,
-    s: &crate::discovery::Slot,
-) {
+fn emit_slot(out: &mut String, slot: &str, idx: usize, s: &crate::discovery::Slot) {
     let m = mod_name(idx, slot);
     match (&s.rs, &s.html) {
         (Some(_), _) => {
@@ -290,10 +374,26 @@ mod tests {
             fs::create_dir_all(&dir_path).unwrap();
             for file in *files {
                 let body = if file.ends_with(".rs") {
-                    "pub fn render() -> String { String::new() }"
+                    if *file == "route.rs" {
+                        "use axum::body::Body;\nuse axum::response::IntoResponse;\nuse http::{Request, StatusCode};\npub async fn post(_req: Request<Body>) -> impl IntoResponse { StatusCode::OK }\n"
+                    } else {
+                        "pub fn render() -> String { String::new() }"
+                    }
                 } else {
                     "<html/>"
                 };
+                fs::write(dir_path.join(file), body).unwrap();
+            }
+        }
+        tmp
+    }
+
+    fn setup_app_with_file_bodies(structure: &[(&str, &[(&str, &str)])]) -> tempfile::TempDir {
+        let tmp = tempfile::tempdir().unwrap();
+        for (dir, files) in structure {
+            let dir_path = tmp.path().join(dir);
+            fs::create_dir_all(&dir_path).unwrap();
+            for (file, body) in *files {
                 fs::write(dir_path.join(file), body).unwrap();
             }
         }
@@ -379,10 +479,7 @@ mod tests {
         // Both #[path] and include_str! must take absolute paths so that the
         // generated file (which lands in $OUT_DIR) can find them no matter
         // where in the target tree it ends up.
-        let tmp = setup_app(&[
-            ("dyn", &["page.rs"]),
-            ("static", &["page.html"]),
-        ]);
+        let tmp = setup_app(&[("dyn", &["page.rs"]), ("static", &["page.html"])]);
         let routes = discover_routes(tmp.path());
         let code = generate_code(&routes);
 
@@ -403,5 +500,89 @@ mod tests {
                 line
             );
         }
+    }
+
+    #[test]
+    fn route_rs_emits_module_and_methods() {
+        let tmp = setup_app(&[("api/ping", &["route.rs"])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        assert!(
+            code.contains("mod __nextrs_route_0_route;"),
+            "expected route.rs module declaration:\n{}",
+            code
+        );
+        assert!(
+            code.contains("::nextrs::http::Method::POST"),
+            "expected POST method entry:\n{}",
+            code
+        );
+        assert!(
+            code.contains("::nextrs::conventions::route_method(__nextrs_route_0_route::post)"),
+            "expected generated handler to call post(req):\n{}",
+            code
+        );
+        assert!(
+            !code.contains("methods: vec![],"),
+            "route.rs should not emit an empty methods vector:\n{}",
+            code
+        );
+    }
+
+    #[test]
+    fn route_rs_supports_multiple_methods() {
+        let route_body = r#"
+use axum::body::Body;
+use axum::response::IntoResponse;
+use http::{Request, StatusCode};
+
+pub async fn get(_req: Request<Body>) -> impl IntoResponse { StatusCode::OK }
+pub async fn patch(_req: Request<Body>) -> impl IntoResponse { StatusCode::NO_CONTENT }
+"#;
+        let tmp = setup_app_with_file_bodies(&[("api/item/[id]", &[("route.rs", route_body)])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        assert!(code.contains("\"/api/item/{id}\".to_string()"));
+        assert!(code.contains("::nextrs::http::Method::GET"));
+        assert!(code.contains("::nextrs::http::Method::PATCH"));
+        assert!(code.contains("route_method(__nextrs_route_0_route::get)"));
+        assert!(code.contains("route_method(__nextrs_route_0_route::patch)"));
+    }
+
+    #[test]
+    fn page_and_route_non_get_can_coexist() {
+        let tmp = setup_app(&[("reviews", &["page.rs", "route.rs"])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        assert!(code.contains("\"/reviews\".to_string()"));
+        assert!(code.contains("__nextrs_route_0_page::render(req)"));
+        assert!(code.contains("::nextrs::http::Method::POST"));
+        assert!(!code.contains("compile_error!"));
+    }
+
+    #[test]
+    fn page_and_route_get_conflict_emits_compile_error() {
+        let route_body = r#"
+use axum::body::Body;
+use axum::response::IntoResponse;
+use http::{Request, StatusCode};
+
+pub async fn get(_req: Request<Body>) -> impl IntoResponse { StatusCode::OK }
+"#;
+        let tmp = setup_app_with_file_bodies(&[(
+            "reviews",
+            &[
+                ("page.rs", "pub fn render() -> String { String::new() }"),
+                ("route.rs", route_body),
+            ],
+        )]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        assert!(code.contains("compile_error!"));
+        assert!(code.contains("page.rs/page.html owns GET"));
     }
 }
