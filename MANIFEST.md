@@ -13,8 +13,9 @@ Cargo workspace at the repo root. The root is also a package (the Vercel deploym
 | Member | Purpose |
 |---|---|
 | `nextrs/` | The framework crate (library). Source at `nextrs/src/{lib,conventions,discovery,router,vercel,build}.rs`. The `vercel` and `build` modules are feature-gated. |
-| `site/` | The consumer crate — currently the framework's own demo / docs site. Run with `cargo run -p site` → http://localhost:3000. |
+| `site/` | The consumer crate — currently the framework's own demo / docs site. Run with `cargo run --bin nextrs-dev` → http://localhost:3000. |
 | (root package) | `nextrs-deploy` — single binary at `api/index.rs` that wraps the framework's axum router for `vercel_runtime::run`. |
+| `dev/main.rs` | Repo-local dev watcher. Starts `cargo run -p site`, watches framework and demo app source paths, and restarts the child process on changes. |
 
 The framework is a normal Rust library. The user writes only convention files (`app/.../{page,layout,loading}.{rs,html}`); `nextrs::build` (gated by the `build` feature, depended on from `[build-dependencies]`) runs at compile time via a tiny `build.rs` and emits the registry into `$OUT_DIR/nextrs_routes.rs`. The user's `main.rs` (or `api/index.rs`) does `include!(concat!(env!("OUT_DIR"), "/nextrs_routes.rs"))` and calls `generated_registry()`. No `#[path]` mod declarations or `RouteEntry` constructors by hand.
 
@@ -78,7 +79,7 @@ Dynamic URL segments use `[param]` directory naming (e.g. `app/users/[id]/page.r
 
 1. **`error.{rs,html}`** segment convention.
 2. **Per-route Vercel binaries** as an option for very large apps (current single-binary fits everything we need now).
-3. **Dev-server ergonomics**: askama proc-macros don't track `.html` deps, so editing a template currently requires `touch`-ing the consuming `.rs` file or `cargo clean`. File-watch + auto-rebuild would help.
+3. **Dev-server ergonomics**: the repo-local `nextrs-dev` watcher restarts `cargo run -p site` when Rust, template, or public asset files change. Further polish could move this into a proper published CLI.
 4. **Suspense-style nested streaming**: today there's exactly one loading slot per route. React Server Components-style nested boundaries would need a more sophisticated streaming protocol.
-5. **`route.rs` codegen.** Codegen currently emits `methods: vec![]` for every route. API method handlers (POST/PUT/etc.) need their own emission rule once we have a real example using one.
+5. **`route.rs` codegen hardening.** Basic API method codegen is in place; future work is richer diagnostics and request extraction conventions.
 6. **Upstream**: file an issue/PR with the Vercel team to make `vercel_runtime::axum::VercelLayer` recognize `text/html` for streaming (or take an `always_stream` flag), so `nextrs::vercel::StreamingVercelLayer` becomes optional.
