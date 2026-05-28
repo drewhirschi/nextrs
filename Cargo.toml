@@ -17,6 +17,10 @@ publish = false
 name = "index"
 path = "api/index.rs"
 
+[[bin]]
+name = "nextrs-dev"
+path = "dev/main.rs"
+
 [build-dependencies]
 nextrs = { path = "nextrs", features = ["build"] }
 
@@ -28,6 +32,8 @@ tokio = { version = "1", features = ["full"] }
 tower = "0.5"
 askama = "0.15"
 http = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 
 [profile.dev]
 debug = 0

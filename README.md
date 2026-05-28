@@ -74,9 +74,15 @@ The browser sees the loading shell at TTFB (~250ms warm) and the page chunk arri
 ## Run locally
 
 ```bash
-cargo run -p site
+cargo run --bin nextrs-dev
 # → http://localhost:3000
 ```
+
+`nextrs-dev` starts `cargo run -p site`, watches the framework and demo app
+sources, and restarts the server when Rust, template, or public asset files
+change. The demo app also uses `tower-livereload` in debug builds, so the
+browser refreshes after the restarted server is ready. If you want the raw
+server without watching, run `cargo run -p site`.
 
 Three demo routes — `/simple`, `/with-loading`, `/with-layout` — each progressively adding one more convention file. Each demo page lists its own source files inline so you can see exactly what's involved.
 
@@ -110,6 +116,7 @@ Cargo workspace at root:
 Cargo.toml         workspace + nextrs-deploy package (Vercel binary)
 build.rs           emits the registry + mirrors site/public/ → public/ for Vercel
 api/index.rs       Vercel entry point (22 lines) — generated registry + StreamingVercelLayer
+dev/main.rs        local dev watcher that restarts cargo run -p site
 vercel.json        catch-all rewrite to /api/index
 askama.toml        points askama at site/app/
 public/            generated mirror of site/public/ (gitignored — CDN-served on Vercel)
@@ -156,4 +163,3 @@ Not yet:
 - `error.{rs,html}` convention
 - Per-route binaries on Vercel (single-binary is fine for now)
 - Suspense-style nested streaming boundaries
-- Dev-server file watching with auto-rebuild

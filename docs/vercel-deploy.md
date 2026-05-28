@@ -1,6 +1,6 @@
 # Plan: Vercel deployment for nextrs
 
-**Status:** Phases 0, 1, 2a all done. The example deploys to Vercel via single binary; streaming verified end-to-end; codegen wires the registry from `app/` so the user only writes convention files. Remaining items are roadmap (per-route binaries, error convention, route.rs codegen, dev-server file watching).
+**Status:** Phases 0, 1, 2a all done. The example deploys to Vercel via single binary; streaming verified end-to-end; codegen wires the registry from `app/` so the user only writes convention files. Remaining items are roadmap (per-route binaries, error convention, route.rs codegen hardening).
 
 ## Goal
 
@@ -202,7 +202,7 @@ If the streaming test fails, swap our `Body::from_stream` for `vercel_runtime::a
 - A `nextrs` CLI binary (or a make-style script) that wraps `cargo build` for local vs Vercel targets
 - README: getting started, conventions reference, deploy walkthrough
 - Workflow file (`.github/workflows/ci.yml`) running `cargo test --workspace` and the example deploy on push
-- Optional: dev-mode file watching on `app/` to re-run codegen + restart server
+- Optional: move the repo-local `nextrs-dev` watcher into a published CLI
 
 ### Phase 4 — Per-route bundling (future)
 
