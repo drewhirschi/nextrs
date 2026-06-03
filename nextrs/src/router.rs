@@ -7,7 +7,7 @@ use bytes::Bytes;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use crate::conventions::{LayoutFn, RouteEntry, RouteRegistry};
+use crate::conventions::{LayoutFn, MiddlewareFn, MiddlewareResult, RouteEntry, RouteRegistry};
 
 /// Internal sentinel that gets substituted into composed layouts so we can
 /// split the result into the "before children" and "after children" halves.
@@ -33,20 +33,15 @@ const NX_SWAP_SCRIPT: &str = concat!(
 );
 
 /// Collects all layouts from root down to the target path.
-fn collect_layouts_for_path<'a>(
-    entries: &'a [RouteEntry],
-    target_path: &str,
-) -> Vec<&'a LayoutFn> {
+fn collect_layouts_for_path<'a>(entries: &'a [RouteEntry], target_path: &str) -> Vec<&'a LayoutFn> {
     let mut layouts = Vec::new();
 
-    let mut sorted_entries: Vec<&RouteEntry> = entries
-        .iter()
-        .filter(|e| e.layout.is_some())
-        .collect();
-    sorted_entries.sort_by_key(|e| e.path.matches('/').count());
+    let mut sorted_entries: Vec<&RouteEntry> =
+        entries.iter().filter(|e| e.layout.is_some()).collect();
+    sorted_entries.sort_by_key(|e| route_depth(&e.path));
 
     for entry in sorted_entries {
-        if entry.path == "/" || target_path.starts_with(&entry.path) {
+        if entry_applies_to_path(&entry.path, target_path) {
             if let Some(ref layout) = entry.layout {
                 layouts.push(layout);
             }
@@ -54,6 +49,44 @@ fn collect_layouts_for_path<'a>(
     }
 
     layouts
+}
+
+/// Collects all middleware from root down to the target path.
+fn collect_middlewares_for_path<'a>(
+    entries: &'a [RouteEntry],
+    target_path: &str,
+) -> Vec<&'a MiddlewareFn> {
+    let mut middlewares = Vec::new();
+
+    let mut sorted_entries: Vec<&RouteEntry> =
+        entries.iter().filter(|e| e.middleware.is_some()).collect();
+    sorted_entries.sort_by_key(|e| route_depth(&e.path));
+
+    for entry in sorted_entries {
+        if entry_applies_to_path(&entry.path, target_path) {
+            if let Some(ref middleware) = entry.middleware {
+                middlewares.push(middleware);
+            }
+        }
+    }
+
+    middlewares
+}
+
+fn route_depth(path: &str) -> usize {
+    if path == "/" {
+        0
+    } else {
+        path.matches('/').count()
+    }
+}
+
+fn entry_applies_to_path(entry_path: &str, target_path: &str) -> bool {
+    entry_path == "/"
+        || target_path == entry_path
+        || target_path
+            .strip_prefix(entry_path)
+            .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
 /// Render the chain of layouts around a content marker and split the result
@@ -119,9 +152,7 @@ pub fn build_router(registry: RouteRegistry) -> Router {
                 get(move |req: Request| {
                     let entries = Arc::clone(&entries_for_get);
                     let path = path_for_get.clone();
-                    async move {
-                        render_route(entries, idx, path, req).await
-                    }
+                    async move { render_route(entries, idx, path, req).await }
                 }),
             );
         }
@@ -132,9 +163,12 @@ pub fn build_router(registry: RouteRegistry) -> Router {
                 let method_clone = method.clone();
                 let idx = i;
 
-                let handler = move |req: Request| async move {
-                    let route_fn = &entries_for_method[idx].methods[j].1;
-                    route_fn(req).await
+                let path_for_method = path.clone();
+
+                let handler = move |req: Request| {
+                    let entries = Arc::clone(&entries_for_method);
+                    let path = path_for_method.clone();
+                    async move { handle_method_route(entries, idx, j, path, req).await }
                 };
 
                 router = router.route(
@@ -154,6 +188,11 @@ async fn render_route(
     path: String,
     req: Request,
 ) -> Response {
+    let req = match run_middlewares(&entries, &path, req).await {
+        Ok(req) => req,
+        Err(response) => return response,
+    };
+
     let layouts = collect_layouts_for_path(&entries, &path);
     let (before, after) = layout_shell(&layouts);
 
@@ -188,6 +227,37 @@ async fn render_route(
     }
 }
 
+async fn handle_method_route(
+    entries: Arc<Vec<RouteEntry>>,
+    idx: usize,
+    method_idx: usize,
+    path: String,
+    req: Request,
+) -> Response {
+    let req = match run_middlewares(&entries, &path, req).await {
+        Ok(req) => req,
+        Err(response) => return response,
+    };
+
+    let route_fn = &entries[idx].methods[method_idx].1;
+    route_fn(req).await
+}
+
+async fn run_middlewares(
+    entries: &[RouteEntry],
+    path: &str,
+    mut req: Request,
+) -> Result<Request, Response> {
+    for middleware in collect_middlewares_for_path(entries, path) {
+        match middleware(req).await {
+            MiddlewareResult::Continue(next_req) => req = next_req,
+            MiddlewareResult::Response(response) => return Err(response),
+        }
+    }
+
+    Ok(req)
+}
+
 fn method_to_filter(method: &http::Method) -> axum::routing::MethodFilter {
     match *method {
         http::Method::GET => axum::routing::MethodFilter::GET,
@@ -210,6 +280,8 @@ mod tests {
     use axum::body::Body;
     use http::{Request, StatusCode};
     use http_body_util::BodyExt;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Mutex};
     use tower::ServiceExt;
 
     async fn body_to_string(body: Body) -> String {
@@ -247,6 +319,7 @@ mod tests {
             page: Some(dyn_page("home")),
             layout: None,
             loading: None,
+            middleware: None,
             methods: vec![],
         });
 
@@ -283,6 +356,7 @@ mod tests {
             page: Some(dyn_page("home")),
             layout: None,
             loading: None,
+            middleware: None,
             methods: vec![],
         });
 
@@ -307,6 +381,7 @@ mod tests {
             page: Some(dyn_page("<h1>Home</h1>")),
             layout: None,
             loading: None,
+            middleware: None,
             methods: vec![],
         });
 
@@ -328,6 +403,7 @@ mod tests {
             page: Some(dyn_page("<h1>Home</h1>")),
             layout: Some(dyn_layout("root")),
             loading: None,
+            middleware: None,
             methods: vec![],
         });
 
@@ -351,6 +427,7 @@ mod tests {
             page: None,
             layout: Some(dyn_layout("root")),
             loading: None,
+            middleware: None,
             methods: vec![],
         });
         registry.add(RouteEntry {
@@ -358,6 +435,7 @@ mod tests {
             page: Some(dyn_page("<h1>Dash</h1>")),
             layout: Some(dyn_layout("dash")),
             loading: None,
+            middleware: None,
             methods: vec![],
         });
 
@@ -386,6 +464,7 @@ mod tests {
             page: None,
             layout: Some(dyn_layout("root")),
             loading: None,
+            middleware: None,
             methods: vec![],
         });
         registry.add(RouteEntry {
@@ -393,6 +472,7 @@ mod tests {
             page: None,
             layout: Some(dyn_layout("dash")),
             loading: None,
+            middleware: None,
             methods: vec![],
         });
         registry.add(RouteEntry {
@@ -400,6 +480,7 @@ mod tests {
             page: Some(dyn_page("settings-page")),
             layout: Some(dyn_layout("settings")),
             loading: None,
+            middleware: None,
             methods: vec![],
         });
 
@@ -428,6 +509,7 @@ mod tests {
             page: Some(dyn_page("<h1>User Profile</h1>")),
             layout: None,
             loading: None,
+            middleware: None,
             methods: vec![],
         });
 
@@ -443,7 +525,10 @@ mod tests {
             .unwrap();
 
         assert_eq!(resp.status(), StatusCode::OK);
-        assert_eq!(body_to_string(resp.into_body()).await, "<h1>User Profile</h1>");
+        assert_eq!(
+            body_to_string(resp.into_body()).await,
+            "<h1>User Profile</h1>"
+        );
     }
 
     #[tokio::test]
@@ -454,6 +539,7 @@ mod tests {
             page: Some(dyn_page("home")),
             layout: None,
             loading: None,
+            middleware: None,
             methods: vec![],
         });
         registry.add(RouteEntry {
@@ -461,6 +547,7 @@ mod tests {
             page: Some(dyn_page("about")),
             layout: None,
             loading: None,
+            middleware: None,
             methods: vec![],
         });
 
@@ -474,7 +561,12 @@ mod tests {
         assert_eq!(body_to_string(resp1.into_body()).await, "home");
 
         let resp2 = app
-            .oneshot(Request::builder().uri("/about").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/about")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
         assert_eq!(body_to_string(resp2.into_body()).await, "about");
@@ -490,12 +582,18 @@ mod tests {
             page: Some(static_page("<h1>About</h1>")),
             layout: None,
             loading: None,
+            middleware: None,
             methods: vec![],
         });
 
         let app = build_router(registry);
         let resp = app
-            .oneshot(Request::builder().uri("/about").body(Body::empty()).unwrap())
+            .oneshot(
+                Request::builder()
+                    .uri("/about")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
             .await
             .unwrap();
 
@@ -508,10 +606,9 @@ mod tests {
         registry.add(RouteEntry {
             path: "/".to_string(),
             page: Some(static_page("<h1>Home</h1>")),
-            layout: Some(static_layout(
-                "<html><body>{{children}}</body></html>",
-            )),
+            layout: Some(static_layout("<html><body>{{children}}</body></html>")),
             loading: None,
+            middleware: None,
             methods: vec![],
         });
 
@@ -549,6 +646,7 @@ mod tests {
             page: Some(dyn_page("<h1>Hi</h1>")),
             layout: Some(static_layout("<main>{{children}}</main>")),
             loading: None,
+            middleware: None,
             methods: vec![],
         });
 
@@ -572,6 +670,7 @@ mod tests {
             page: Some(static_page("<h1>Hi</h1>")),
             layout: Some(dyn_layout("root")),
             loading: None,
+            middleware: None,
             methods: vec![],
         });
 
@@ -595,6 +694,7 @@ mod tests {
             page: None,
             layout: Some(static_layout("<html>{{children}}</html>")),
             loading: None,
+            middleware: None,
             methods: vec![],
         });
         registry.add(RouteEntry {
@@ -602,6 +702,7 @@ mod tests {
             page: Some(dyn_page("page")),
             layout: Some(dyn_layout("dash")),
             loading: None,
+            middleware: None,
             methods: vec![],
         });
 
@@ -632,6 +733,7 @@ mod tests {
             page: Some(slow_dyn_page("<h1>Dashboard</h1>", 30)),
             layout: Some(static_layout("<html>{{children}}</html>")),
             loading: Some(static_loading("<p>Loading...</p>")),
+            middleware: None,
             methods: vec![],
         });
 
@@ -675,6 +777,7 @@ mod tests {
             page: Some(slow_dyn_page("<h1>D</h1>", 30)),
             layout: None,
             loading: Some(static_loading("L")),
+            middleware: None,
             methods: vec![],
         });
 
@@ -694,7 +797,11 @@ mod tests {
         while let Some(Ok(_)) = http_body_util::BodyExt::frame(&mut body).await {
             frames += 1;
         }
-        assert!(frames > 1, "expected streamed body, got {} frame(s)", frames);
+        assert!(
+            frames > 1,
+            "expected streamed body, got {} frame(s)",
+            frames
+        );
     }
 
     #[tokio::test]
@@ -714,6 +821,7 @@ mod tests {
             page: Some(slow_dyn_page("PAGE_CONTENT", page_sleep_ms)),
             layout: None,
             loading: Some(static_loading("LOADING_SHELL")),
+            middleware: None,
             methods: vec![],
         });
 
@@ -785,6 +893,7 @@ mod tests {
             page: None,
             layout: Some(dyn_layout("root")),
             loading: None,
+            middleware: None,
             methods: vec![],
         });
         registry.add(RouteEntry {
@@ -792,6 +901,7 @@ mod tests {
             page: Some(slow_dyn_page("<h1>D</h1>", 10)),
             layout: Some(dyn_layout("dash")),
             loading: Some(static_loading("loading-shell")),
+            middleware: None,
             methods: vec![],
         });
 
@@ -816,6 +926,209 @@ mod tests {
         assert!(body.ends_with("</div></div>"));
     }
 
+    // -- Middleware -----------------------------------------------------------
+
+    #[tokio::test]
+    async fn test_middleware_redirect_prevents_loading_stream() {
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/reviews".to_string(),
+            page: Some(slow_dyn_page("PAGE_CONTENT", 30)),
+            layout: None,
+            loading: Some(static_loading("LOADING_SHELL")),
+            middleware: Some(Box::new(|_req| {
+                Box::pin(async {
+                    MiddlewareResult::response(axum::response::Redirect::to("/auth/login"))
+                })
+            })),
+            methods: vec![],
+        });
+
+        let app = build_router(registry);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/reviews")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::SEE_OTHER);
+        assert_eq!(
+            resp.headers().get(http::header::LOCATION).unwrap(),
+            "/auth/login",
+        );
+        let body = body_to_string(resp.into_body()).await;
+        assert!(!body.contains("LOADING_SHELL"));
+        assert!(!body.contains("PAGE_CONTENT"));
+    }
+
+    #[tokio::test]
+    async fn test_middleware_continue_preserves_loading_stream() {
+        use std::time::{Duration, Instant};
+
+        let page_sleep_ms = 200;
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/reviews".to_string(),
+            page: Some(slow_dyn_page("PAGE_CONTENT", page_sleep_ms)),
+            layout: None,
+            loading: Some(static_loading("LOADING_SHELL")),
+            middleware: Some(Box::new(|req| {
+                Box::pin(async { MiddlewareResult::next(req) })
+            })),
+            methods: vec![],
+        });
+
+        let app = build_router(registry);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/reviews")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        let start = Instant::now();
+        let mut body = resp.into_body();
+        let mut frames: Vec<(Duration, String)> = Vec::new();
+        while let Some(Ok(frame)) = http_body_util::BodyExt::frame(&mut body).await {
+            if let Ok(data) = frame.into_data() {
+                frames.push((start.elapsed(), String::from_utf8(data.to_vec()).unwrap()));
+            }
+        }
+
+        let loading_arrival = frames
+            .iter()
+            .find(|(_, text)| text.contains("LOADING_SHELL"))
+            .map(|(t, _)| *t)
+            .expect("no frame contained LOADING_SHELL");
+        assert!(loading_arrival < Duration::from_millis(page_sleep_ms / 2));
+
+        let page_arrival = frames
+            .iter()
+            .find(|(_, text)| text.contains("PAGE_CONTENT"))
+            .map(|(t, _)| *t)
+            .expect("no frame contained PAGE_CONTENT");
+        assert!(page_arrival >= Duration::from_millis(page_sleep_ms));
+    }
+
+    #[tokio::test]
+    async fn test_nested_middlewares_run_root_to_leaf() {
+        let order = Arc::new(Mutex::new(Vec::new()));
+
+        let root_order = Arc::clone(&order);
+        let dashboard_order = Arc::clone(&order);
+        let settings_order = Arc::clone(&order);
+
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/".to_string(),
+            page: None,
+            layout: None,
+            loading: None,
+            middleware: Some(Box::new(move |req| {
+                let order = Arc::clone(&root_order);
+                Box::pin(async move {
+                    order.lock().unwrap().push("root");
+                    MiddlewareResult::next(req)
+                })
+            })),
+            methods: vec![],
+        });
+        registry.add(RouteEntry {
+            path: "/dashboard".to_string(),
+            page: None,
+            layout: None,
+            loading: None,
+            middleware: Some(Box::new(move |req| {
+                let order = Arc::clone(&dashboard_order);
+                Box::pin(async move {
+                    order.lock().unwrap().push("dashboard");
+                    MiddlewareResult::next(req)
+                })
+            })),
+            methods: vec![],
+        });
+        registry.add(RouteEntry {
+            path: "/dashboard/settings".to_string(),
+            page: Some(dyn_page("settings")),
+            layout: None,
+            loading: None,
+            middleware: Some(Box::new(move |req| {
+                let order = Arc::clone(&settings_order);
+                Box::pin(async move {
+                    order.lock().unwrap().push("settings");
+                    MiddlewareResult::next(req)
+                })
+            })),
+            methods: vec![],
+        });
+
+        let app = build_router(registry);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard/settings")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(body_to_string(resp.into_body()).await, "settings");
+        assert_eq!(
+            *order.lock().unwrap(),
+            vec!["root", "dashboard", "settings"],
+        );
+    }
+
+    #[tokio::test]
+    async fn test_middleware_can_modify_request_for_page() {
+        #[derive(Clone)]
+        struct Tenant(&'static str);
+
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/reviews".to_string(),
+            page: Some(Box::new(|req| {
+                Box::pin(async move {
+                    req.extensions()
+                        .get::<Tenant>()
+                        .map(|tenant| tenant.0)
+                        .unwrap_or("missing")
+                        .to_string()
+                })
+            })),
+            layout: None,
+            loading: None,
+            middleware: Some(Box::new(|mut req| {
+                Box::pin(async move {
+                    req.extensions_mut().insert(Tenant("acme"));
+                    MiddlewareResult::next(req)
+                })
+            })),
+            methods: vec![],
+        });
+
+        let app = build_router(registry);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/reviews")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(body_to_string(resp.into_body()).await, "acme");
+    }
+
     // -- API routes -----------------------------------------------------------
 
     #[tokio::test]
@@ -826,6 +1139,7 @@ mod tests {
             page: None,
             layout: None,
             loading: None,
+            middleware: None,
             methods: vec![(
                 http::Method::POST,
                 Box::new(|_req| {
@@ -858,6 +1172,7 @@ mod tests {
             page: Some(dyn_page("<form>contact form</form>")),
             layout: None,
             loading: None,
+            middleware: None,
             methods: vec![(
                 http::Method::POST,
                 Box::new(|_req| {
@@ -893,6 +1208,51 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(body_to_string(post_resp.into_body()).await, "form submitted");
+        assert_eq!(
+            body_to_string(post_resp.into_body()).await,
+            "form submitted"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_middleware_applies_to_route_methods() {
+        let handler_called = Arc::new(AtomicBool::new(false));
+        let handler_called_for_route = Arc::clone(&handler_called);
+
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/api/reviews".to_string(),
+            page: None,
+            layout: None,
+            loading: None,
+            middleware: Some(Box::new(|_req| {
+                Box::pin(async { MiddlewareResult::response(StatusCode::UNAUTHORIZED) })
+            })),
+            methods: vec![(
+                http::Method::POST,
+                Box::new(move |_req| {
+                    let handler_called = Arc::clone(&handler_called_for_route);
+                    Box::pin(async move {
+                        handler_called.store(true, Ordering::SeqCst);
+                        (StatusCode::CREATED, "created").into_response()
+                    })
+                }),
+            )],
+        });
+
+        let app = build_router(registry);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/reviews")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        assert!(!handler_called.load(Ordering::SeqCst));
     }
 }

@@ -31,6 +31,8 @@ The browser parses incrementally as bytes arrive. The user sees the loading shel
 
 **Routes without a `loading` slot** skip the streaming machinery entirely and return one synchronous response.
 
+**Middleware runs before either path.** Any matching `middleware.rs` handlers run root-to-leaf before the router renders layouts, loading, pages, or API handlers. If middleware returns `MiddlewareResult::Response`, the framework returns that response immediately and does not stream the loading shell, so redirects and auth failures still have real HTTP status codes and headers.
+
 ## Internals
 
 ### Layout shell split
@@ -71,6 +73,10 @@ Body::from_stream(stream)
 ```
 
 `async-stream` makes the `yield` between awaits incremental — the body's underlying channel pushes each chunk to the HTTP layer as it's produced. axum's `Body::from_stream` flushes each chunk as a separate frame.
+
+### Middleware before loading
+
+`router.rs::run_middlewares` executes before `layout_shell()` and before the stream body is created. That ordering is intentional: once the loading shell is yielded, the response status and headers are committed. Middleware is the place for fast request guards such as auth, canonical-host redirects, and tenant checks. Middleware may return `MiddlewareResult::next(req)` to continue or `MiddlewareResult::response(...)` to short-circuit.
 
 ## Local vs Vercel
 

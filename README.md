@@ -1,6 +1,6 @@
 # nextrs
 
-A Next.js-style routing framework for Rust. File-based routes, `page` / `layout` / `loading` conventions, HTTP-level streaming for the loading shell — no client-side framework, no htmx, no React.
+A Next.js-style routing framework for Rust. File-based routes, `page` / `layout` / `loading` / `middleware` conventions, HTTP-level streaming for the loading shell — no client-side framework, no htmx, no React.
 
 Built on Axum and Askama. Deploys to Vercel as a single Rust function with the loading→page swap streamed over chunked transfer encoding.
 
@@ -8,6 +8,7 @@ Built on Axum and Askama. Deploys to Vercel as a single Rust function with the l
 
 ```
 site/app/
+├── middleware.rs                ← global request guard, optional
 ├── page.{rs,html}              ← /
 ├── layout.{rs,html}            ← root layout, applied to every route
 ├── simple/
@@ -28,6 +29,7 @@ Each folder is a route segment. Each file is a convention slot:
 | `page.{rs,html}` | The main content | `.rs` (async handler) preferred; `.html` (static) fallback |
 | `layout.{rs,html}` | Wraps the segment's page and any nested segments | same |
 | `loading.{rs,html}` | Triggers streaming — shown while the page resolves | same |
+| `middleware.rs` | Runs before page rendering, loading streaming, and API handlers | `.rs` only |
 | `route.rs` | API method handlers (POST/PUT/etc.) | `.rs` only |
 
 `.rs` files are Rust handlers (typically askama templates with logic). `.html` files are static fallbacks. When both exist for a slot, `.rs` wins.
@@ -55,6 +57,29 @@ pub async fn post(_req: Request<Body>) -> impl IntoResponse {
 ```
 
 Supported method function names are `get`, `post`, `put`, `patch`, `delete`, `head`, and `options`. `page.rs` owns `GET` for UI routes, so `page.rs` and `route.rs` may coexist only when `route.rs` does not export `get`.
+
+## Middleware
+
+Add `middleware.rs` to any route segment to guard that segment and its nested routes. Middleware composes root-to-leaf and runs before layouts, loading shells, pages, and `route.rs` handlers, so redirects and auth failures can return real HTTP responses before streaming commits headers.
+
+```rust
+use axum::response::{IntoResponse, Redirect};
+use nextrs::conventions::MiddlewareResult;
+
+pub async fn handle(
+    req: http::Request<axum::body::Body>,
+) -> MiddlewareResult {
+    let has_session = req.headers().get(http::header::COOKIE).is_some();
+
+    if !has_session {
+        return MiddlewareResult::response(Redirect::to("/auth/login").into_response());
+    }
+
+    MiddlewareResult::next(req)
+}
+```
+
+Middleware may freely inspect request metadata. If it consumes the request body, it must replace the body before returning `MiddlewareResult::next(req)`.
 
 ## How streaming works
 
@@ -122,7 +147,7 @@ askama.toml        points askama at site/app/
 public/            generated mirror of site/public/ (gitignored — CDN-served on Vercel)
 nextrs/            framework crate (the lib)
   src/lib.rs
-  src/conventions.rs    PageFn / LayoutFn / LoadingFn types + static helpers
+  src/conventions.rs    PageFn / LayoutFn / LoadingFn / MiddlewareFn types + static helpers
   src/discovery.rs      scans app/ → DiscoveredRoute list
   src/router.rs         build_router(_with_public)(registry) → axum::Router; streaming
   src/vercel.rs         StreamingVercelLayer  (feature-gated `vercel`)
@@ -147,7 +172,7 @@ User-facing files for adding a route: just files under `app/`. No mod declaratio
 cargo test --workspace --all-features
 ```
 
-44 tests covering discovery (`.rs` + `.html` pairing, html-only, mixed nested, dynamic segments, API routes), conventions (static helpers), router behavior (composition, layout-shell split, streaming chunk ordering, multi-frame body, **timing-based proof that the loading shell arrives before the page handler resolves**, nested layouts under streaming, API methods, page+route coexistence), and codegen (skeleton structure, `.rs`-precedence, absolute path emission, route.rs methods).
+51 tests covering discovery (`.rs` + `.html` pairing, html-only, mixed nested, dynamic segments, API routes, middleware routes), conventions (static helpers and middleware helpers), router behavior (composition, layout-shell split, streaming chunk ordering, multi-frame body, **timing-based proof that the loading shell arrives before the page handler resolves**, middleware-before-loading redirects, nested middleware order, middleware request mutation, nested layouts under streaming, API methods, page+route coexistence), and codegen (skeleton structure, `.rs`-precedence, absolute path emission, middleware, route.rs methods).
 
 ## Status
 
@@ -155,6 +180,7 @@ cargo test --workspace --all-features
 - HTML streaming through Fluid compute ✓
 - Static assets via CDN ✓
 - Nested layouts ✓
+- Middleware before loading/page/API handlers ✓
 - `.rs` and `.html` for every slot ✓
 - Build-time codegen (no hand-wired `#[path]` mods or `RouteEntry` constructors) ✓
 

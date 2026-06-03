@@ -2,9 +2,9 @@
 
 ## Purpose
 
-A **Next.js-like file-based routing framework for Rust**: folder-based routes, `page` / `layout` / `loading` conventions, and HTTP-level streaming that lets a route render its loading shell immediately and stream the real page when it's ready — without htmx, React, or any client-side framework. Deploys to Vercel as a single Rust serverless function with streaming preserved through Fluid compute.
+A **Next.js-like file-based routing framework for Rust**: folder-based routes, `page` / `layout` / `loading` / `middleware` conventions, and HTTP-level streaming that lets a route render its loading shell immediately and stream the real page when it's ready — without htmx, React, or any client-side framework. Deploys to Vercel as a single Rust serverless function with streaming preserved through Fluid compute.
 
-The framework is built on Axum and Askama. Each segment under an `app/` directory is a route; convention files (`page.{rs,html}`, `layout.{rs,html}`, `loading.{rs,html}`, `route.rs`) compose the response. `.rs` files hold logic; `.html` files are static fallbacks. When a loading slot exists, the framework streams the layout's "before children" half, the loading shell in a slot div, then (after awaiting the page) a `<template>` plus a ~200-byte inline `<script>` that swaps the slot, then the layout's "after children" half.
+The framework is built on Axum and Askama. Each segment under an `app/` directory is a route; convention files (`page.{rs,html}`, `layout.{rs,html}`, `loading.{rs,html}`, `middleware.rs`, `route.rs`) compose the response. `.rs` files hold logic; `.html` files are static fallbacks. Middleware runs before page rendering, loading-shell streaming, and `route.rs` handlers. When a loading slot exists, the framework streams the layout's "before children" half, the loading shell in a slot div, then (after awaiting the page) a `<template>` plus a ~200-byte inline `<script>` that swaps the slot, then the layout's "after children" half.
 
 ## Layout
 
@@ -28,11 +28,14 @@ Each folder under `app/` is a route segment. The framework looks for these files
 | `page.{rs,html}` | The main content for the route | `.rs` (async handler) preferred; `.html` (static) fallback |
 | `layout.{rs,html}` | Wraps this segment's page and any nested segments | same precedence |
 | `loading.{rs,html}` | Shown while the page resolves (triggers streaming) | same precedence |
+| `middleware.rs` | Request guard that may continue or return a response before rendering/streaming | `.rs` only |
 | `route.rs` | API method handlers (POST/PUT/etc.) — `.rs` only |
 
 Layout templates rendered through Askama must use `{{ children|safe }}` (not `{{ children }}`) so the framework's internal content marker passes through unescaped. Static layouts loaded via `nextrs::conventions::static_layout` accept either `{{children}}` or `{{ children }}` and do literal substitution (no askama escaping).
 
 Dynamic URL segments use `[param]` directory naming (e.g. `app/users/[id]/page.rs` → `/users/{id}` in Axum's path syntax).
+
+Middleware files export `pub async fn handle(req) -> nextrs::conventions::MiddlewareResult`. Root and nested middleware compose root-to-leaf; returning `MiddlewareResult::Response` short-circuits without rendering layouts, loading, pages, or API handlers, while `MiddlewareResult::Continue(req)` passes the request onward.
 
 ## Static assets
 
@@ -48,9 +51,9 @@ Dynamic URL segments use `[param]` directory naming (e.g. `app/users/[id]/page.r
 
 | Area | File |
 |---|---|
-| Slot/file discovery | `nextrs/src/discovery.rs` — scans `app/` and produces `DiscoveredRoute { page, layout, loading, route }` where each slot tracks both `.rs` and `.html` paths |
-| Route handler types | `nextrs/src/conventions.rs` — `PageFn`, `LayoutFn`, `LoadingFn`, `RouteFn`; static helpers `static_page`, `static_layout`, `static_loading` |
-| Routing + streaming | `nextrs/src/router.rs` — `build_router(registry) -> axum::Router`. Composes layouts around a content marker, splits on the marker, streams loading-then-page when a loading slot is present |
+| Slot/file discovery | `nextrs/src/discovery.rs` — scans `app/` and produces `DiscoveredRoute { page, layout, loading, middleware, route }` where page/layout/loading track both `.rs` and `.html` paths |
+| Route handler types | `nextrs/src/conventions.rs` — `PageFn`, `LayoutFn`, `LoadingFn`, `MiddlewareFn`, `RouteFn`; static helpers `static_page`, `static_layout`, `static_loading` |
+| Routing + streaming | `nextrs/src/router.rs` — `build_router(registry) -> axum::Router`. Runs middleware, composes layouts around a content marker, splits on the marker, streams loading-then-page when a loading slot is present |
 | Vercel adapter | `nextrs/src/vercel.rs` — `StreamingVercelLayer` (feature-gated by `vercel`). Drop-in replacement for `vercel_runtime::axum::VercelLayer` that doesn't buffer text/html |
 | Progressive demo | `site/app/{simple, with-loading, with-layout}/` — three routes that progressively add `loading.{rs,html}` and `layout.{rs,html}`. The home page (`site/app/page.html`) is an overview with links and a per-route file listing |
 | Codegen | `nextrs/src/build.rs` (feature `build`) — `emit_registry(app_dir, _, out_name)` walks `discover_routes` output and emits Rust source: `#[path]` mods for `.rs` slots, `static_*(include_str!(...))` for `.html` slots, and a `generated_registry()` function. Both paths emitted as absolute (necessary because `#[path]` inside an `include!`-d file resolves relative to the included file's location, not the includer). |
@@ -62,13 +65,13 @@ Dynamic URL segments use `[param]` directory naming (e.g. `app/users/[id]/page.r
 
 ## Tests
 
-`cargo test --workspace --all-features` (39 tests):
+`cargo test --workspace --all-features` (51 tests):
 
-- Discovery (8): `.rs` + `.html` pairing, html-only segments, mixed nested, dynamic segments, API routes, empty-dir handling
-- Conventions (5): static helpers (`static_page`, `static_layout` with both `{{children}}` and `{{ children }}` forms, `static_loading`)
-- Router (22): synchronous render, layout composition (1 / 3 levels deep), mixed static/dynamic layouts, layout-shell split-on-marker, streaming chunk ordering, multi-frame body, **timing-based proof that the loading shell arrives before the page handler resolves**, nested layouts under streaming, API methods, page+route on same path, `build_router_with_public` serves public-dir files on route miss and no-ops when the dir is absent
+- Discovery: `.rs` + `.html` pairing, html-only segments, mixed nested, dynamic segments, API routes, middleware-only routes, empty-dir handling
+- Conventions: static helpers (`static_page`, `static_layout` with both `{{children}}` and `{{ children }}` forms, `static_loading`), middleware result helpers
+- Router: synchronous render, layout composition (1 / 3 levels deep), mixed static/dynamic layouts, layout-shell split-on-marker, streaming chunk ordering, multi-frame body, **timing-based proof that the loading shell arrives before the page handler resolves**, middleware redirects before loading, middleware continue preserving streaming, nested middleware ordering, request mutation through middleware, nested layouts under streaming, API methods, page+route on same path, `build_router_with_public` serves public-dir files on route miss and no-ops when the dir is absent
 - Vercel (1): type-level smoke test that `StreamingVercelLayer` composes with axum routers
-- Codegen (3): generated skeleton mentions every route + slot helper, `.rs` wins over `.html` when both are present, all emitted paths are absolute
+- Codegen: generated skeleton mentions every route + slot helper, middleware wiring, `.rs` wins over `.html` when both are present, route.rs methods, all emitted paths are absolute
 
 ## Non-goals
 

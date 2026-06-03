@@ -25,6 +25,8 @@ pub struct DiscoveredRoute {
     pub page: Slot,
     pub layout: Slot,
     pub loading: Slot,
+    /// `middleware.rs` request guard — no `.html` variant.
+    pub middleware: Option<PathBuf>,
     /// `route.rs` (API handler) — no `.html` variant.
     pub route: Option<PathBuf>,
 }
@@ -71,11 +73,7 @@ pub fn discover_routes(app_dir: &Path) -> Vec<DiscoveredRoute> {
     routes.into_values().collect()
 }
 
-fn scan_dir(
-    app_root: &Path,
-    current: &Path,
-    routes: &mut BTreeMap<String, DiscoveredRoute>,
-) {
+fn scan_dir(app_root: &Path, current: &Path, routes: &mut BTreeMap<String, DiscoveredRoute>) {
     let rel = current.strip_prefix(app_root).unwrap_or(Path::new(""));
     let url_path = rel_path_to_url(rel);
 
@@ -91,9 +89,15 @@ fn scan_dir(
         rs: optional_path(current, "loading.rs"),
         html: optional_path(current, "loading.html"),
     };
+    let middleware = optional_path(current, "middleware.rs");
     let route = optional_path(current, "route.rs");
 
-    if page.exists() || layout.exists() || loading.exists() || route.is_some() {
+    if page.exists()
+        || layout.exists()
+        || loading.exists()
+        || middleware.is_some()
+        || route.is_some()
+    {
         routes.insert(
             url_path.clone(),
             DiscoveredRoute {
@@ -102,6 +106,7 @@ fn scan_dir(
                 page,
                 layout,
                 loading,
+                middleware,
                 route,
             },
         );
@@ -151,7 +156,10 @@ mod tests {
         let tmp = setup_app_dir(&[
             ("", &["page.rs", "layout.rs"]),
             ("dashboard", &["page.rs", "layout.rs", "loading.rs"]),
-            ("dashboard/settings", &["page.rs", "route.rs"]),
+            (
+                "dashboard/settings",
+                &["page.rs", "middleware.rs", "route.rs"],
+            ),
         ]);
 
         let routes = discover_routes(tmp.path());
@@ -168,15 +176,13 @@ mod tests {
 
         assert_eq!(routes[2].url_path, "/dashboard/settings");
         assert!(routes[2].page.exists());
+        assert!(routes[2].middleware.is_some());
         assert!(routes[2].route.is_some());
     }
 
     #[test]
     fn test_discover_dynamic_segments() {
-        let tmp = setup_app_dir(&[
-            ("users", &["page.rs"]),
-            ("users/[id]", &["page.rs"]),
-        ]);
+        let tmp = setup_app_dir(&[("users", &["page.rs"]), ("users/[id]", &["page.rs"])]);
 
         let routes = discover_routes(tmp.path());
         assert_eq!(routes.len(), 2);
@@ -193,6 +199,18 @@ mod tests {
         assert_eq!(routes[0].url_path, "/api/users");
         assert!(!routes[0].page.exists());
         assert!(routes[0].route.is_some());
+    }
+
+    #[test]
+    fn test_discover_middleware_only_segment() {
+        let tmp = setup_app_dir(&[("", &["middleware.rs"]), ("reviews", &["middleware.rs"])]);
+
+        let routes = discover_routes(tmp.path());
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[0].url_path, "/");
+        assert!(routes[0].middleware.is_some());
+        assert_eq!(routes[1].url_path, "/reviews");
+        assert!(routes[1].middleware.is_some());
     }
 
     #[test]
@@ -227,10 +245,7 @@ mod tests {
 
     #[test]
     fn test_discover_html_only_segment() {
-        let tmp = setup_app_dir(&[(
-            "dashboard",
-            &["page.html", "layout.html", "loading.html"],
-        )]);
+        let tmp = setup_app_dir(&[("dashboard", &["page.html", "layout.html", "loading.html"])]);
 
         let routes = discover_routes(tmp.path());
         assert_eq!(routes.len(), 1);

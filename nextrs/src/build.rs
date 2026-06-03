@@ -18,7 +18,8 @@
 //! `RouteRegistry` populated with every page/layout/loading slot the build.rs
 //! discovered under `app/`. `.rs` slots are wired via `#[path]` mod
 //! declarations; `.html` slots use `include_str!` + the framework's static
-//! helpers. `.rs` wins when both are present.
+//! helpers. `middleware.rs` and `route.rs` are Rust-only conventions. `.rs`
+//! wins when both are present.
 //!
 //! Lives in the framework crate (gated by the `build` feature) rather than a
 //! separate `nextrs-build` workspace member because the codegen needs
@@ -196,6 +197,9 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
         if let Some(p) = &route.loading.rs {
             emit_path_mod(&mut out, &mod_name(i, "loading"), p);
         }
+        if let Some(p) = &route.middleware {
+            emit_path_mod(&mut out, &mod_name(i, "middleware"), p);
+        }
         if let Some(p) = &route.route {
             emit_path_mod(&mut out, &mod_name(i, "route"), p);
         }
@@ -212,6 +216,7 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
         emit_slot(&mut out, "page", i, &route.page);
         emit_slot(&mut out, "layout", i, &route.layout);
         emit_slot(&mut out, "loading", i, &route.loading);
+        emit_middleware(&mut out, i, route);
 
         emit_methods(&mut out, i, route);
         out.push_str("    });\n");
@@ -287,6 +292,18 @@ fn emit_methods(out: &mut String, idx: usize, route: &DiscoveredRoute) {
         );
     }
     out.push_str("        ],\n");
+}
+
+fn emit_middleware(out: &mut String, idx: usize, route: &DiscoveredRoute) {
+    if route.middleware.is_some() {
+        let _ = writeln!(
+            out,
+            "        middleware: Some(Box::new(|req| Box::pin({}::handle(req)))),",
+            mod_name(idx, "middleware")
+        );
+    } else {
+        out.push_str("        middleware: None,\n");
+    }
 }
 
 fn mod_name(idx: usize, slot: &str) -> String {
@@ -376,6 +393,8 @@ mod tests {
                 let body = if file.ends_with(".rs") {
                     if *file == "route.rs" {
                         "use axum::body::Body;\nuse axum::response::IntoResponse;\nuse http::{Request, StatusCode};\npub async fn post(_req: Request<Body>) -> impl IntoResponse { StatusCode::OK }\n"
+                    } else if *file == "middleware.rs" {
+                        "use axum::body::Body;\nuse http::Request;\npub async fn handle(req: Request<Body>) -> nextrs::conventions::MiddlewareResult { nextrs::conventions::MiddlewareResult::next(req) }\n"
                     } else {
                         "pub fn render() -> String { String::new() }"
                     }
@@ -406,7 +425,7 @@ mod tests {
     #[test]
     fn generates_expected_skeleton() {
         let tmp = setup_app(&[
-            ("", &["layout.rs", "page.rs"]),
+            ("", &["layout.rs", "middleware.rs", "page.rs"]),
             ("simple", &["page.rs"]),
             ("with-loading", &["page.rs", "loading.html"]),
             ("static-only", &["page.html", "layout.html"]),
@@ -424,6 +443,7 @@ mod tests {
             code.contains("#[path = ")
                 && code.contains("mod __nextrs_route_0_page;")
                 && code.contains("mod __nextrs_route_0_layout;")
+                && code.contains("mod __nextrs_route_0_middleware;")
                 && code.contains("mod __nextrs_route_1_page;")
                 && code.contains("mod __nextrs_route_3_page;"),
             "expected mod declarations missing:\n{}",
@@ -444,6 +464,17 @@ mod tests {
         assert!(
             code.contains("static_loading(include_str!"),
             "expected static_loading macro for with-loading.html:\n{}",
+            code
+        );
+        assert!(
+            code.contains("middleware: Some(Box::new(|req| Box::pin(__nextrs_route_0_middleware::handle(req))))"),
+            "expected middleware.rs handler wiring:\n{}",
+            code
+        );
+        assert_eq!(
+            code.matches("middleware: None,").count(),
+            3,
+            "expected middleware: None for routes without middleware:\n{}",
             code
         );
 

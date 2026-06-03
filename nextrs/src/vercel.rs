@@ -134,7 +134,7 @@ mod tests {
     /// fails to compile.
     #[test]
     fn layer_composes_with_axum_router() {
-        let _: StreamingVercelService<Router> = StreamingVercelLayer::new()
-            .layer(Router::new().route("/", get(|| async { "ok" })));
+        let _: StreamingVercelService<Router> =
+            StreamingVercelLayer::new().layer(Router::new().route("/", get(|| async { "ok" })));
     }
 }
