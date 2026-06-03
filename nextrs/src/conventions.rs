@@ -1,3 +1,4 @@
+use axum::body::Body;
 use axum::response::{IntoResponse, Response};
 use std::future::Future;
 use std::pin::Pin;
@@ -21,6 +22,33 @@ pub type LayoutFn = Box<dyn Fn(&str) -> HtmlString + Send + Sync>;
 /// what the user sees while the page is being computed.
 pub type LoadingFn = Box<dyn Fn() -> HtmlString + Send + Sync>;
 
+/// Result from `middleware.rs::handle`.
+///
+/// Middleware runs before page rendering, loading-shell streaming, and
+/// `route.rs` method handlers. It can either continue with the request, or
+/// stop routing and return a response while status/headers are still mutable.
+pub enum MiddlewareResult {
+    Continue(http::Request<Body>),
+    Response(Response),
+}
+
+impl MiddlewareResult {
+    pub fn next(req: http::Request<Body>) -> Self {
+        Self::Continue(req)
+    }
+
+    pub fn response(response: impl IntoResponse) -> Self {
+        Self::Response(response.into_response())
+    }
+}
+
+/// Async request middleware from `middleware.rs`.
+pub type MiddlewareFn = Box<
+    dyn Fn(http::Request<Body>) -> Pin<Box<dyn Future<Output = MiddlewareResult> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// Async handler for API routes (route.rs)
 pub type RouteFn = Box<
     dyn Fn(http::Request<axum::body::Body>) -> Pin<Box<dyn Future<Output = Response> + Send>>
@@ -38,6 +66,8 @@ pub struct RouteEntry {
     pub layout: Option<LayoutFn>,
     /// Loading skeleton (from loading.rs or loading.html)
     pub loading: Option<LoadingFn>,
+    /// Request middleware (from middleware.rs)
+    pub middleware: Option<MiddlewareFn>,
     /// API route handlers by method (from route.rs)
     pub methods: Vec<(http::Method, RouteFn)>,
 }
@@ -147,6 +177,24 @@ mod tests {
     fn test_static_loading_returns_html_verbatim() {
         let l = static_loading("<div>Loading...</div>");
         assert_eq!(l(), "<div>Loading...</div>");
+    }
+
+    #[tokio::test]
+    async fn test_middleware_result_helpers() {
+        let req = http::Request::builder()
+            .body(axum::body::Body::empty())
+            .unwrap();
+        match MiddlewareResult::next(req) {
+            MiddlewareResult::Continue(_) => {}
+            MiddlewareResult::Response(_) => panic!("expected continue"),
+        }
+
+        match MiddlewareResult::response(axum::http::StatusCode::UNAUTHORIZED) {
+            MiddlewareResult::Continue(_) => panic!("expected response"),
+            MiddlewareResult::Response(resp) => {
+                assert_eq!(resp.status(), axum::http::StatusCode::UNAUTHORIZED);
+            }
+        }
     }
 
     #[tokio::test]
