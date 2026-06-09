@@ -632,6 +632,7 @@ dependencies = [
  "http",
  "http-body-util",
  "hyper",
+ "nextrs-macros",
  "serde",
  "serde_json",
  "tempfile",
@@ -659,6 +660,10 @@ dependencies = [
  "utoipa",
  "vercel_runtime",
 ]
+
+[[package]]
+name = "nextrs-macros"
+version = "0.1.0"
 
 [[package]]
 name = "nu-ansi-term"

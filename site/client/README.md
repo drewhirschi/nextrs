@@ -44,13 +44,15 @@ becomes a query hook, anything with a body becomes a mutation hook:
 
 ```tsx
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useGetPing, useSendPing } from "@site/client";
+import { useGetApiPing, useSendPing } from "@site/client";
 
 function Ping() {
   // GET /api/ping  → fully typed PingResponse
-  const { data } = useGetPing();
+  // (operation_id derived from the route → useGetApiPing)
+  const { data } = useGetApiPing();
 
   // POST /api/ping → typed PingRequest in, PingResponse out
+  // (operation_id overridden to "sendPing" → useSendPing)
   const send = useSendPing();
 
   return (

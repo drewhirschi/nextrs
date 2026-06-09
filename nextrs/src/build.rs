@@ -231,18 +231,18 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
 
 /// Emit a `generated_openapi()` function returning a single
 /// [`utoipa::openapi::OpenApi`] built from every `route.rs` method annotated
-/// with `#[utoipa::path(...)]`.
+/// with `#[utoipa::path(...)]` or `#[nextrs::api(...)]`.
 ///
-/// Annotation is opt-in: a handler without `#[utoipa::path]` still routes
+/// Annotation is opt-in: a handler without either attribute still routes
 /// normally, it just doesn't appear in the spec (and therefore not in the
 /// generated client). For an annotated handler, utoipa derives the request and
 /// response schemas from the types named in the attribute and collects them
 /// automatically — codegen only has to list the handler functions.
 ///
-/// The `path = "..."` in each annotation must match the file-convention URL
-/// (e.g. a handler in `app/api/ping/route.rs` annotates `path = "/api/ping"`,
-/// and `app/users/[id]/route.rs` annotates `path = "/users/{id}"`). The
-/// codegen does not rewrite it for you.
+/// With raw `#[utoipa::path]`, the `path = "..."` must match the file-convention
+/// URL (e.g. a handler in `app/api/ping/route.rs` uses `path = "/api/ping"`),
+/// and codegen verifies that (see below). `#[nextrs::api]` derives the path from
+/// the file, so there's nothing to write or to drift.
 fn emit_openapi(out: &mut String, routes: &[DiscoveredRoute]) {
     let mut handler_paths: Vec<String> = Vec::new();
     let mut errors: Vec<String> = Vec::new();
@@ -337,14 +337,22 @@ fn fn_decl_index(source: &str, fn_name: &str) -> Option<usize> {
     None
 }
 
-/// The slice of `source` spanning the `#[utoipa::path ...]` attribute that
-/// immediately precedes `fn_name`, if there is one. Returns `None` when the
-/// nearest preceding `#[utoipa::path` is separated from the function by another
-/// `fn` (i.e. it belongs to an earlier handler).
+/// Attribute markers that put a `route.rs` method into the OpenAPI document:
+/// `#[utoipa::path]` directly, or `#[nextrs::api]` (which expands to it with a
+/// derived `path`).
+const OPENAPI_ATTRS: &[&str] = &["#[utoipa::path", "#[nextrs::api"];
+
+/// The slice of `source` spanning the OpenAPI attribute (`#[utoipa::path]` or
+/// `#[nextrs::api]`) that immediately precedes `fn_name`, if there is one.
+/// Returns `None` when the nearest such attribute is separated from the
+/// function by another `fn` (i.e. it belongs to an earlier handler).
 fn annotation_region<'a>(source: &'a str, fn_name: &str) -> Option<&'a str> {
     let idx = fn_decl_index(source, fn_name)?;
     let before = &source[..idx];
-    let attr_pos = before.rfind("#[utoipa::path")?;
+    let attr_pos = OPENAPI_ATTRS
+        .iter()
+        .filter_map(|marker| before.rfind(marker))
+        .max()?;
     if before[attr_pos..].contains(" fn ") {
         return None;
     }
@@ -879,6 +887,30 @@ pub async fn get() -> axum::Json<Pong> { todo!() }
         assert!(
             code.contains("/api/ping") && code.contains("/wrong"),
             "compile_error should name both the declared and expected paths:\n{}",
+            code
+        );
+    }
+
+    #[test]
+    fn nextrs_api_handlers_are_collected_without_path_check() {
+        // `#[nextrs::api]` derives the path, so there's no literal to verify —
+        // the handler is still collected into the spec, with no compile_error.
+        let route_body = r#"
+#[nextrs::api(get, responses((status = 200, body = Pong)))]
+pub async fn get() -> axum::Json<Pong> { todo!() }
+"#;
+        let tmp = setup_app_with_file_bodies(&[("api/ping", &[("route.rs", route_body)])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        assert!(
+            code.contains("__nextrs_route_0_route::get,"),
+            "nextrs::api handler should be in the OpenAPI paths():\n{}",
+            code
+        );
+        assert!(
+            !code.contains("compile_error!"),
+            "derived-path handler has nothing to validate:\n{}",
             code
         );
     }
