@@ -17,3 +17,8 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 dotenvy = "0.15"
 http = "1"
+serde = { version = "1", features = ["derive"] }
+# `route.rs` handlers use `#[utoipa::path]` + `ToSchema`; the generated
+# `generated_openapi()` uses utoipa's `#[derive(OpenApi)]`, so utoipa must be a
+# direct dependency of every crate that compiles the generated registry.
+utoipa = "5"

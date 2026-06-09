@@ -1,4 +1,5 @@
 use axum::body::Body;
+use axum::handler::Handler;
 use axum::response::{IntoResponse, Response};
 use std::future::Future;
 use std::pin::Pin;
@@ -115,22 +116,37 @@ pub fn static_loading(html: &'static str) -> LoadingFn {
     Box::new(move || html.to_string())
 }
 
-/// Wrap an async `route.rs` method function as a [`RouteFn`].
+/// Wrap an exported `route.rs` method function as a [`RouteFn`].
 ///
-/// Codegen uses this for exported functions such as:
+/// Accepts any Axum [`Handler`] — that includes both the "raw" form that takes
+/// the whole request:
 ///
 /// ```ignore
 /// pub async fn post(req: Request<Body>) -> impl IntoResponse { ... }
 /// ```
-pub fn route_method<F, Fut, R>(f: F) -> RouteFn
+///
+/// and the typed form using Axum extractors with a concrete return type, which
+/// is what the OpenAPI codegen wants so the request/response shapes are
+/// recoverable:
+///
+/// ```ignore
+/// #[utoipa::path(post, path = "/api/ping", request_body = PingRequest,
+///                responses((status = 200, body = PingResponse)))]
+/// pub async fn post(Json(body): Json<PingRequest>) -> Json<PingResponse> { ... }
+/// ```
+///
+/// Handlers here are stateless, so the handler's state type is `()`. The
+/// concrete handler is converted to its boxed future at call time via
+/// [`Handler::call`]; the framework's router supplies the (possibly
+/// middleware-mutated) request.
+pub fn route_method<H, T>(handler: H) -> RouteFn
 where
-    F: Fn(http::Request<axum::body::Body>) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = R> + Send + 'static,
-    R: IntoResponse + 'static,
+    H: Handler<T, ()> + Sync,
+    T: 'static,
 {
     Box::new(move |req| {
-        let fut = f(req);
-        Box::pin(async move { fut.await.into_response() })
+        let handler = handler.clone();
+        Box::pin(async move { handler.call(req, ()).await })
             as Pin<Box<dyn Future<Output = Response> + Send>>
     })
 }

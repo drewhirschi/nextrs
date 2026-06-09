@@ -1,0 +1,93 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "site",
+    "description": "",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/ping": {
+      "get": {
+        "tags": [
+          "ping"
+        ],
+        "operationId": "getPing",
+        "responses": {
+          "200": {
+            "description": "Pong",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PingResponse"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "ping"
+        ],
+        "operationId": "sendPing",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PingRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Echoes the posted message",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PingResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "PingRequest": {
+        "type": "object",
+        "description": "Request body for `POST /api/ping`.",
+        "required": [
+          "message"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Message to echo back in the response."
+          }
+        }
+      },
+      "PingResponse": {
+        "type": "object",
+        "description": "Response returned by both `GET` and `POST /api/ping`.",
+        "required": [
+          "message",
+          "pong"
+        ],
+        "properties": {
+          "message": {
+            "type": "string",
+            "description": "Echoed back from the request (or a default for `GET`)."
+          },
+          "pong": {
+            "type": "boolean",
+            "description": "Always `true` — proves the handler ran."
+          }
+        }
+      }
+    }
+  }
+}
