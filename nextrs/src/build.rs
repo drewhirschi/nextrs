@@ -245,6 +245,7 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
 /// codegen does not rewrite it for you.
 fn emit_openapi(out: &mut String, routes: &[DiscoveredRoute]) {
     let mut handler_paths: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
 
     for (i, route) in routes.iter().enumerate() {
         let Some(route_file) = &route.route else {
@@ -259,8 +260,29 @@ fn emit_openapi(out: &mut String, routes: &[DiscoveredRoute]) {
                 && method_has_openapi_annotation(&source, fn_name)
             {
                 handler_paths.push(format!("{}::{}", module, fn_name));
+
+                // Guard against the one footgun of declaring the path by hand:
+                // it drifting from the file-convention URL. If we can read the
+                // `path = "..."` literal and it disagrees, fail the build with a
+                // pointed message (same spirit as the page/route GET conflict).
+                if let Some(declared) = extract_annotated_path(&source, fn_name) {
+                    if declared != route.url_path {
+                        errors.push(format!(
+                            "nextrs: `{}()` in the route.rs for {url} declares \
+                             #[utoipa::path(path = {declared:?})], but its file-convention \
+                             path is {url:?}. Update the annotation to path = {url:?}.",
+                            fn_name,
+                            url = route.url_path,
+                            declared = declared,
+                        ));
+                    }
+                }
             }
         }
+    }
+
+    for msg in &errors {
+        let _ = writeln!(out, "::core::compile_error!({:?});", msg);
     }
 
     out.push_str(
@@ -298,22 +320,82 @@ fn emit_openapi(out: &mut String, routes: &[DiscoveredRoute]) {
 /// back to the nearest `#[utoipa::path`, rejecting the match if another `fn`
 /// sits between them (i.e. the attribute belongs to an earlier function).
 fn method_has_openapi_annotation(source: &str, fn_name: &str) -> bool {
+    annotation_region(source, fn_name).is_some()
+}
+
+/// Byte index where the `pub async fn <fn_name>` declaration starts.
+fn fn_decl_index(source: &str, fn_name: &str) -> Option<usize> {
     for prefix in [
         "pub async fn ",
         "pub(crate) async fn ",
         "pub(super) async fn ",
     ] {
-        let needle = format!("{}{}", prefix, fn_name);
-        if let Some(idx) = source.find(&needle) {
-            let before = &source[..idx];
-            if let Some(attr_pos) = before.rfind("#[utoipa::path") {
-                if !before[attr_pos..].contains(" fn ") {
-                    return true;
-                }
-            }
+        if let Some(idx) = source.find(&format!("{}{}", prefix, fn_name)) {
+            return Some(idx);
         }
     }
-    false
+    None
+}
+
+/// The slice of `source` spanning the `#[utoipa::path ...]` attribute that
+/// immediately precedes `fn_name`, if there is one. Returns `None` when the
+/// nearest preceding `#[utoipa::path` is separated from the function by another
+/// `fn` (i.e. it belongs to an earlier handler).
+fn annotation_region<'a>(source: &'a str, fn_name: &str) -> Option<&'a str> {
+    let idx = fn_decl_index(source, fn_name)?;
+    let before = &source[..idx];
+    let attr_pos = before.rfind("#[utoipa::path")?;
+    if before[attr_pos..].contains(" fn ") {
+        return None;
+    }
+    Some(&source[attr_pos..idx])
+}
+
+/// Pull the `path = "..."` literal out of the `#[utoipa::path]` attribute for
+/// `fn_name`. Deliberately lightweight (no Rust parser): it scans the attribute
+/// for a `path` token — one bounded by `(`, `,`, or whitespace, so the
+/// `utoipa::path` in the attribute name itself is skipped — followed by `=` and
+/// a string literal. Returns `None` if no such literal is found (in which case
+/// the caller skips validation rather than guessing).
+fn extract_annotated_path(source: &str, fn_name: &str) -> Option<String> {
+    let region = annotation_region(source, fn_name)?;
+    let bytes = region.as_bytes();
+    let is_ws = |b: u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r');
+
+    let mut from = 0;
+    while let Some(rel) = region[from..].find("path") {
+        let p = from + rel;
+        from = p + 4;
+
+        // Must be a standalone `path` token, not the `::path` in the attribute
+        // name (whose preceding byte is `:`).
+        let boundary_before = p == 0 || matches!(bytes[p - 1], b'(' | b',') || is_ws(bytes[p - 1]);
+        if !boundary_before {
+            continue;
+        }
+
+        // Next non-whitespace byte must be `=`.
+        let mut q = p + 4;
+        while q < bytes.len() && is_ws(bytes[q]) {
+            q += 1;
+        }
+        if q >= bytes.len() || bytes[q] != b'=' {
+            continue;
+        }
+
+        // Then the opening quote of the string literal.
+        let mut r = q + 1;
+        while r < bytes.len() && is_ws(bytes[r]) {
+            r += 1;
+        }
+        if r >= bytes.len() || bytes[r] != b'"' {
+            continue;
+        }
+        let start = r + 1;
+        let end_rel = region[start..].find('"')?;
+        return Some(region[start..start + end_rel].to_string());
+    }
+    None
 }
 
 fn discover_route_methods(path: &Path) -> Vec<RouteMethod> {
@@ -755,6 +837,67 @@ pub async fn post() -> &'static str { "y" }
 "#;
         assert!(method_has_openapi_annotation(src, "get"));
         assert!(!method_has_openapi_annotation(src, "post"));
+    }
+
+    #[test]
+    fn extracts_annotated_path_ignoring_attribute_name() {
+        // Multi-line attribute; the `path` token in `utoipa::path` must not be
+        // mistaken for the `path = "..."` argument.
+        let src = r#"
+#[utoipa::path(
+    post,
+    path = "/api/ping",
+    responses((status = 200, body = Pong)),
+)]
+pub async fn post() -> &'static str { "x" }
+"#;
+        assert_eq!(extract_annotated_path(src, "post").as_deref(), Some("/api/ping"));
+    }
+
+    #[test]
+    fn no_path_literal_yields_none() {
+        // request body inferred, path omitted entirely — nothing to validate.
+        let src = "#[utoipa::path(post)]\npub async fn post() -> &'static str { \"x\" }\n";
+        assert_eq!(extract_annotated_path(src, "post"), None);
+    }
+
+    #[test]
+    fn mismatched_path_emits_compile_error() {
+        let route_body = r#"
+#[utoipa::path(get, path = "/wrong", responses((status = 200, body = Pong)))]
+pub async fn get() -> axum::Json<Pong> { todo!() }
+"#;
+        let tmp = setup_app_with_file_bodies(&[("api/ping", &[("route.rs", route_body)])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        assert!(
+            code.contains("compile_error!"),
+            "expected a compile_error for the path mismatch:\n{}",
+            code
+        );
+        assert!(
+            code.contains("/api/ping") && code.contains("/wrong"),
+            "compile_error should name both the declared and expected paths:\n{}",
+            code
+        );
+    }
+
+    #[test]
+    fn matching_path_emits_no_compile_error() {
+        let route_body = r#"
+#[utoipa::path(get, path = "/api/ping", responses((status = 200, body = Pong)))]
+pub async fn get() -> axum::Json<Pong> { todo!() }
+"#;
+        let tmp = setup_app_with_file_bodies(&[("api/ping", &[("route.rs", route_body)])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        assert!(
+            !code.contains("compile_error!"),
+            "matching path should not error:\n{}",
+            code
+        );
     }
 
     #[test]

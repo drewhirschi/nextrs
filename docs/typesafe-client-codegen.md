@@ -242,8 +242,29 @@ list:
   `Fn(Request<Body>) -> impl IntoResponse` to **any Axum `Handler`**, so
   handlers can use typed extractors (`Json<T>`, `Query<T>`, …) with concrete
   return types. Old raw-request handlers still compile unchanged.
+- The codegen **verifies each annotation's `path = "..."` against the
+  file-convention URL** and emits a `compile_error!` on mismatch (same spirit as
+  the existing page/route GET-conflict guard). So the path stays hand-written —
+  utoipa requires it — but it can't silently drift from the file's location.
 - `nextrs::openapi::spec_router` serves the document at `/openapi.json`; both
   the dev server and the Vercel entrypoint merge it in.
+
+### What the annotation needs
+
+With the `axum_extras` feature on, a handler's `#[utoipa::path]` needs only:
+
+```rust
+#[utoipa::path(post, path = "/api/ping", responses((status = 200, body = PingResponse)))]
+pub async fn post(Json(req): Json<PingRequest>) -> Json<PingResponse> { ... }
+```
+
+- `method` + `path` — required by utoipa (`path` is checked against the file).
+- `responses(...)` — required for a *typed response*; utoipa does not infer it
+  from the `Json<T>` return type.
+- the **request body is inferred** from the `Json<T>` extractor — no
+  `request_body = ...`.
+- `operation_id` / `tag` — optional; they just give the generated hook a clean
+  name (`useSendPing`) and group it.
 
 ### The pipeline
 
@@ -259,12 +280,14 @@ it into hooks. `cd site/client && npm run gen` runs both. See
 
 ### Known limitations / follow-ups
 
-- The `path = "..."` in each `#[utoipa::path]` is not yet verified against the
-  file-convention URL. A `compile_error!` guard (matching the existing
-  page/route GET-conflict guard) is a natural follow-up.
-- `operation_id` / `tag` should be set per handler for clean hook names; we set
-  them in the `/api/ping` example and document the convention rather than
-  inferring them.
+- `operation_id` / `tag` are set per handler for clean hook names; we set them in
+  the `/api/ping` example and document the convention rather than inferring them.
+  (Deriving them from the route in codegen is possible but was deliberately left
+  out — explicit names keep the generated hooks predictable.)
+- The `path` still has to be written by hand because utoipa's macro requires it;
+  the codegen guards it against drift but doesn't supply it. Fully deriving it
+  would need a nextrs attribute macro (a proc-macro *can* read its source file on
+  current stable via `Span::file()`), which is a larger change than the guard.
 - Swagger UI isn't bundled (it would pull a heavy build-time asset dependency);
   the raw `/openapi.json` is enough to drive client generation. Adding
   `utoipa-redoc` or `utoipa-swagger-ui` behind a feature is a possible
