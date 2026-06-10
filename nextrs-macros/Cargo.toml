@@ -1,0 +1,14 @@
+[package]
+name = "nextrs-macros"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "Proc-macros for nextrs (the #[nextrs::api] attribute)."
+repository = "https://github.com/drewhirschi/nextrs"
+
+[lib]
+proc-macro = true
+
+# No external deps: the macro only formats tokens and reads its own source
+# file via the stable proc_macro API.

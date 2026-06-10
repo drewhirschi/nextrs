@@ -44,13 +44,15 @@ becomes a query hook, anything with a body becomes a mutation hook:
 
 ```tsx
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useGetPing, useSendPing } from "@site/client";
+import { useGetApiPing, useSendPing } from "@site/client";
 
 function Ping() {
   // GET /api/ping  → fully typed PingResponse
-  const { data } = useGetPing();
+  // (operation_id derived from the route → useGetApiPing)
+  const { data } = useGetApiPing();
 
   // POST /api/ping → typed PingRequest in, PingResponse out
+  // (operation_id overridden to "sendPing" → useSendPing)
   const send = useSendPing();
 
   return (
@@ -67,6 +69,27 @@ export const App = () => (
   </QueryClientProvider>
 );
 ```
+
+## Opt-in per handler
+
+A `route.rs` handler is only added to the client if it carries `#[nextrs::api]`
+(or a raw `#[utoipa::path]`). Leave the attribute off and the handler still
+routes and serves normally — it just won't appear in `openapi.json` or the
+generated hooks. Nothing breaks; the endpoint is simply untyped from the
+client's perspective.
+
+Each `cargo build` prints a summary of what's in the client and what isn't, so
+an unannotated endpoint is visible rather than silently missing:
+
+```
+warning: site@0.1.0: nextrs: typed client generated for 2/3 route.rs handler(s)
+warning: site@0.1.0:   GET     /api/ping                client ✓
+warning: site@0.1.0:   POST    /api/ping                client ✓
+warning: site@0.1.0:   GET     /api/health              no client (add #[nextrs::api])
+```
+
+(These show on the build that regenerates the codegen — i.e. when something
+under `app/` changes.)
 
 The generator emits same-origin `fetch` calls (`baseUrl: "/"`), so it works
 against the app serving it with no extra config. Adding or changing a

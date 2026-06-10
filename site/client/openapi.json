@@ -11,7 +11,7 @@
         "tags": [
           "ping"
         ],
-        "operationId": "getPing",
+        "operationId": "getApiPing",
         "responses": {
           "200": {
             "description": "Pong",

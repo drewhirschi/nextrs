@@ -32,19 +32,19 @@ import type {
 
 
 
-export type getPingResponse200 = {
+export type getApiPingResponse200 = {
   data: PingResponse
   status: 200
 }
     
-export type getPingResponseSuccess = (getPingResponse200) & {
+export type getApiPingResponseSuccess = (getApiPingResponse200) & {
   headers: Headers;
 };
 ;
 
-export type getPingResponse = (getPingResponseSuccess)
+export type getApiPingResponse = (getApiPingResponseSuccess)
 
-export const getGetPingUrl = () => {
+export const getGetApiPingUrl = () => {
 
 
   
@@ -52,9 +52,9 @@ export const getGetPingUrl = () => {
   return `/api/ping`
 }
 
-export const getPing = async ( options?: RequestInit): Promise<getPingResponse> => {
+export const getApiPing = async ( options?: RequestInit): Promise<getApiPingResponse> => {
   
-  const res = await fetch(getGetPingUrl(),
+  const res = await fetch(getGetApiPingUrl(),
   {      
     ...options,
     method: 'GET'
@@ -65,74 +65,74 @@ export const getPing = async ( options?: RequestInit): Promise<getPingResponse> 
 
   const body = [204, 205, 304].includes(res.status) ? null : await res.text();
   
-  const data: getPingResponse['data'] = body ? JSON.parse(body) : {}
-  return { data, status: res.status, headers: res.headers } as getPingResponse
+  const data: getApiPingResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getApiPingResponse
 }
 
 
 
 
 
-export const getGetPingQueryKey = () => {
+export const getGetApiPingQueryKey = () => {
     return [
     `/api/ping`
     ] as const;
     }
 
     
-export const getGetPingQueryOptions = <TData = Awaited<ReturnType<typeof getPing>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getPing>>, TError, TData>>, fetch?: RequestInit}
+export const getGetApiPingQueryOptions = <TData = Awaited<ReturnType<typeof getApiPing>>, TError = unknown>( options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiPing>>, TError, TData>>, fetch?: RequestInit}
 ) => {
 
 const {query: queryOptions, fetch: fetchOptions} = options ?? {};
 
-  const queryKey =  queryOptions?.queryKey ?? getGetPingQueryKey();
+  const queryKey =  queryOptions?.queryKey ?? getGetApiPingQueryKey();
 
   
 
-    const queryFn: QueryFunction<Awaited<ReturnType<typeof getPing>>> = ({ signal }) => getPing({ signal, ...fetchOptions });
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getApiPing>>> = ({ signal }) => getApiPing({ signal, ...fetchOptions });
 
       
 
       
 
-   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getPing>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+   return  { queryKey, queryFn, ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getApiPing>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
 }
 
-export type GetPingQueryResult = NonNullable<Awaited<ReturnType<typeof getPing>>>
-export type GetPingQueryError = unknown
+export type GetApiPingQueryResult = NonNullable<Awaited<ReturnType<typeof getApiPing>>>
+export type GetApiPingQueryError = unknown
 
 
-export function useGetPing<TData = Awaited<ReturnType<typeof getPing>>, TError = unknown>(
-  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getPing>>, TError, TData>> & Pick<
+export function useGetApiPing<TData = Awaited<ReturnType<typeof getApiPing>>, TError = unknown>(
+  options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiPing>>, TError, TData>> & Pick<
         DefinedInitialDataOptions<
-          Awaited<ReturnType<typeof getPing>>,
+          Awaited<ReturnType<typeof getApiPing>>,
           TError,
-          Awaited<ReturnType<typeof getPing>>
+          Awaited<ReturnType<typeof getApiPing>>
         > , 'initialData'
       >, fetch?: RequestInit}
  , queryClient?: QueryClient
   ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-export function useGetPing<TData = Awaited<ReturnType<typeof getPing>>, TError = unknown>(
-  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getPing>>, TError, TData>> & Pick<
+export function useGetApiPing<TData = Awaited<ReturnType<typeof getApiPing>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiPing>>, TError, TData>> & Pick<
         UndefinedInitialDataOptions<
-          Awaited<ReturnType<typeof getPing>>,
+          Awaited<ReturnType<typeof getApiPing>>,
           TError,
-          Awaited<ReturnType<typeof getPing>>
+          Awaited<ReturnType<typeof getApiPing>>
         > , 'initialData'
       >, fetch?: RequestInit}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
-export function useGetPing<TData = Awaited<ReturnType<typeof getPing>>, TError = unknown>(
-  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getPing>>, TError, TData>>, fetch?: RequestInit}
+export function useGetApiPing<TData = Awaited<ReturnType<typeof getApiPing>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiPing>>, TError, TData>>, fetch?: RequestInit}
  , queryClient?: QueryClient
   ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
 
-export function useGetPing<TData = Awaited<ReturnType<typeof getPing>>, TError = unknown>(
-  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getPing>>, TError, TData>>, fetch?: RequestInit}
+export function useGetApiPing<TData = Awaited<ReturnType<typeof getApiPing>>, TError = unknown>(
+  options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiPing>>, TError, TData>>, fetch?: RequestInit}
  , queryClient?: QueryClient 
  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
 
-  const queryOptions = getGetPingQueryOptions(options)
+  const queryOptions = getGetApiPingQueryOptions(options)
 
   const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
 
