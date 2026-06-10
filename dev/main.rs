@@ -119,6 +119,11 @@ fn collect_path(path: &Path, files: &mut Snapshot) -> std::io::Result<()> {
     }
 
     if metadata.is_dir() {
+        // dist/ holds build output (page.tsx bundles) — watching it would
+        // restart the server after every rebuild that re-bundled.
+        if path.ends_with("dist") && path.parent().is_some_and(|p| p.ends_with("public")) {
+            return Ok(());
+        }
         for entry in fs::read_dir(path)? {
             let entry = entry?;
             let name = entry.file_name();

@@ -97,7 +97,17 @@ This is the slick endgame: **components author against hooks only** (nothing new
 
 What mode 2 needs that mode 1 doesn't:
 - Rust must produce data under **the query keys orval generates**. Resolved (see below): adopt orval's `[url, params]` format outright.
-- An ergonomic Rust API for "run this handler in-process and capture the JSON" — handlers are in the same binary, so this is a direct call or a `tower::oneshot` against the router, not HTTP.
+- An ergonomic Rust API for "run this handler and capture the JSON." Resolved (review feedback: "it's running on the server — it should call a service/repo directly, not look like it's hitting the API"): **codegen emits a typed seed helper per annotated handler** — a plain function call, no HTTP, no URL strings. The helper pairs the handler invocation with its canonical query key, both derived from the same file-convention source.
+
+### Why seed through the handler and not the repo?
+
+The instinct to call the service/repo directly is right about the *mechanics* (it's all in-process function calls either way) but misses what the seed *is*: a cache entry **impersonating a response from `GET /api/todos`**. The client will later refetch that endpoint and overwrite the entry — if the seed came from the repo while the handler adds a transform, a computed field, or different serde casing, the page flickers from seed-shape to handler-shape on first refetch. The handler is the contract; calling it costs one function call and buys guaranteed fidelity. (The handler body is typically one line of repo call anyway — `Json(repo::todos(f).await)` — so "call the handler" ≈ "call the repo, through the door that defines the wire shape.")
+
+Repo-direct data has a home, and it's **mode 1**: data that isn't endpoint-shaped (session, flags, view models) goes out as typed props, no query key, no impersonation.
+
+In hexagonal terms (review discussion): every `app/` convention file is an adapter; domain logic lives in a lib/core layer. The query cache is keyed by URL, making it an HTTP-layer artifact — so seeding it must pass through the HTTP adapter (the handler), while page-shaped data passes through the page's own adapter (`props.rs` calling core directly, mode 1). Thin controllers make the handler call cost exactly one DTO mapping more than the service call — the one mapping the seed can't skip.
+
+Handler reuse, by case: (1) **tests** call handlers directly — post-#6 they're plain `async fn`s with concrete types (`get(Query(f)).await` → `Json<Vec<Todo>>`); (2) **seeds** use the generated helpers, which exist because `app/` files are wired via mangled `#[path]` modules and can't `use` each other — codegen is the bridge; (3) **cross-endpoint/background logic reuse** is deliberately not handler reuse: `app/` files are unimportable leaves, so the dependency arrow only points `app/ → core`. Fat controllers aren't just discouraged — their logic is structurally unreachable from anywhere else, which makes the lib/core layer the path of least resistance.
 
 ### Query keys: resolved
 
@@ -109,14 +119,19 @@ orval generates keys mechanically as **`[url, params]`** — the key identifies 
 
 ## Worked example: a mode-2 page with refetching and a mutation
 
-The seed (proposed ergonomics — `QuerySeed` runs handlers through the router in-process, no HTTP, middleware extensions forwarded):
+The seed (proposed ergonomics — generated typed helpers, one per annotated handler, names aligned with the hook names):
 
 ```rust
 // app/todos/props.rs
+include!(concat!(env!("OUT_DIR"), "/nextrs_seeds.rs")); // generated
+
 pub async fn props(req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
-    // Seeded under orval's canonical key: ['/api/todos', {status: 'open'}]
     nextrs::QuerySeed::new()
-        .fetch("/api/todos", &[("status", "open")])
+        // A plain typed function call — runs the same handler that serves
+        // GET /api/todos (which is what defines the cache entry's shape) and
+        // pairs the result with its canonical key ['/api/todos', {status:'open'}].
+        // No HTTP, no URL strings; middleware extensions forwarded from req.
+        .seed(get_api_todos(TodosFilter { status: Some("open".into()) }, &req))
         .await
 }
 ```

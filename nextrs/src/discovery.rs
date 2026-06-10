@@ -3,15 +3,18 @@ use std::path::{Path, PathBuf};
 
 /// One slot at a route segment — may have a `.rs` (logic) variant, an `.html`
 /// (static) variant, both, or neither. Codegen prefers `.rs` when both exist.
+/// The page slot may additionally have a `.tsx` (client-rendered React)
+/// variant; `.tsx` alongside `.rs`/`.html` is a codegen conflict error.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Slot {
     pub rs: Option<PathBuf>,
     pub html: Option<PathBuf>,
+    pub tsx: Option<PathBuf>,
 }
 
 impl Slot {
     pub fn exists(&self) -> bool {
-        self.rs.is_some() || self.html.is_some()
+        self.rs.is_some() || self.html.is_some() || self.tsx.is_some()
     }
 }
 
@@ -29,6 +32,9 @@ pub struct DiscoveredRoute {
     pub middleware: Option<PathBuf>,
     /// `route.rs` (API handler) — no `.html` variant.
     pub route: Option<PathBuf>,
+    /// `props.rs` — server data for a `page.tsx` (Rust-only; requires the
+    /// page slot to be `.tsx`, enforced by codegen).
+    pub props: Option<PathBuf>,
 }
 
 /// Converts a directory name to a URL segment.
@@ -80,23 +86,28 @@ fn scan_dir(app_root: &Path, current: &Path, routes: &mut BTreeMap<String, Disco
     let page = Slot {
         rs: optional_path(current, "page.rs"),
         html: optional_path(current, "page.html"),
+        tsx: optional_path(current, "page.tsx"),
     };
     let layout = Slot {
         rs: optional_path(current, "layout.rs"),
         html: optional_path(current, "layout.html"),
+        tsx: None,
     };
     let loading = Slot {
         rs: optional_path(current, "loading.rs"),
         html: optional_path(current, "loading.html"),
+        tsx: None,
     };
     let middleware = optional_path(current, "middleware.rs");
     let route = optional_path(current, "route.rs");
+    let props = optional_path(current, "props.rs");
 
     if page.exists()
         || layout.exists()
         || loading.exists()
         || middleware.is_some()
         || route.is_some()
+        || props.is_some()
     {
         routes.insert(
             url_path.clone(),
@@ -108,6 +119,7 @@ fn scan_dir(app_root: &Path, current: &Path, routes: &mut BTreeMap<String, Disco
                 loading,
                 middleware,
                 route,
+                props,
             },
         );
     }
@@ -310,6 +322,44 @@ mod tests {
         assert_eq!(routes[2].url_path, "/dashboard/settings");
         assert!(routes[2].page.rs.is_some());
         assert!(routes[2].page.html.is_some());
+    }
+
+    // -- React/TSX additions ---------------------------------------------------
+
+    #[test]
+    fn test_discover_tsx_page_and_props() {
+        let tmp = setup_app_dir(&[("todos", &["page.tsx", "props.rs"])]);
+
+        let routes = discover_routes(tmp.path());
+        assert_eq!(routes.len(), 1);
+        let r = &routes[0];
+        assert_eq!(r.url_path, "/todos");
+        assert!(r.page.exists());
+        assert!(r.page.tsx.is_some());
+        assert!(r.page.rs.is_none());
+        assert!(r.props.is_some());
+    }
+
+    #[test]
+    fn test_tsx_only_segment_registers_route() {
+        let tmp = setup_app_dir(&[("dash", &["page.tsx"])]);
+
+        let routes = discover_routes(tmp.path());
+        assert_eq!(routes.len(), 1);
+        assert!(routes[0].page.tsx.is_some());
+        assert!(routes[0].props.is_none());
+    }
+
+    #[test]
+    fn test_layout_and_loading_do_not_pick_up_tsx() {
+        let tmp = setup_app_dir(&[("x", &["page.tsx", "layout.tsx", "loading.tsx"])]);
+
+        let routes = discover_routes(tmp.path());
+        assert_eq!(routes.len(), 1);
+        assert!(routes[0].layout.tsx.is_none());
+        assert!(!routes[0].layout.exists());
+        assert!(routes[0].loading.tsx.is_none());
+        assert!(!routes[0].loading.exists());
     }
 
     #[test]
