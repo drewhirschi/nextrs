@@ -16,7 +16,8 @@ include!(concat!(env!("OUT_DIR"), "/nextrs_routes.rs"));
 async fn main() -> Result<(), vercel_runtime::Error> {
     init_tracing();
 
-    let router = nextrs::router::build_router(generated_registry());
+    let router = nextrs::router::build_router(generated_registry())
+        .merge(nextrs::openapi::spec_router(generated_openapi()));
     let app = ServiceBuilder::new()
         .layer(StreamingVercelLayer::new())
         .service(router);

@@ -1,0 +1,8 @@
+// Barrel re-export of the generated client. Import hooks and types from here:
+//
+//   import { useGetPing, useSendPing, type PingResponse } from "@site/client";
+//
+// Everything under ./generated is produced by `npm run gen` — do not edit by
+// hand.
+export * from "./generated/ping/ping";
+export * from "./generated/model";

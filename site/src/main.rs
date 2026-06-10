@@ -22,7 +22,11 @@ async fn main() {
     // shipped copy of public/.
     let public_dir = std::env::var("NEXTRS_PUBLIC_DIR")
         .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/public").to_string());
-    let app = nextrs::router::build_router_with_public(generated_registry(), &public_dir);
+    let app = nextrs::router::build_router_with_public(generated_registry(), &public_dir)
+        // Serve the OpenAPI document at /openapi.json. It's built from the
+        // #[utoipa::path]-annotated route.rs handlers and drives the generated
+        // TypeScript / React Query client (see site/client/).
+        .merge(nextrs::openapi::spec_router(generated_openapi()));
 
     #[cfg(debug_assertions)]
     let app = app.layer(tower_livereload::LiveReloadLayer::new());

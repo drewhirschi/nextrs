@@ -1,0 +1,20 @@
+{
+  "name": "@site/client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Typesafe React Query client generated from the nextrs app's OpenAPI document.",
+  "type": "module",
+  "scripts": {
+    "dump": "cargo run -p site --bin dump-openapi",
+    "orval": "orval --config ./orval.config.ts",
+    "gen": "npm run dump && npm run orval",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@tanstack/react-query": "^5.62.0"
+  },
+  "devDependencies": {
+    "orval": "^7.3.0",
+    "typescript": "^5.7.0"
+  }
+}

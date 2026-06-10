@@ -157,6 +157,12 @@ pub fn emit_registry(
     let routes = discover_routes(&abs_app);
     let code = generate_code(&routes);
 
+    // Surface, per build, which route.rs handlers got a typed client and which
+    // were left out (unannotated). `cargo:warning=` is the only build-script
+    // channel cargo prints by default; it replays these lines whenever the
+    // script reruns (i.e. when anything under app/ changes).
+    print_client_summary(&routes);
+
     let out_dir = std::env::var_os("OUT_DIR").expect("OUT_DIR must be set in build.rs");
     let out_path = Path::new(&out_dir).join(out_name);
     std::fs::write(&out_path, &code)?;
@@ -223,7 +229,247 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
     }
 
     out.push_str("    registry\n}\n");
+
+    emit_openapi(&mut out, routes);
+
     out
+}
+
+/// Emit a `generated_openapi()` function returning a single
+/// [`utoipa::openapi::OpenApi`] built from every `route.rs` method annotated
+/// with `#[utoipa::path(...)]` or `#[nextrs::api(...)]`.
+///
+/// Annotation is opt-in: a handler without either attribute still routes
+/// normally, it just doesn't appear in the spec (and therefore not in the
+/// generated client). For an annotated handler, utoipa derives the request and
+/// response schemas from the types named in the attribute and collects them
+/// automatically — codegen only has to list the handler functions.
+///
+/// With raw `#[utoipa::path]`, the `path = "..."` must match the file-convention
+/// URL (e.g. a handler in `app/api/ping/route.rs` uses `path = "/api/ping"`),
+/// and codegen verifies that (see below). `#[nextrs::api]` derives the path from
+/// the file, so there's nothing to write or to drift.
+fn emit_openapi(out: &mut String, routes: &[DiscoveredRoute]) {
+    let mut handler_paths: Vec<String> = Vec::new();
+    let mut errors: Vec<String> = Vec::new();
+
+    for (i, route) in routes.iter().enumerate() {
+        let Some(route_file) = &route.route else {
+            continue;
+        };
+        let Ok(source) = std::fs::read_to_string(route_file) else {
+            continue;
+        };
+        let module = mod_name(i, "route");
+        for (fn_name, _) in ROUTE_METHODS {
+            if has_public_async_method(&source, fn_name)
+                && method_has_openapi_annotation(&source, fn_name)
+            {
+                handler_paths.push(format!("{}::{}", module, fn_name));
+
+                // Guard against the one footgun of declaring the path by hand:
+                // it drifting from the file-convention URL. If we can read the
+                // `path = "..."` literal and it disagrees, fail the build with a
+                // pointed message (same spirit as the page/route GET conflict).
+                if let Some(declared) = extract_annotated_path(&source, fn_name) {
+                    if declared != route.url_path {
+                        errors.push(format!(
+                            "nextrs: `{}()` in the route.rs for {url} declares \
+                             #[utoipa::path(path = {declared:?})], but its file-convention \
+                             path is {url:?}. Update the annotation to path = {url:?}.",
+                            fn_name,
+                            url = route.url_path,
+                            declared = declared,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    for msg in &errors {
+        let _ = writeln!(out, "::core::compile_error!({:?});", msg);
+    }
+
+    out.push_str(
+        "\n/// OpenAPI document built from every `#[utoipa::path]`-annotated route.rs handler.\n",
+    );
+
+    if handler_paths.is_empty() {
+        // No annotated handlers — still expose the function so consumers can
+        // unconditionally serve a (valid, empty) spec.
+        out.push_str("pub fn generated_openapi() -> ::utoipa::openapi::OpenApi {\n");
+        out.push_str("    let mut doc = ::utoipa::openapi::OpenApiBuilder::new().build();\n");
+        out.push_str("    ::nextrs::openapi::normalize(&mut doc);\n");
+        out.push_str("    doc\n");
+        out.push_str("}\n");
+        return;
+    }
+
+    out.push_str("#[derive(::utoipa::OpenApi)]\n");
+    out.push_str("#[openapi(paths(\n");
+    for p in &handler_paths {
+        let _ = writeln!(out, "    {},", p);
+    }
+    out.push_str("))]\n");
+    out.push_str("struct __NextrsOpenApi;\n\n");
+    out.push_str("pub fn generated_openapi() -> ::utoipa::openapi::OpenApi {\n");
+    out.push_str("    let mut doc = <__NextrsOpenApi as ::utoipa::OpenApi>::openapi();\n");
+    out.push_str("    ::nextrs::openapi::normalize(&mut doc);\n");
+    out.push_str("    doc\n");
+    out.push_str("}\n");
+}
+
+/// Per-method record of whether a `route.rs` handler made it into the OpenAPI
+/// document (and therefore the generated client). Drives the build summary.
+struct ClientStatus {
+    /// HTTP method as it appears to the user, e.g. `GET`.
+    method: &'static str,
+    /// File-convention URL, e.g. `/api/ping`.
+    url_path: String,
+    /// `true` when the handler carries `#[nextrs::api]`/`#[utoipa::path]` and is
+    /// thus part of the spec; `false` when it routes but isn't in the client.
+    in_client: bool,
+}
+
+/// Walk every discovered `route.rs`, recording each public-async HTTP method
+/// and whether it's annotated for the client. Reuses the same lightweight
+/// detection as the codegen, so the summary can't disagree with what was
+/// actually emitted into `paths(...)`.
+fn client_status(routes: &[DiscoveredRoute]) -> Vec<ClientStatus> {
+    let mut out = Vec::new();
+    for route in routes {
+        let Some(route_file) = &route.route else {
+            continue;
+        };
+        let Ok(source) = std::fs::read_to_string(route_file) else {
+            continue;
+        };
+        for (fn_name, method_const) in ROUTE_METHODS {
+            if has_public_async_method(&source, fn_name) {
+                out.push(ClientStatus {
+                    method: method_const,
+                    url_path: route.url_path.clone(),
+                    in_client: method_has_openapi_annotation(&source, fn_name),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Print a per-handler client-codegen summary as `cargo:warning=` lines, so it
+/// shows up in `cargo build` output. No-op when the app has no API handlers.
+fn print_client_summary(routes: &[DiscoveredRoute]) {
+    let statuses = client_status(routes);
+    if statuses.is_empty() {
+        return;
+    }
+    let in_client = statuses.iter().filter(|s| s.in_client).count();
+    println!(
+        "cargo:warning=nextrs: typed client generated for {in_client}/{} route.rs handler(s)",
+        statuses.len()
+    );
+    for s in &statuses {
+        let mark = if s.in_client {
+            "client ✓"
+        } else {
+            "no client (add #[nextrs::api])"
+        };
+        println!("cargo:warning=  {:<7} {:<24} {}", s.method, s.url_path, mark);
+    }
+}
+
+/// Whether `fn_name` in `source` is immediately preceded by a
+/// `#[utoipa::path(...)]` attribute. Intentionally lightweight (no Rust
+/// parser), matching the rest of this module: it finds the function and walks
+/// back to the nearest `#[utoipa::path`, rejecting the match if another `fn`
+/// sits between them (i.e. the attribute belongs to an earlier function).
+fn method_has_openapi_annotation(source: &str, fn_name: &str) -> bool {
+    annotation_region(source, fn_name).is_some()
+}
+
+/// Byte index where the `pub async fn <fn_name>` declaration starts.
+fn fn_decl_index(source: &str, fn_name: &str) -> Option<usize> {
+    for prefix in [
+        "pub async fn ",
+        "pub(crate) async fn ",
+        "pub(super) async fn ",
+    ] {
+        if let Some(idx) = source.find(&format!("{}{}", prefix, fn_name)) {
+            return Some(idx);
+        }
+    }
+    None
+}
+
+/// Attribute markers that put a `route.rs` method into the OpenAPI document:
+/// `#[utoipa::path]` directly, or `#[nextrs::api]` (which expands to it with a
+/// derived `path`).
+const OPENAPI_ATTRS: &[&str] = &["#[utoipa::path", "#[nextrs::api"];
+
+/// The slice of `source` spanning the OpenAPI attribute (`#[utoipa::path]` or
+/// `#[nextrs::api]`) that immediately precedes `fn_name`, if there is one.
+/// Returns `None` when the nearest such attribute is separated from the
+/// function by another `fn` (i.e. it belongs to an earlier handler).
+fn annotation_region<'a>(source: &'a str, fn_name: &str) -> Option<&'a str> {
+    let idx = fn_decl_index(source, fn_name)?;
+    let before = &source[..idx];
+    let attr_pos = OPENAPI_ATTRS
+        .iter()
+        .filter_map(|marker| before.rfind(marker))
+        .max()?;
+    if before[attr_pos..].contains(" fn ") {
+        return None;
+    }
+    Some(&source[attr_pos..idx])
+}
+
+/// Pull the `path = "..."` literal out of the `#[utoipa::path]` attribute for
+/// `fn_name`. Deliberately lightweight (no Rust parser): it scans the attribute
+/// for a `path` token — one bounded by `(`, `,`, or whitespace, so the
+/// `utoipa::path` in the attribute name itself is skipped — followed by `=` and
+/// a string literal. Returns `None` if no such literal is found (in which case
+/// the caller skips validation rather than guessing).
+fn extract_annotated_path(source: &str, fn_name: &str) -> Option<String> {
+    let region = annotation_region(source, fn_name)?;
+    let bytes = region.as_bytes();
+    let is_ws = |b: u8| matches!(b, b' ' | b'\t' | b'\n' | b'\r');
+
+    let mut from = 0;
+    while let Some(rel) = region[from..].find("path") {
+        let p = from + rel;
+        from = p + 4;
+
+        // Must be a standalone `path` token, not the `::path` in the attribute
+        // name (whose preceding byte is `:`).
+        let boundary_before = p == 0 || matches!(bytes[p - 1], b'(' | b',') || is_ws(bytes[p - 1]);
+        if !boundary_before {
+            continue;
+        }
+
+        // Next non-whitespace byte must be `=`.
+        let mut q = p + 4;
+        while q < bytes.len() && is_ws(bytes[q]) {
+            q += 1;
+        }
+        if q >= bytes.len() || bytes[q] != b'=' {
+            continue;
+        }
+
+        // Then the opening quote of the string literal.
+        let mut r = q + 1;
+        while r < bytes.len() && is_ws(bytes[r]) {
+            r += 1;
+        }
+        if r >= bytes.len() || bytes[r] != b'"' {
+            continue;
+        }
+        let start = r + 1;
+        let end_rel = region[start..].find('"')?;
+        return Some(region[start..start + end_rel].to_string());
+    }
+    None
 }
 
 fn discover_route_methods(path: &Path) -> Vec<RouteMethod> {
@@ -592,6 +838,198 @@ pub async fn patch(_req: Request<Body>) -> impl IntoResponse { StatusCode::NO_CO
         assert!(code.contains("__nextrs_route_0_page::render(req)"));
         assert!(code.contains("::nextrs::http::Method::POST"));
         assert!(!code.contains("compile_error!"));
+    }
+
+    #[test]
+    fn unannotated_routes_emit_empty_openapi() {
+        // A route.rs with no #[utoipa::path] still routes, but contributes
+        // nothing to the spec — generated_openapi() falls back to the builder.
+        let tmp = setup_app(&[("api/ping", &["route.rs"])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        assert!(code.contains("pub fn generated_openapi()"));
+        assert!(
+            code.contains("OpenApiBuilder::new().build()"),
+            "expected empty-spec fallback:\n{}",
+            code
+        );
+        assert!(
+            !code.contains("__NextrsOpenApi"),
+            "no derive struct when nothing is annotated:\n{}",
+            code
+        );
+    }
+
+    #[test]
+    fn annotated_handlers_are_collected_into_openapi() {
+        let route_body = r#"
+use axum::Json;
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct Pong { pub ok: bool }
+
+#[utoipa::path(get, path = "/api/ping", responses((status = 200, body = Pong)))]
+pub async fn get() -> Json<Pong> { Json(Pong { ok: true }) }
+
+// Intentionally NOT annotated — should be excluded from the spec.
+pub async fn post(_req: http::Request<axum::body::Body>) -> axum::http::StatusCode {
+    axum::http::StatusCode::CREATED
+}
+"#;
+        let tmp = setup_app_with_file_bodies(&[("api/ping", &[("route.rs", route_body)])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        // Both methods still route...
+        assert!(code.contains("::nextrs::http::Method::GET"));
+        assert!(code.contains("::nextrs::http::Method::POST"));
+
+        // ...but only the annotated one is in the OpenAPI paths().
+        assert!(code.contains("#[derive(::utoipa::OpenApi)]"));
+        assert!(
+            code.contains("__nextrs_route_0_route::get,"),
+            "annotated get() should be in paths():\n{}",
+            code
+        );
+        assert!(
+            !code.contains("__nextrs_route_0_route::post,"),
+            "unannotated post() must not be in paths():\n{}",
+            code
+        );
+    }
+
+    #[test]
+    fn openapi_annotation_detection_is_per_function() {
+        let src = r#"
+#[utoipa::path(get, path = "/x")]
+pub async fn get() -> &'static str { "x" }
+
+pub async fn post() -> &'static str { "y" }
+"#;
+        assert!(method_has_openapi_annotation(src, "get"));
+        assert!(!method_has_openapi_annotation(src, "post"));
+    }
+
+    #[test]
+    fn extracts_annotated_path_ignoring_attribute_name() {
+        // Multi-line attribute; the `path` token in `utoipa::path` must not be
+        // mistaken for the `path = "..."` argument.
+        let src = r#"
+#[utoipa::path(
+    post,
+    path = "/api/ping",
+    responses((status = 200, body = Pong)),
+)]
+pub async fn post() -> &'static str { "x" }
+"#;
+        assert_eq!(extract_annotated_path(src, "post").as_deref(), Some("/api/ping"));
+    }
+
+    #[test]
+    fn no_path_literal_yields_none() {
+        // request body inferred, path omitted entirely — nothing to validate.
+        let src = "#[utoipa::path(post)]\npub async fn post() -> &'static str { \"x\" }\n";
+        assert_eq!(extract_annotated_path(src, "post"), None);
+    }
+
+    #[test]
+    fn mismatched_path_emits_compile_error() {
+        let route_body = r#"
+#[utoipa::path(get, path = "/wrong", responses((status = 200, body = Pong)))]
+pub async fn get() -> axum::Json<Pong> { todo!() }
+"#;
+        let tmp = setup_app_with_file_bodies(&[("api/ping", &[("route.rs", route_body)])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        assert!(
+            code.contains("compile_error!"),
+            "expected a compile_error for the path mismatch:\n{}",
+            code
+        );
+        assert!(
+            code.contains("/api/ping") && code.contains("/wrong"),
+            "compile_error should name both the declared and expected paths:\n{}",
+            code
+        );
+    }
+
+    #[test]
+    fn nextrs_api_handlers_are_collected_without_path_check() {
+        // `#[nextrs::api]` derives the path, so there's no literal to verify —
+        // the handler is still collected into the spec, with no compile_error.
+        let route_body = r#"
+#[nextrs::api(get, responses((status = 200, body = Pong)))]
+pub async fn get() -> axum::Json<Pong> { todo!() }
+"#;
+        let tmp = setup_app_with_file_bodies(&[("api/ping", &[("route.rs", route_body)])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        assert!(
+            code.contains("__nextrs_route_0_route::get,"),
+            "nextrs::api handler should be in the OpenAPI paths():\n{}",
+            code
+        );
+        assert!(
+            !code.contains("compile_error!"),
+            "derived-path handler has nothing to validate:\n{}",
+            code
+        );
+    }
+
+    #[test]
+    fn matching_path_emits_no_compile_error() {
+        let route_body = r#"
+#[utoipa::path(get, path = "/api/ping", responses((status = 200, body = Pong)))]
+pub async fn get() -> axum::Json<Pong> { todo!() }
+"#;
+        let tmp = setup_app_with_file_bodies(&[("api/ping", &[("route.rs", route_body)])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        assert!(
+            !code.contains("compile_error!"),
+            "matching path should not error:\n{}",
+            code
+        );
+    }
+
+    #[test]
+    fn client_status_reports_per_method_inclusion() {
+        let route_body = r#"
+use axum::Json;
+use serde::Serialize;
+use utoipa::ToSchema;
+
+#[derive(Serialize, ToSchema)]
+pub struct Pong { pub ok: bool }
+
+#[nextrs::api(get, responses((status = 200, body = Pong)))]
+pub async fn get() -> Json<Pong> { Json(Pong { ok: true }) }
+
+// Unannotated — routes, but stays out of the client.
+pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED }
+"#;
+        let tmp = setup_app_with_file_bodies(&[("api/ping", &[("route.rs", route_body)])]);
+        let routes = discover_routes(tmp.path());
+        let statuses = client_status(&routes);
+
+        let get = statuses
+            .iter()
+            .find(|s| s.method == "GET")
+            .expect("GET should be discovered");
+        assert_eq!(get.url_path, "/api/ping");
+        assert!(get.in_client, "annotated GET should be in the client");
+
+        let post = statuses
+            .iter()
+            .find(|s| s.method == "POST")
+            .expect("POST should be discovered");
+        assert!(!post.in_client, "unannotated POST should be excluded");
     }
 
     #[test]

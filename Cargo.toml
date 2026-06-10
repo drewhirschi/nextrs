@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["nextrs", "site"]
+members = ["nextrs", "nextrs-macros", "site"]
 
 # The workspace root is also a package — it's the Vercel deployment target.
 # Its single binary (api/index.rs) wraps the framework's axum router for
@@ -34,6 +34,10 @@ askama = "0.15"
 http = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+serde = { version = "1", features = ["derive"] }
+# Needed because api/index.rs compiles the same generated registry (and the
+# route.rs handlers) as the site binary — see site/Cargo.toml for why.
+utoipa = "5"
 
 [profile.dev]
 debug = 0
