@@ -1,5 +1,8 @@
 [package]
 name = "site"
+# src/bin/dump-openapi.rs makes `cargo run -p site` ambiguous without this
+# (and the dev watcher's default command relies on it).
+default-run = "site"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
