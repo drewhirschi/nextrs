@@ -1,0 +1,142 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "react-todos",
+    "description": "",
+    "version": "0.1.0"
+  },
+  "paths": {
+    "/api/todos": {
+      "get": {
+        "tags": [
+          "todos"
+        ],
+        "operationId": "getTodos",
+        "parameters": [
+          {
+            "name": "status",
+            "in": "query",
+            "description": "`\"open\"` returns only unfinished todos; anything else returns all.",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "List todos",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/Todo"
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "todos"
+        ],
+        "operationId": "addTodo",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AddTodoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The created todo",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Todo"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/todos/{id}": {
+      "delete": {
+        "tags": [
+          "todos"
+        ],
+        "operationId": "deleteTodo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "description": "Id of the todo to delete",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Deleted"
+          },
+          "404": {
+            "description": "No todo with that id"
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AddTodoRequest": {
+        "type": "object",
+        "description": "Request body for `POST /api/todos`.",
+        "required": [
+          "title"
+        ],
+        "properties": {
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "Todo": {
+        "type": "object",
+        "description": "Wire shape of a todo. Owned by this adapter; `From` maps the core type.",
+        "required": [
+          "id",
+          "title",
+          "done"
+        ],
+        "properties": {
+          "done": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}

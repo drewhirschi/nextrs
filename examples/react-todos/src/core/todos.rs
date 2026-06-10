@@ -1,0 +1,63 @@
+//! In-memory todo service for the demo. Serde-free domain types — the wire
+//! DTOs live in the route.rs adapter that exposes this over HTTP.
+
+use std::sync::{Mutex, OnceLock};
+
+#[derive(Debug, Clone)]
+pub struct Todo {
+    pub id: u64,
+    pub title: String,
+    pub done: bool,
+}
+
+fn store() -> &'static Mutex<Vec<Todo>> {
+    static STORE: OnceLock<Mutex<Vec<Todo>>> = OnceLock::new();
+    STORE.get_or_init(|| {
+        Mutex::new(vec![
+            Todo {
+                id: 1,
+                title: "Write a page.tsx".to_string(),
+                done: true,
+            },
+            Todo {
+                id: 2,
+                title: "Seed the React Query cache from Rust".to_string(),
+                done: false,
+            },
+            Todo {
+                id: 3,
+                title: "Ship nextrs".to_string(),
+                done: false,
+            },
+        ])
+    })
+}
+
+pub async fn list(open_only: bool) -> Vec<Todo> {
+    let todos = store().lock().unwrap();
+    todos
+        .iter()
+        .filter(|t| !open_only || !t.done)
+        .cloned()
+        .collect()
+}
+
+pub async fn add(title: String) -> Todo {
+    let mut todos = store().lock().unwrap();
+    let id = todos.iter().map(|t| t.id).max().unwrap_or(0) + 1;
+    let todo = Todo {
+        id,
+        title,
+        done: false,
+    };
+    todos.push(todo.clone());
+    todo
+}
+
+/// Remove a todo by id. Returns `true` if one was removed.
+pub async fn remove(id: u64) -> bool {
+    let mut todos = store().lock().unwrap();
+    let before = todos.len();
+    todos.retain(|t| t.id != id);
+    todos.len() != before
+}

@@ -1,0 +1,75 @@
+/* Hand-written so the example needs no CSS build step — the point here is the
+   data flow (page.tsx + props.rs seeding), not the styling. */
+:root {
+  color-scheme: dark;
+  --bg: #14161a;
+  --surface: #1c1f26;
+  --surface-2: #242832;
+  --border: #2d323d;
+  --text: #e7e9ee;
+  --muted: #9aa1ad;
+  --accent: #6ea8fe;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  font: 16px/1.5 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+main { max-width: 34rem; margin: 0 auto; padding: 3rem 1.25rem; }
+h1 { font-size: 1.9rem; margin: 0; letter-spacing: -0.02em; }
+.row { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+.muted { color: var(--muted); font-size: 0.9rem; }
+code {
+  background: var(--surface-2);
+  padding: 0.1em 0.35em;
+  border-radius: 4px;
+  font-size: 0.85em;
+}
+
+.list {
+  list-style: none;
+  margin: 1.5rem 0;
+  padding: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+}
+.list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.85rem 1.1rem;
+}
+.list li + li { border-top: 1px solid var(--border); }
+.list li button { color: var(--muted); }
+.list li button:hover { color: #ff6b6b; }
+
+.add { display: flex; gap: 0.5rem; }
+.add input {
+  flex: 1;
+  padding: 0.6rem 0.8rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font: inherit;
+}
+.add input:focus { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+button {
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  color: var(--text);
+  padding: 0.6rem 1rem;
+  border-radius: 8px;
+  font: inherit;
+  cursor: pointer;
+}
+button:hover { border-color: var(--accent); }
+button:disabled { opacity: 0.5; cursor: default; }
+button.primary { background: var(--accent); color: #0b0d10; border-color: var(--accent); }
+button.ghost { background: none; border: none; padding: 0.25rem 0.5rem; }
+.note { margin-top: 1.5rem; }
