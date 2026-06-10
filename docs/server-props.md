@@ -107,6 +107,61 @@ orval generates keys mechanically as **`[url, params]`** — the key identifies 
 - **Robustness is better than it looks:** React Query hashes keys with a stable serializer (object key order ignored), so the Rust side only has to match url + params *content*, not byte-for-byte serialization. A mismatch degrades to a refetch, never a break.
 - **MPA caveat, and the convergence:** with MPA navigation each page load gets a fresh `QueryClient`, so "invalidated across pages" doesn't apply *across navigations* — mode 2 re-seeds server-fresh data each load instead (strictly better than carrying stale entries). Within a page, full sharing/invalidation applies. If client-side navigation lands later (research item), the `QueryClient` becomes persistent and cross-page invalidation works immediately — *because* we seeded canonical keys from day one.
 
+## Worked example: a mode-2 page with refetching and a mutation
+
+The seed (proposed ergonomics — `QuerySeed` runs handlers through the router in-process, no HTTP, middleware extensions forwarded):
+
+```rust
+// app/todos/props.rs
+pub async fn props(req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
+    // Seeded under orval's canonical key: ['/api/todos', {status: 'open'}]
+    nextrs::QuerySeed::new()
+        .fetch("/api/todos", &[("status", "open")])
+        .await
+}
+```
+
+The page — note there is zero seeding awareness in this file:
+
+```tsx
+// app/todos/page.tsx
+import { useQueryClient } from "@tanstack/react-query";
+import { useGetTodos, useAddTodo, getGetTodosQueryKey } from "@site/client";
+
+export default function Todos() {
+  const queryClient = useQueryClient();
+
+  // Seeded from the stream: defined on first render, no spinner, no mount
+  // fetch. Goes stale and refetches like any query afterward.
+  const { data: todos, refetch, isFetching } = useGetTodos({ status: "open" });
+
+  const addTodo = useAddTodo({
+    mutation: {
+      onSuccess: () => {
+        // Prefix invalidation refetches EVERY /api/todos variant — including
+        // the seeded entry, because the seed used the canonical key.
+        queryClient.invalidateQueries({ queryKey: getGetTodosQueryKey() });
+      },
+    },
+  });
+
+  return (
+    <section>
+      <button onClick={() => refetch()} disabled={isFetching}>Refresh</button>
+      <ul>{todos?.data.map((t) => <li key={t.id}>{t.title}</li>)}</ul>
+      <button onClick={() => addTodo.mutate({ data: { title: "ship nextrs" } })}>Add</button>
+    </section>
+  );
+}
+```
+
+Properties this demonstrates:
+1. **Seeding is a pure progressive enhancement** — delete `props.rs` and the page works identically, just fetch-on-mount (which is also why the `todos?.` optional chain stays).
+2. **Mutations invalidate seeded data** — the canonical-keys decision is what makes `invalidateQueries` reach the streamed entry. Private keys would leave seeded data frozen after mutations: the worst kind of bug.
+3. **Refetch/staleness/optimistic updates are vanilla React Query** — the seed is an ordinary cache entry; `refetch()`, `staleTime`, `onMutate` rollbacks all apply unchanged.
+
+Could mode 2 be the *only* mode? Almost — whenever server data is API-shaped, it's strictly nicer. Mode 1 earns its keep for data that isn't an endpoint: session user, feature flags, precomputed view models. Keep both; document mode 2 as the default story.
+
 ## Recommendation
 
 Build **mode 1 first** — it's the whole mechanism (slot discovery, await placement in the stream, JSON injection, schema-through-OpenAPI typing) with a trivial client helper, and it's independently useful. Add **mode 2 as a layer on top**: same injection pipe, different payload shape (`{queryKey, data}` entries instead of one props object). They compose — a page can have bespoke props *and* warmed queries.
