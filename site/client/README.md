@@ -70,6 +70,27 @@ export const App = () => (
 );
 ```
 
+## Opt-in per handler
+
+A `route.rs` handler is only added to the client if it carries `#[nextrs::api]`
+(or a raw `#[utoipa::path]`). Leave the attribute off and the handler still
+routes and serves normally — it just won't appear in `openapi.json` or the
+generated hooks. Nothing breaks; the endpoint is simply untyped from the
+client's perspective.
+
+Each `cargo build` prints a summary of what's in the client and what isn't, so
+an unannotated endpoint is visible rather than silently missing:
+
+```
+warning: site@0.1.0: nextrs: typed client generated for 2/3 route.rs handler(s)
+warning: site@0.1.0:   GET     /api/ping                client ✓
+warning: site@0.1.0:   POST    /api/ping                client ✓
+warning: site@0.1.0:   GET     /api/health              no client (add #[nextrs::api])
+```
+
+(These show on the build that regenerates the codegen — i.e. when something
+under `app/` changes.)
+
 The generator emits same-origin `fetch` calls (`baseUrl: "/"`), so it works
 against the app serving it with no extra config. Adding or changing a
 `#[utoipa::path]` handler and rerunning `npm run gen` updates the hooks and

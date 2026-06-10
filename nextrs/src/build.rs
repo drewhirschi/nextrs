@@ -157,6 +157,12 @@ pub fn emit_registry(
     let routes = discover_routes(&abs_app);
     let code = generate_code(&routes);
 
+    // Surface, per build, which route.rs handlers got a typed client and which
+    // were left out (unannotated). `cargo:warning=` is the only build-script
+    // channel cargo prints by default; it replays these lines whenever the
+    // script reruns (i.e. when anything under app/ changes).
+    print_client_summary(&routes);
+
     let out_dir = std::env::var_os("OUT_DIR").expect("OUT_DIR must be set in build.rs");
     let out_path = Path::new(&out_dir).join(out_name);
     std::fs::write(&out_path, &code)?;
@@ -312,6 +318,66 @@ fn emit_openapi(out: &mut String, routes: &[DiscoveredRoute]) {
     out.push_str("    ::nextrs::openapi::normalize(&mut doc);\n");
     out.push_str("    doc\n");
     out.push_str("}\n");
+}
+
+/// Per-method record of whether a `route.rs` handler made it into the OpenAPI
+/// document (and therefore the generated client). Drives the build summary.
+struct ClientStatus {
+    /// HTTP method as it appears to the user, e.g. `GET`.
+    method: &'static str,
+    /// File-convention URL, e.g. `/api/ping`.
+    url_path: String,
+    /// `true` when the handler carries `#[nextrs::api]`/`#[utoipa::path]` and is
+    /// thus part of the spec; `false` when it routes but isn't in the client.
+    in_client: bool,
+}
+
+/// Walk every discovered `route.rs`, recording each public-async HTTP method
+/// and whether it's annotated for the client. Reuses the same lightweight
+/// detection as the codegen, so the summary can't disagree with what was
+/// actually emitted into `paths(...)`.
+fn client_status(routes: &[DiscoveredRoute]) -> Vec<ClientStatus> {
+    let mut out = Vec::new();
+    for route in routes {
+        let Some(route_file) = &route.route else {
+            continue;
+        };
+        let Ok(source) = std::fs::read_to_string(route_file) else {
+            continue;
+        };
+        for (fn_name, method_const) in ROUTE_METHODS {
+            if has_public_async_method(&source, fn_name) {
+                out.push(ClientStatus {
+                    method: method_const,
+                    url_path: route.url_path.clone(),
+                    in_client: method_has_openapi_annotation(&source, fn_name),
+                });
+            }
+        }
+    }
+    out
+}
+
+/// Print a per-handler client-codegen summary as `cargo:warning=` lines, so it
+/// shows up in `cargo build` output. No-op when the app has no API handlers.
+fn print_client_summary(routes: &[DiscoveredRoute]) {
+    let statuses = client_status(routes);
+    if statuses.is_empty() {
+        return;
+    }
+    let in_client = statuses.iter().filter(|s| s.in_client).count();
+    println!(
+        "cargo:warning=nextrs: typed client generated for {in_client}/{} route.rs handler(s)",
+        statuses.len()
+    );
+    for s in &statuses {
+        let mark = if s.in_client {
+            "client ✓"
+        } else {
+            "no client (add #[nextrs::api])"
+        };
+        println!("cargo:warning=  {:<7} {:<24} {}", s.method, s.url_path, mark);
+    }
 }
 
 /// Whether `fn_name` in `source` is immediately preceded by a
@@ -930,6 +996,40 @@ pub async fn get() -> axum::Json<Pong> { todo!() }
             "matching path should not error:\n{}",
             code
         );
+    }
+
+    #[test]
+    fn client_status_reports_per_method_inclusion() {
+        let route_body = r#"
+use axum::Json;
+use serde::Serialize;
+use utoipa::ToSchema;
+
+#[derive(Serialize, ToSchema)]
+pub struct Pong { pub ok: bool }
+
+#[nextrs::api(get, responses((status = 200, body = Pong)))]
+pub async fn get() -> Json<Pong> { Json(Pong { ok: true }) }
+
+// Unannotated — routes, but stays out of the client.
+pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED }
+"#;
+        let tmp = setup_app_with_file_bodies(&[("api/ping", &[("route.rs", route_body)])]);
+        let routes = discover_routes(tmp.path());
+        let statuses = client_status(&routes);
+
+        let get = statuses
+            .iter()
+            .find(|s| s.method == "GET")
+            .expect("GET should be discovered");
+        assert_eq!(get.url_path, "/api/ping");
+        assert!(get.in_client, "annotated GET should be in the client");
+
+        let post = statuses
+            .iter()
+            .find(|s| s.method == "POST")
+            .expect("POST should be discovered");
+        assert!(!post.in_client, "unannotated POST should be excluded");
     }
 
     #[test]
