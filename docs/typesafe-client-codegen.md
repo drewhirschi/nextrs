@@ -242,29 +242,39 @@ list:
   `Fn(Request<Body>) -> impl IntoResponse` to **any Axum `Handler`**, so
   handlers can use typed extractors (`Json<T>`, `Query<T>`, …) with concrete
   return types. Old raw-request handlers still compile unchanged.
-- The codegen **verifies each annotation's `path = "..."` against the
-  file-convention URL** and emits a `compile_error!` on mismatch (same spirit as
-  the existing page/route GET-conflict guard). So the path stays hand-written —
-  utoipa requires it — but it can't silently drift from the file's location.
+- `#[nextrs::api]` (`nextrs-macros`) wraps `#[utoipa::path]` and **derives the
+  `path` from the handler's file** via `Span::file()`, so the URL isn't restated
+  (it also derives `operation_id`/`tag` from the route when you don't set them).
+- For raw `#[utoipa::path]`, the codegen **verifies the hand-written `path`
+  against the file-convention URL** and emits a `compile_error!` on mismatch
+  (same spirit as the page/route GET-conflict guard), so it can't silently
+  drift.
 - `nextrs::openapi::spec_router` serves the document at `/openapi.json`; both
   the dev server and the Vercel entrypoint merge it in.
 
 ### What the annotation needs
 
-With the `axum_extras` feature on, a handler's `#[utoipa::path]` needs only:
+`#[nextrs::api]` (a thin wrapper over `#[utoipa::path]`) derives the `path` from
+the handler's file location, so the minimal typed endpoint is:
 
 ```rust
-#[utoipa::path(post, path = "/api/ping", responses((status = 200, body = PingResponse)))]
+// in app/api/ping/route.rs
+#[nextrs::api(post, responses((status = 200, body = PingResponse)))]
 pub async fn post(Json(req): Json<PingRequest>) -> Json<PingResponse> { ... }
 ```
 
-- `method` + `path` — required by utoipa (`path` is checked against the file).
-- `responses(...)` — required for a *typed response*; utoipa does not infer it
-  from the `Json<T>` return type.
+- `method` — required (first argument).
+- `path` — **derived from the file** (`app/api/ping/route.rs` → `/api/ping`,
+  `[id]` → `{id}`). Nothing to write or to drift.
+- `responses(...)` — required for a *typed response*; not inferred from the
+  `Json<T>` return type.
 - the **request body is inferred** from the `Json<T>` extractor — no
   `request_body = ...`.
-- `operation_id` / `tag` — optional; they just give the generated hook a clean
-  name (`useSendPing`) and group it.
+- `operation_id` / `tag` — **derived from the route** (`postApiPing`, tag
+  `ping`) unless you set them; override `operation_id` for a nicer hook name.
+
+`#[utoipa::path(...)]` still works directly if you want full control; the codegen
+then checks its `path = "..."` against the file's URL.
 
 ### The pipeline
 
@@ -280,14 +290,9 @@ it into hooks. `cd site/client && npm run gen` runs both. See
 
 ### Known limitations / follow-ups
 
-- `operation_id` / `tag` are set per handler for clean hook names; we set them in
-  the `/api/ping` example and document the convention rather than inferring them.
-  (Deriving them from the route in codegen is possible but was deliberately left
-  out — explicit names keep the generated hooks predictable.)
-- The `path` still has to be written by hand because utoipa's macro requires it;
-  the codegen guards it against drift but doesn't supply it. Fully deriving it
-  would need a nextrs attribute macro (a proc-macro *can* read its source file on
-  current stable via `Span::file()`), which is a larger change than the guard.
+- `#[nextrs::api]` anchors path derivation on the `app/` path segment (matching
+  the convention), and assumes `/`-separated paths — fine on the platforms we
+  build on, but a Windows host would need separator handling.
 - Swagger UI isn't bundled (it would pull a heavy build-time asset dependency);
   the raw `/openapi.json` is enough to drive client generation. Adding
   `utoipa-redoc` or `utoipa-swagger-ui` behind a feature is a possible
