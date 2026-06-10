@@ -124,10 +124,31 @@ pub fn build_router_with_public(
     let router = build_router(registry);
     let path = public_dir.as_ref();
     if path.is_dir() {
-        router.fallback_service(tower_http::services::ServeDir::new(path))
+        router
+            .fallback_service(tower_http::services::ServeDir::new(path))
+            .layer(axum::middleware::map_response(declare_utf8_charset))
     } else {
         router
     }
+}
+
+/// ServeDir guesses mime types without a charset (`text/plain`, not
+/// `text/plain; charset=utf-8`), and browsers fall back to Latin-1 for bare
+/// text types — garbling any non-ASCII byte. Everything this server produces
+/// is UTF-8 (Rust strings, files we author), so say so.
+async fn declare_utf8_charset(mut resp: Response) -> Response {
+    let Some(ct) = resp.headers().get(http::header::CONTENT_TYPE) else {
+        return resp;
+    };
+    let Ok(ct) = ct.to_str() else { return resp };
+    if ct.starts_with("text/") && !ct.contains("charset") {
+        let with_charset = format!("{}; charset=utf-8", ct);
+        if let Ok(value) = http::HeaderValue::from_str(&with_charset) {
+            resp.headers_mut()
+                .insert(http::header::CONTENT_TYPE, value);
+        }
+    }
+    resp
 }
 
 /// Build an Axum router from a [`RouteRegistry`].

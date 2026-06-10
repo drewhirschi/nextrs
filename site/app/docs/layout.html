@@ -1,0 +1,30 @@
+<div class="mx-auto w-full max-w-6xl px-4 py-8 flex gap-8 items-start">
+  <aside class="hidden md:block w-56 shrink-0 sticky top-4">
+    <ul class="menu bg-base-200 rounded-box w-full">
+      {% for section in sections %}
+      <li class="menu-title">{{ section.name }}</li>
+      {% for doc in section.items %}
+      <li><a href="/docs/{{ doc.slug }}">{{ doc.title }}</a></li>
+      {% endfor %}
+      {% endfor %}
+      <li class="menu-title">For LLMs</li>
+      <li><a href="/llms.txt">llms.txt</a></li>
+      <li><a href="/llms-full.txt">llms-full.txt</a></li>
+    </ul>
+  </aside>
+
+  <div class="min-w-0 flex-1">
+    {{ children|safe }}
+  </div>
+</div>
+
+<script>
+  // Highlight the sidebar link for the current page. Layouts only receive
+  // child HTML, so the active state is resolved client-side.
+  (function () {
+    var path = location.pathname.replace(/\/+$/, "");
+    document.querySelectorAll("aside .menu a").forEach(function (a) {
+      if (a.getAttribute("href") === path) a.classList.add("menu-active");
+    });
+  })();
+</script>

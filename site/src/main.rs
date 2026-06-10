@@ -17,14 +17,16 @@ async fn main() {
 
     // public/ sits next to app/. On Vercel the CDN serves it directly; locally
     // the framework wires ServeDir as a router fallback for the same URLs.
-    let app = nextrs::router::build_router_with_public(
-        generated_registry(),
-        concat!(env!("CARGO_MANIFEST_DIR"), "/public"),
-    )
-    // Serve the OpenAPI document at /openapi.json. It's built from the
-    // #[utoipa::path]-annotated route.rs handlers and drives the generated
-    // TypeScript / React Query client (see site/client/).
-    .merge(nextrs::openapi::spec_router(generated_openapi()));
+    // The compile-time path only resolves on the build machine, so deployments
+    // that move the binary (e.g. Docker) point NEXTRS_PUBLIC_DIR at the
+    // shipped copy of public/.
+    let public_dir = std::env::var("NEXTRS_PUBLIC_DIR")
+        .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/public").to_string());
+    let app = nextrs::router::build_router_with_public(generated_registry(), &public_dir)
+        // Serve the OpenAPI document at /openapi.json. It's built from the
+        // #[utoipa::path]-annotated route.rs handlers and drives the generated
+        // TypeScript / React Query client (see site/client/).
+        .merge(nextrs::openapi::spec_router(generated_openapi()));
 
     #[cfg(debug_assertions)]
     let app = app.layer(tower_livereload::LiveReloadLayer::new());

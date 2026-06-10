@@ -12,3 +12,6 @@ pub mod vercel;
 
 #[cfg(feature = "build")]
 pub mod build;
+
+#[cfg(feature = "build")]
+pub mod docs;

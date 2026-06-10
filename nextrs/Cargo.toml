@@ -22,11 +22,13 @@ vercel = [
     "dep:hyper",
     "dep:tower",
 ]
-# Enables the `nextrs::build` module: codegen invoked from a consumer crate's
-# `build.rs` to emit a `generated_registry()` function from a scan of `app/`.
-# Only depend on this in `[build-dependencies]`, not in `[dependencies]` — it
-# pulls in std::path / std::fs APIs that don't belong in the runtime tree.
-build = []
+# Enables the `nextrs::build` and `nextrs::docs` modules: codegen invoked from
+# a consumer crate's `build.rs` to emit a `generated_registry()` function from
+# a scan of `app/`, and pre-rendered docs content + llms.txt from a scan of a
+# markdown content dir. Only depend on this in `[build-dependencies]`, not in
+# `[dependencies]` — it pulls in std::fs APIs and the markdown renderer, which
+# don't belong in the runtime tree.
+build = ["dep:pulldown-cmark", "dep:toml"]
 
 [dependencies]
 axum = "0.8"
@@ -40,6 +42,10 @@ http = "1"
 async-stream = "0.3.6"
 bytes = "1.11.1"
 futures-core = "0.3.32"
+
+# Optional — only pulled in when the `build` feature is on (build scripts).
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"], optional = true }
+toml = { version = "0.8", optional = true }
 
 # Optional — only pulled in when the `vercel` feature is on.
 vercel_runtime = { version = "2", features = ["axum"], optional = true }

@@ -11,6 +11,10 @@
 @source not "./tailwindcss";
 @source not "./daisyui{,*}.mjs";
 
+/* Typography (`prose` classes) for the docs pages. The standalone Tailwind
+   CLI bundles the first-party plugin; daisyUI themes its colors. */
+@plugin "@tailwindcss/typography";
+
 @plugin "./daisyui.mjs" {
   themes: dim --default;
 }
