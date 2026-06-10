@@ -96,8 +96,16 @@ export default function Dashboard() {
 This is the slick endgame: **components author against hooks only** (nothing new to learn, no props plumbing), the server warms the cache, and freshness/refetch/invalidation keep working because it's ordinary React Query state afterward. The component literally cannot tell whether the data came from the stream or a fetch.
 
 What mode 2 needs that mode 1 doesn't:
-- Rust must produce data under **the query keys orval generates** (derived from URL + params). We control the orval config, so we can pin a deterministic key format — but it's coupling, and a silent key mismatch = silent cache miss (page still works, just refetches; degraded not broken).
+- Rust must produce data under **the query keys orval generates**. Resolved (see below): adopt orval's `[url, params]` format outright.
 - An ergonomic Rust API for "run this handler in-process and capture the JSON" — handlers are in the same binary, so this is a direct call or a `tower::oneshot` against the router, not HTTP.
+
+### Query keys: resolved
+
+orval generates keys mechanically as **`[url, params]`** — the key identifies the *data* (endpoint + arguments), never the page that asked. That's what makes React Query's prefix-based invalidation work across every consumer: `invalidateQueries({ queryKey: ['/api/dashboard'] })` refreshes every param-variant of that endpoint wherever it's used. The decision:
+
+- **Adopt orval's `[url, params]` keys; do not invent a nextrs scheme.** Rust knows both halves when it pre-runs a handler (it routed the request), so key construction is mechanical. Anything custom (operation_id-based, etc.) would fight the keys users' own `invalidateQueries` calls reference.
+- **Robustness is better than it looks:** React Query hashes keys with a stable serializer (object key order ignored), so the Rust side only has to match url + params *content*, not byte-for-byte serialization. A mismatch degrades to a refetch, never a break.
+- **MPA caveat, and the convergence:** with MPA navigation each page load gets a fresh `QueryClient`, so "invalidated across pages" doesn't apply *across navigations* — mode 2 re-seeds server-fresh data each load instead (strictly better than carrying stale entries). Within a page, full sharing/invalidation applies. If client-side navigation lands later (research item), the `QueryClient` becomes persistent and cross-page invalidation works immediately — *because* we seeded canonical keys from day one.
 
 ## Recommendation
 
@@ -109,7 +117,6 @@ Naming: `props.rs` says exactly what the component receives; `data.rs` is the al
 
 ## Open questions
 
-- Mode 2 key derivation: generate the key-building helper *into the Rust side* (a `nextrs::query_key("getDashboard", params)` mirror of orval's), or simplify by keying on operation_id + canonical-JSON params?
 - Should `usePageProps` data also be exposed for refetch (an auto-generated `/dashboard/__props` endpoint)? Lean no for v1 — that's mode 2's job.
 - Payload guardrail: warn at build/serve time past some size (the JSON rides the HTML; 100KB of props is a smell).
 - Does `props.rs` get middleware extensions? Yes by construction (it receives the post-middleware request) — but document the auth pattern explicitly.
