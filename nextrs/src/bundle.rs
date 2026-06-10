@@ -30,6 +30,21 @@ use crate::discovery::discover_routes;
 
 /// Configuration for [`bundle_pages`]. Directory paths are interpreted
 /// relative to `CARGO_MANIFEST_DIR`.
+///
+/// Derives [`Default`] and asks callers to construct with `..Default::default()`
+/// so new fields can be added without breaking them (a plain `#[non_exhaustive]`
+/// would forbid the struct literal entirely, even with functional update):
+///
+/// ```ignore
+/// nextrs::bundle::BundleConfig {
+///     app_dir: "app",
+///     client_dir: "client",
+///     client_alias: "@site/client",
+///     public_dist: "public/dist",
+///     ..Default::default()
+/// }
+/// ```
+#[derive(Default)]
 pub struct BundleConfig<'a> {
     /// The app convention tree, e.g. `"app"`.
     pub app_dir: &'a str,
@@ -41,6 +56,13 @@ pub struct BundleConfig<'a> {
     pub client_alias: &'a str,
     /// Where browser bundles land (served at `/dist/...`), e.g. `"public/dist"`.
     pub public_dist: &'a str,
+    /// Extra rolldown resolve aliases as `(pattern, replacement)` pairs, on top
+    /// of the built-in `@/*` → `<client_dir>/src/*` (which makes shadcn-style
+    /// `@/lib/utils` / `@/components/ui/button` imports resolve). Replacements
+    /// are relative to `client_dir`. Wildcard (`@/*` → `lib/*`) and prefix
+    /// (`~` → `vendor`) forms both work; mirror them in `client/tsconfig.json`
+    /// `paths` so `tsc` and the shadcn CLI agree with the bundler.
+    pub aliases: &'a [(&'a str, &'a str)],
 }
 
 /// Discover `page.tsx` routes, bundle them, and mirror the output into
@@ -117,7 +139,7 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<()> {
     }
     std::fs::create_dir_all(&staging)?;
 
-    run_bundler(inputs, &staging, &client_dir, cfg.client_alias)?;
+    run_bundler(inputs, &staging, &client_dir, cfg.client_alias, cfg.aliases)?;
 
     std::fs::create_dir_all(&dist)?;
     mirror_by_content(&staging, &dist)
@@ -149,11 +171,41 @@ createRoot(document.getElementById("__nx_root__")!).render(
     )
 }
 
+/// Build rolldown's resolve-alias list: the client barrel (a file target,
+/// exact match), the built-in `@/*` → `<client_dir>/src/*` (so shadcn-style
+/// subpath imports resolve — a directory target can do subpaths, a file
+/// target can't), then any user aliases (replacements resolved relative to
+/// `client_dir`).
+fn build_aliases(
+    client_dir: &Path,
+    client_alias: &str,
+    user_aliases: &[(&str, &str)],
+) -> Vec<(String, Vec<Option<String>>)> {
+    let mut aliases = vec![
+        (
+            client_alias.to_string(),
+            vec![Some(client_dir.join("src/index.ts").display().to_string())],
+        ),
+        (
+            "@/*".to_string(),
+            vec![Some(client_dir.join("src/*").display().to_string())],
+        ),
+    ];
+    for (pattern, replacement) in user_aliases {
+        aliases.push((
+            pattern.to_string(),
+            vec![Some(client_dir.join(replacement).display().to_string())],
+        ));
+    }
+    aliases
+}
+
 fn run_bundler(
     inputs: Vec<rolldown::InputItem>,
     staging: &Path,
     client_dir: &Path,
     client_alias: &str,
+    user_aliases: &[(&str, &str)],
 ) -> std::io::Result<()> {
     use rolldown::{Bundler, BundlerOptions, OutputFormat, Platform, RawMinifyOptions};
 
@@ -165,7 +217,6 @@ fn run_bundler(
         "\"development\""
     };
 
-    let client_index = client_dir.join("src/index.ts");
     let options = BundlerOptions {
         input: Some(inputs),
         cwd: Some(client_dir.to_path_buf()),
@@ -181,10 +232,7 @@ fn run_bundler(
             std::iter::once(("process.env.NODE_ENV".to_string(), node_env.to_string())).collect(),
         ),
         resolve: Some(rolldown::ResolveOptions {
-            alias: Some(vec![(
-                client_alias.to_string(),
-                vec![Some(client_index.display().to_string())],
-            )]),
+            alias: Some(build_aliases(client_dir, client_alias, user_aliases)),
             modules: Some(vec![client_dir.join("node_modules").display().to_string()]),
             ..Default::default()
         }),
@@ -257,6 +305,52 @@ mod tests {
         assert_eq!(page_slug("/todos"), "todos");
         assert_eq!(page_slug("/users/{id}"), "users-_id_");
         assert_eq!(page_slug("/a/b/c"), "a-b-c");
+    }
+
+    #[test]
+    fn aliases_include_barrel_and_shadcn_default() {
+        let aliases = build_aliases(Path::new("/proj/client"), "@site/client", &[]);
+        // The client barrel maps to the index file (exact match).
+        assert!(
+            aliases
+                .iter()
+                .any(|(k, v)| k == "@site/client" && v[0].as_deref() == Some("/proj/client/src/index.ts")),
+            "{aliases:?}"
+        );
+        // Built-in shadcn-style @/* → <client>/src/* (directory target, so
+        // subpaths like @/components/ui/button resolve).
+        assert!(
+            aliases
+                .iter()
+                .any(|(k, v)| k == "@/*" && v[0].as_deref() == Some("/proj/client/src/*")),
+            "{aliases:?}"
+        );
+    }
+
+    #[test]
+    fn user_aliases_resolve_relative_to_client_dir() {
+        let aliases = build_aliases(
+            Path::new("/proj/client"),
+            "@site/client",
+            &[("~/*", "vendor/*")],
+        );
+        assert!(
+            aliases
+                .iter()
+                .any(|(k, v)| k == "~/*" && v[0].as_deref() == Some("/proj/client/vendor/*")),
+            "{aliases:?}"
+        );
+    }
+
+    #[test]
+    fn bundle_config_default_allows_partial_construction() {
+        // Default + ..Default::default() keeps new fields additive/non-breaking.
+        let cfg = BundleConfig {
+            app_dir: "app",
+            ..Default::default()
+        };
+        assert_eq!(cfg.app_dir, "app");
+        assert!(cfg.aliases.is_empty());
     }
 
     #[test]
