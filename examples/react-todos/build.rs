@@ -10,6 +10,7 @@ fn main() {
         client_dir: "client",
         client_alias: "@react-todos/client",
         public_dist: "public/dist",
+        ..Default::default()
     })
     .expect("bundle_pages failed");
 }
