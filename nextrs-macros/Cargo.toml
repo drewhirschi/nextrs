@@ -6,9 +6,15 @@ rust-version = "1.85"
 license = "Apache-2.0"
 description = "Proc-macros for nextrs (the #[nextrs::api] attribute)."
 repository = "https://github.com/drewhirschi/nextrs"
+readme = "README.md"
 
 [lib]
 proc-macro = true
 
-# No external deps: the macro only formats tokens and reads its own source
-# file via the stable proc_macro API.
+[dependencies]
+# The attribute itself only formats tokens, but the seed companion (a typed
+# server-side prefetch fn emitted next to eligible GET handlers) needs the
+# handler's parsed signature.
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"

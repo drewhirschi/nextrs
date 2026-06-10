@@ -1,6 +1,8 @@
 # React/TSX Support: page.tsx In The App Tree
 
-**Status:** design manifest, revised after review — no implementation yet. Follows PR #6 (typed React Query client), which is step one of this story.
+**Status:** phases 1 and 2 implemented (CSR `page.tsx` via rolldown bundling; `props.rs` seeding the React Query cache). The runnable `examples/react-todos` crate exercises the full pipeline. Phase 3 (build-time prerender, `loading.tsx`) not started.
+
+One toolchain change from the original: the bundler is **rolldown** (all-Rust, the Vite 8 engine, on crates.io since May 2026), not `swc_bundler` — swc's bundling is officially slated for removal and lacks code splitting.
 
 ## Context
 

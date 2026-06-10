@@ -1,0 +1,42 @@
+[package]
+name = "react-todos"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+publish = false
+# src/bin/dump-openapi.rs makes `cargo run -p react-todos` ambiguous otherwise.
+default-run = "react-todos"
+
+[[bin]]
+name = "react-todos"
+path = "src/main.rs"
+
+[[bin]]
+name = "dump-openapi"
+path = "src/bin/dump-openapi.rs"
+
+# Vercel deployment entry (serverless function). See vercel.json.
+[[bin]]
+name = "index"
+path = "api/index.rs"
+
+[build-dependencies]
+# Depends on the published crate (no path) so this example builds and deploys
+# standalone from its own directory. Inside this repo's workspace, a
+# `[patch.crates-io]` in the root Cargo.toml redirects it to the local source.
+# `tsx` pulls in rolldown to bundle page.tsx; `build` is the registry/seed codegen.
+nextrs = { version = "0.1", features = ["build", "tsx"] }
+
+[dependencies]
+# `vercel` enables StreamingVercelLayer for the deploy entry; harmless locally.
+nextrs = { version = "0.1", features = ["vercel"] }
+axum = "0.8"
+tokio = { version = "1", features = ["full"] }
+tower = "0.5"
+vercel_runtime = { version = "2", features = ["axum"] }
+askama = "0.15"
+http = "1"
+serde = { version = "1", features = ["derive"] }
+utoipa = "5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }

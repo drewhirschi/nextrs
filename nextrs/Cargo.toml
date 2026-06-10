@@ -8,7 +8,7 @@ license = "Apache-2.0"
 repository = "https://github.com/drewhirschi/nextrs"
 homepage = "https://github.com/drewhirschi/nextrs"
 documentation = "https://docs.rs/nextrs"
-readme = "../README.md"
+readme = "README.md"
 
 [features]
 default = []
@@ -29,9 +29,13 @@ vercel = [
 # `[dependencies]` — it pulls in std::fs APIs and the markdown renderer, which
 # don't belong in the runtime tree.
 build = ["dep:pulldown-cmark", "dep:toml"]
+# Enables `nextrs::bundle`: build-time bundling of page.tsx entries via
+# rolldown (all-Rust, the Vite 8 engine). Heavy dependency tree — only enable
+# in [build-dependencies] of apps that actually use .tsx pages.
+tsx = ["build", "dep:rolldown"]
 
 [dependencies]
-nextrs-macros = { path = "../nextrs-macros" }
+nextrs-macros = { path = "../nextrs-macros", version = "0.1.0" }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["fs", "trace"] }
@@ -47,6 +51,11 @@ futures-core = "0.3.32"
 # Optional — only pulled in when the `build` feature is on (build scripts).
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"], optional = true }
 toml = { version = "0.8", optional = true }
+
+# Optional — only pulled in when the `tsx` feature is on (build scripts).
+# Pinned exactly: the crates.io releases are new (May 2026) and the Rust API
+# has no semver promise yet. Bump deliberately.
+rolldown = { version = "=1.1.0", optional = true }
 
 # Optional — only pulled in when the `vercel` feature is on.
 vercel_runtime = { version = "2", features = ["axum"], optional = true }

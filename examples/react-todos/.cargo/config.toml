@@ -1,0 +1,16 @@
+# On Vercel, cargo runs with this directory as the CWD, so it picks up this
+# config and sets NEXTRS_SKIP_BUNDLE — telling build.rs to skip the rolldown
+# bundling step and use the prebuilt public/dist/ bundle instead. (Vercel never
+# runs `npm install`, so there's no node_modules for the bundler to resolve
+# React from.)
+#
+# Local builds run from the workspace root, where cargo does NOT descend into
+# this directory for config, so `cargo run -p react-todos` still bundles
+# normally. Only `cargo` invoked *inside* this dir (i.e. Vercel) skips it.
+[env]
+NEXTRS_SKIP_BUNDLE = "1"
+
+# Empty, but required: the vercel-rust builder reads `config.build.target` and
+# crashes ("Cannot read properties of undefined (reading 'target')") if a
+# .cargo/config.toml exists without a [build] table. Empty = host target.
+[build]

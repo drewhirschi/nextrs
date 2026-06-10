@@ -1,0 +1,5 @@
+# rolldown (the page.tsx bundler, build-dep behind the `tsx` feature) pulls in
+# oxc, which requires rustc >= 1.94. Vercel's Rust image ships an older rustc,
+# so pin a recent stable for the build.
+[toolchain]
+channel = "1.96.0"
