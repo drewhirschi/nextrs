@@ -26,6 +26,7 @@ const WATCH_PATHS: &[&str] = &[
     "site/askama.toml",
     "site/app",
     "site/build.rs",
+    "site/content",
     "site/public",
     "site/src",
     "style",

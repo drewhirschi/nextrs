@@ -1,0 +1,28 @@
+<div class="space-y-10">
+  <div>
+    <h1 class="text-3xl font-bold tracking-tight">Documentation</h1>
+    <p class="mt-2 text-base-content/70 max-w-2xl">
+      Guides for building and deploying nextrs apps. The same markdown sources
+      that render these pages also generate
+      <a href="/llms.txt" class="link link-hover">llms.txt</a> and
+      <a href="/llms-full.txt" class="link link-hover">llms-full.txt</a>,
+      so the human docs and the LLM docs can't drift apart.
+    </p>
+  </div>
+
+  {% for section in sections %}
+  <section>
+    <h2 class="text-xl font-semibold mb-4">{{ section.name }}</h2>
+    <div class="grid gap-4 sm:grid-cols-2">
+      {% for doc in section.items %}
+      <a href="/docs/{{ doc.slug }}" class="card bg-base-200 hover:bg-base-300 transition-colors">
+        <div class="card-body p-5">
+          <h3 class="card-title text-base">{{ doc.title }}</h3>
+          <p class="text-sm text-base-content/70">{{ doc.description }}</p>
+        </div>
+      </a>
+      {% endfor %}
+    </div>
+  </section>
+  {% endfor %}
+</div>
