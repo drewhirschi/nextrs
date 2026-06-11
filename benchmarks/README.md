@@ -35,6 +35,13 @@ benchmarks/scripts/bench-size.sh
 benchmarks/scripts/bench-cold.sh https://<your-app>.vercel.app/api/todos?status=open
 ```
 
+## Deploying the apps (for the cold-start / deployed numbers)
+
+- **Next.js** (`apps/nextjs`) — standard Vercel: `cd apps/nextjs && vercel deploy --prod`. Nothing special.
+- **nextrs** (`../examples/react-todos`) — has Vercel-specific requirements (Rust toolchain pin, prebuilt bundle, runtime declaration, region-as-project-setting). They're documented in that example's [README "Deploy to Vercel" section](../examples/react-todos/README.md#deploy-to-vercel) — read it before deploying, the gotchas are non-obvious.
+
+Both apps emit an `x-cold` response header so `bench-cold.sh` can label cold vs warm.
+
 ## What this is and isn't
 
 It measures **framework + runtime overhead for an identical app** — not that Next.js is a bad tool (it ships HMR, a huge ecosystem, RSC streaming, image optimization, and far more than this app uses). The claim is narrow and honest: for the same user-visible result, nextrs serves it with a fraction of the per-request cost and memory, on a tiny static binary.
