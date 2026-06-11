@@ -17,6 +17,11 @@ Throughput and memory are the crushing, machine-measured wins. Cold start and fu
 
 Full numbers: [`results/results.md`](results/results.md).
 
+## TODO — planned experiments (each another potential win)
+
+- **Cold-start *frequency*** — nextrs's ~43× lighter footprint should let many more concurrent invocations share one warm instance, so Vercel scales out (cold-starts) less often *and* costs less. Preliminary burst data hints at it (15.6% vs 18.0% cold rate) but isn't rigorous; the proper test counts distinct instances spun up under sustained load. See [`methodology.md`](methodology.md#planned-experiments-todo).
+- **Realistic-deps cold-start curve** — heavier app variants to show Next.js's cold start climbing toward multi-second while nextrs's stays flat.
+
 ## The two apps
 
 - **nextrs** — [`../examples/react-todos`](../examples/react-todos) (React `page.tsx` + `props.rs` server-seeded React Query cache).
