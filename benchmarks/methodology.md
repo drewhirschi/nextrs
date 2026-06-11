@@ -47,6 +47,42 @@ Cold-start figures depend on Vercel internals and are reported as measured-on-a-
 
 That Next.js is a bad tool — it ships HMR, a huge ecosystem, RSC streaming, image optimization, and far more than this app exercises. We claim only: for an identical user-visible app, nextrs serves it with a fraction of the per-request cost, memory, and (pending) cold-start latency, because the difference is a static Rust binary vs the Node/RSC runtime.
 
+## Planned experiments (TODO)
+
+Two follow-ups that would each be a significant additional win to demonstrate:
+
+### 1. Cold-start *frequency* (not just latency) — likely a big win
+
+**Hypothesis:** because a nextrs instance uses ~43× less memory and sub-ms CPU
+per request, far more concurrent invocations fit on one warm instance before
+Vercel has to scale out (spin a new, cold instance). So under the same traffic,
+nextrs should trigger **fewer cold starts** — and, for the same reason, cost
+less (fewer instance-seconds). Fluid compute runs multiple concurrent
+invocations per instance, and instances have a memory cap, so a 43× lighter
+footprint translates directly into more headroom per instance.
+
+**Preliminary signal (weak):** in the latency sampling above, identical
+50-concurrent bursts produced a cold rate of **15.6% for nextrs (39/250) vs
+18.0% for Next.js (45/250)** — directionally consistent, but that test was
+designed to measure cold-start *latency*, not *frequency*, so it's confounded
+by warm-pool state and Vercel's scale-out scheduling.
+
+**Proper experiment:** hold a *sustained* fixed concurrency for a fixed window
+against each deployed app and count the **distinct instances spun up** (the
+`x-cold: 1` responses count fresh instances), normalized by total throughput —
+i.e. cold starts per N requests, and instances needed to serve a given RPS.
+Report alongside the per-request memory/CPU so the mechanism is visible. Expect
+nextrs to need dramatically fewer instances for the same load → fewer cold
+starts → lower cost.
+
+### 2. Realistic-deps cold-start curve
+
+Build heavier variants of both apps (component library, more routes, typical
+packages) and chart cold start vs app size. Expectation: Next.js's
+runtime-boot cold start climbs toward multi-second territory as the dependency
+tree grows, while nextrs's static-binary cold start stays ~flat — turning the
+modest minimal-app gap (648 ms vs 830 ms) into the real-world gap.
+
 ## Out of scope (v1)
 
 Pure-HTML Rust bar, DB-backed variants, multi-region/edge, streaming-SSR latency curves, distributed (off-machine) load generation.
