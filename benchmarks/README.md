@@ -38,6 +38,10 @@ benchmarks/scripts/bench-size.sh
 
 # Cold start vs warm TTFB (against a deployed URL; functions self-report via x-cold)
 benchmarks/scripts/bench-cold.sh https://<your-app>.vercel.app/api/todos?status=open
+
+# Cold-start FREQUENCY under sustained load (cold per 1k requests, distinct
+# instances via x-instance) — run against both apps simultaneously for fairness
+benchmarks/scripts/bench-cold-freq.sh https://<your-app>.vercel.app/api/todos?status=open 300 40
 ```
 
 ## Deploying the apps (for the cold-start / deployed numbers)
@@ -45,7 +49,7 @@ benchmarks/scripts/bench-cold.sh https://<your-app>.vercel.app/api/todos?status=
 - **Next.js** (`apps/nextjs`) — standard Vercel: `cd apps/nextjs && vercel deploy --prod`. Nothing special.
 - **nextrs** (`../examples/react-todos`) — has Vercel-specific requirements (Rust toolchain pin, prebuilt bundle, runtime declaration, region-as-project-setting). They're documented in that example's [README "Deploy to Vercel" section](../examples/react-todos/README.md#deploy-to-vercel) — read it before deploying, the gotchas are non-obvious.
 
-Both apps emit an `x-cold` response header so `bench-cold.sh` can label cold vs warm.
+Both apps emit `x-cold` (first request a fresh instance served) and `x-instance` (per-process ID) response headers so `bench-cold.sh` can label cold vs warm and `bench-cold-freq.sh` can count distinct instances directly.
 
 ## What this is and isn't
 

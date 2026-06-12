@@ -51,7 +51,20 @@ That Next.js is a bad tool — it ships HMR, a huge ecosystem, RSC streaming, im
 
 Two follow-ups that would each be a significant additional win to demonstrate:
 
-### 1. Cold-start *frequency* (not just latency) — likely a big win
+### 1. Cold-start *frequency* (not just latency) — MEASURED 2026-06-11
+
+> **Status: done** (`scripts/bench-cold-freq.sh`: sustained fixed concurrency,
+> distinct instances counted via a per-process `x-instance` header; both apps
+> loaded simultaneously, same region). Round 1 (40 workers): **tie** — both
+> spun ≈ one instance per concurrent connection; scale-out is
+> concurrency-driven at low load and the memory hypothesis never engages.
+> Round 2 (150 workers): **nextrs 109 instances vs Next.js 150 (−27%), 108 vs
+> 150 cold starts (−28%)** — modest, real, not the dramatic win hypothesized.
+> The CPU-bound regime (where the ~130× per-process throughput gap should
+> force Next.js to scale out far earlier) was not reachable with a
+> single-machine curl-based generator (~60–75 req/s achieved); that test needs
+> distributed load generation (still TODO, below). Full numbers + caveats in
+> results.md.
 
 **Hypothesis:** because a nextrs instance uses ~43× less memory and sub-ms CPU
 per request, far more concurrent invocations fit on one warm instance before

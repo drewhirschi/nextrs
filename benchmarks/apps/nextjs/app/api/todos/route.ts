@@ -3,8 +3,10 @@ import { add, list } from "@/lib/store";
 
 // Cold-start instrumentation: Vercel exposes no cold/warm signal, so the
 // function reports it. BOOT is set once per instance at module load; the first
-// request on a fresh (cold) instance sees firstSeen === false.
+// request on a fresh (cold) instance sees firstSeen === false. INSTANCE is a
+// per-process ID so sustained-load runs can count distinct instances.
 const BOOT = Date.now();
+const INSTANCE = crypto.randomUUID();
 let firstSeen = false;
 
 function markColdStart(res: NextResponse) {
@@ -12,6 +14,7 @@ function markColdStart(res: NextResponse) {
   firstSeen = true;
   res.headers.set("x-cold", cold ? "1" : "0");
   res.headers.set("x-init-ms", String(Date.now() - BOOT));
+  res.headers.set("x-instance", INSTANCE);
   return res;
 }
 
