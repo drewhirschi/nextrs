@@ -171,28 +171,30 @@ createRoot(document.getElementById("__nx_root__")!).render(
     )
 }
 
-/// Build rolldown's resolve-alias list: the client barrel (a file target,
-/// exact match), the built-in `@/*` → `<client_dir>/src/*` (so shadcn-style
-/// subpath imports resolve — a directory target can do subpaths, a file
-/// target can't), then any user aliases (replacements resolved relative to
-/// `client_dir`).
+/// Build rolldown's resolve-alias list: user aliases first (first match
+/// wins; replacements resolved relative to `client_dir`), then the client
+/// barrel (a file target, exact match), then the built-in `@/*` →
+/// `<client_dir>/src/*` wildcard (so shadcn-style subpath imports resolve)
+/// unless the user supplied their own `@/*`.
+///
+/// Note: tsconfig `paths` discovered by rolldown (per-file, nearest
+/// tsconfig.json) are consulted BEFORE these aliases, so an alias can never
+/// override a specifier a tsconfig already resolves.
 fn build_aliases(
     client_dir: &Path,
     client_alias: &str,
     user_aliases: &[(&str, &str)],
 ) -> Vec<(String, Vec<Option<String>>)> {
-    // The resolver's alias keys are webpack-style PREFIX matches — `*` is not
-    // a glob. Accept the tsconfig-style `X/*` spelling in configs but
-    // normalize it to the `X/` prefix form the resolver actually substitutes
-    // (replacement loses its `*` too, becoming a directory prefix).
+    // oxc_resolver treats alias keys containing `*` as wildcards (prefix +
+    // suffix around the `*`; the matched span substitutes a `*` in the
+    // replacement), and `*`-less keys as exact/whole-segment prefix matches
+    // (`X` matches `X` and `X/sub`, never `Xy`). The tsconfig-style `X/*`
+    // spelling therefore passes through UNCHANGED — do not "normalize" it to
+    // a trailing-slash prefix key: oxc's prefix matching requires the tail to
+    // begin with `/`, which a key ending in `/` can never produce, so the
+    // `X/` form silently never matches (the 0.2.0 bug, just inverted).
     fn norm(pattern: &str, replacement: String) -> (String, Vec<Option<String>>) {
-        match pattern.strip_suffix("/*") {
-            Some(prefix) => (
-                format!("{prefix}/"),
-                vec![Some(replacement.trim_end_matches('*').to_string())],
-            ),
-            None => (pattern.to_string(), vec![Some(replacement)]),
-        }
+        (pattern.to_string(), vec![Some(replacement)])
     }
 
     // User aliases first: the first matching key wins, so a user `@/*` entry
@@ -248,6 +250,21 @@ fn run_bundler(
         resolve: Some(rolldown::ResolveOptions {
             alias: Some(build_aliases(client_dir, client_alias, user_aliases)),
             modules: Some(vec![client_dir.join("node_modules").display().to_string()]),
+            ..Default::default()
+        }),
+        // Pin the JSX transform to the automatic runtime. Rolldown discovers
+        // each file's nearest tsconfig.json and merges its compilerOptions
+        // into the transform; zero-copy setups (migration guide §4.4) bundle
+        // .tsx files owned by a foreign Next.js tsconfig whose
+        // `"jsx": "preserve"` would otherwise disable JSX lowering for
+        // exactly those files and emit raw JSX into the chunk (a syntax
+        // error at load time). An explicit runtime wins the merge — rolldown
+        // then only warns about the conflict.
+        transform: Some(rolldown::BundlerTransformOptions {
+            jsx: Some(rolldown::Either::Right(rolldown::JsxOptions {
+                runtime: Some("automatic".to_string()),
+                ..Default::default()
+            })),
             ..Default::default()
         }),
         ..Default::default()
@@ -331,13 +348,12 @@ mod tests {
                 .any(|(k, v)| k == "@site/client" && v[0].as_deref() == Some("/proj/client/src/index.ts")),
             "{aliases:?}"
         );
-        // Built-in shadcn-style @/* → <client>/src/*, normalized to the
-        // resolver's prefix form (`*` is not a glob to the resolver — alias
-        // keys are webpack-style prefix matches).
+        // Built-in shadcn-style @/* → <client>/src/* stays in oxc's native
+        // wildcard form (the matched span substitutes the `*` in the value).
         assert!(
             aliases
                 .iter()
-                .any(|(k, v)| k == "@/" && v[0].as_deref() == Some("/proj/client/src/")),
+                .any(|(k, v)| k == "@/*" && v[0].as_deref() == Some("/proj/client/src/*")),
             "{aliases:?}"
         );
     }
@@ -352,7 +368,7 @@ mod tests {
         assert!(
             aliases
                 .iter()
-                .any(|(k, v)| k == "~/" && v[0].as_deref() == Some("/proj/client/vendor/")),
+                .any(|(k, v)| k == "~/*" && v[0].as_deref() == Some("/proj/client/vendor/*")),
             "{aliases:?}"
         );
     }
@@ -364,15 +380,15 @@ mod tests {
             "@site/client",
             &[("@/*", "../src/*")],
         );
-        let at_entries: Vec<_> = aliases.iter().filter(|(k, _)| k == "@/").collect();
+        let at_entries: Vec<_> = aliases.iter().filter(|(k, _)| k == "@/*").collect();
         assert_eq!(at_entries.len(), 1, "{aliases:?}");
         assert_eq!(
             at_entries[0].1[0].as_deref(),
-            Some("/proj/client/../src/"),
+            Some("/proj/client/../src/*"),
             "{aliases:?}"
         );
         // And the user entry must come before any built-in would (first match wins).
-        assert_eq!(aliases[0].0, "@/", "{aliases:?}");
+        assert_eq!(aliases[0].0, "@/*", "{aliases:?}");
     }
 
     #[test]

@@ -68,6 +68,13 @@ target files. If the app uses server actions, add a second table — one row per
 schema, and its return/throw contract (§6.2). In action-heavy apps that table,
 not the route list, is the real API surface.
 
+One non-route question belongs on the worksheet: **what created the
+production database schema?** Prisma? drizzle? hand SQL? Did the repo's
+migrations actually run against prod, or only against local dev? Answer it
+now and act on it in §10.1 — the hhh conversion shipped a fully
+locally-verified app that 500'd on its first production sign-in because
+local migrations and prod disagreed about column *types*.
+
 ### 1.1 Convention mapping
 
 | Next.js | nextrs | Notes |
@@ -232,13 +239,25 @@ Notes, all verified in `nextrs/src/bundle.rs`:
   `(pattern, replacement)` with the replacement **relative to `client_dir`**;
   exact patterns map to files, `x/*` patterns to directories. Mirror every
   alias in `client/tsconfig.json` `paths` so `tsc` agrees with the bundler.
-  **Version caveat:** in published `nextrs 0.2.0` the `x/*` alias spelling
-  (including the built-in `@/*`) silently never matches — the resolver's alias
-  keys are prefix matches, not globs, so resolution falls through to tsconfig
-  `paths` (the hhh conversion exploits exactly that fallback). Fixed in
-  framework source 2026-06-11 (`bundle.rs::build_aliases` normalizes `X/*` →
-  `X/` prefix form, and a user `@/*` entry now overrides the built-in); lands
-  in `0.2.1`.
+  **Version caveat:** in published `nextrs 0.2.0` the built-in `@/*` entry
+  sits BEFORE user aliases (a user `@/*` can't override it), and the
+  2026-06-11 source fix that reordered them also "normalized" `X/*` keys to a
+  trailing-slash prefix form the resolver can never match (oxc requires the
+  tail after a prefix key to start with `/`). Fixed properly 2026-06-12:
+  `X/*` keys pass through unchanged — oxc treats `*` keys as real wildcards,
+  substituting the matched span into a `*` in the replacement — and user
+  entries still come first. Lands in `0.2.1`. Two load-bearing mechanics
+  either way: tsconfig `paths` are consulted per-file (nearest tsconfig.json,
+  rolldown auto-discovery) BEFORE any alias, so aliases can't override a
+  specifier a tsconfig already resolves (zero-copy conversions like hhh and
+  bonaparte exploit exactly that); and a specifier rolldown can't resolve is
+  silently emitted as an external `import` — `node --input-type=module
+  --check` or grepping `/dist/*.js` for `from "` catches it.
+- JSX is always lowered with the automatic runtime (framework source
+  2026-06-12, lands in `0.2.1`). Previously a zero-copy `.tsx` file owned by
+  a foreign tsconfig with `"jsx": "preserve"` (every Next.js app) kept raw
+  JSX in the emitted chunk — a syntax error at load time — because rolldown
+  merges each file's nearest tsconfig into its transform options.
 - Release builds (`cargo build --release`) minify and set
   `process.env.NODE_ENV = "production"`; debug builds don't.
 - Bundle names are stable: `/dist/<slug>.js` where `/` → `index`, `/todos` →
@@ -356,14 +375,17 @@ Convert in this order; each step leaves the app buildable:
 1. Scaffold (§2) with an empty `app/` + one hello-world `page.tsx`; verify
    local run and `npm run gen` round-trip.
 2. CSS pipeline + `public/` assets (§9).
-3. Auth (§10.2) — the universal blocker: middleware, action-endpoint guards,
+3. Schema audit (§10.1): determine what created prod, introspect the live
+   types, land the local mirror migration + drift tests — before the first
+   sqlx query is written.
+4. Auth (§10.2) — the universal blocker: middleware, action-endpoint guards,
    and most pages depend on the session.
-4. API routes (§6) and server-action modules → endpoints + shim (§6.2),
+5. API routes (§6) and server-action modules → endpoints + shim (§6.2),
    module-by-module, read-only modules first; regenerate the typed client
    (§8) as annotated routes land.
-5. Middleware (§7).
-6. Layouts (§5), then pages leaf-first (§4), each with its `props.rs` seed.
-7. Deploy (§11), then the verification pass (§12).
+6. Middleware (§7).
+7. Layouts (§5), then pages leaf-first (§4), each with its `props.rs` seed.
+8. Deploy (§11), then the verification pass (§12).
 
 ## 4. Pages
 
@@ -1088,7 +1110,7 @@ under `QueryClientProvider` on `#__nx_root__`.
 
 | Next.js dependency | Rust replacement | Notes |
 |---|---|---|
-| kysely + postgres-js / pg | **sqlx** (`features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "uuid"]`) | Same database, same schema, same queries. Translate query-builder calls to `sqlx::query_as!`/`query!` (compile-time-checked against the live schema via `DATABASE_URL`, or use `query_as::<_, T>` + `FromRow` to avoid the build-time DB dependency — prefer the latter for Vercel builds, or commit `.sqlx` offline data via `cargo sqlx prepare`). Lazily init a `PgPool` in a `tokio::sync::OnceCell` — don't pay for it at cold start before the first query, and keep `max_connections` small (≈5) per serverless instance; point at a pooled connection string (pgbouncer/Supabase pooler) if instance counts can spike. |
+| kysely + postgres-js / pg | **sqlx** (`features = ["runtime-tokio", "tls-rustls", "postgres", "chrono", "uuid"]`) | Same database, same schema, same queries. Translate query-builder calls to `sqlx::query_as!`/`query!` (compile-time-checked against the live schema via `DATABASE_URL`, or use `query_as::<_, T>` + `FromRow` to avoid the build-time DB dependency — prefer the latter for Vercel builds, or commit `.sqlx` offline data via `cargo sqlx prepare`). Lazily init a `PgPool` in a `tokio::sync::OnceCell` — don't pay for it at cold start before the first query, and keep `max_connections` small (≈5) per serverless instance; point at a pooled connection string (pgbouncer/Supabase pooler) if instance counts can spike. **Before any query: §10.1** — if prod was born from an ORM (Prisma), enum columns are native PG enum types and sqlx needs casts everywhere the JS driver needed nothing. |
 | better-auth (server) | Bun/Node sidecar at `/api/auth/*`, or implement its HTTP contract in Rust (§10.2) | Keep the better-auth **client** package unchanged either way. |
 | @aws-sdk/client-s3 + s3-request-presigner | **aws-sdk-s3** (+ `aws-config`) | Presigning: `client.put_object().bucket(b).key(k).presigned(PresigningConfig::expires_in(Duration::from_secs(300))?)`. Custom endpoints (R2/MinIO) via `config::Builder::endpoint_url`. Reads/writes/deletes map 1:1. |
 | sharp | **image** (decode/resize) + **webp** (lossy encode) + **kamadak-exif** (orientation) | `image`'s own WebP encoder is lossless-only; use the `webp` crate for `quality: 80`-style output. `sharp().rotate()` (EXIF auto-orient) is not automatic — read the EXIF orientation tag and apply `rotate90/180/270` before resizing. `resize(w, h, {fit: "cover"})` = scale to fill + center-crop (`resize_to_fill` in `image`). Bytes will differ from sharp's; behavior (dimensions, format, orientation) must not. |
@@ -1096,6 +1118,74 @@ under `QueryClientProvider` on `#__nx_root__`.
 | NextResponse.json / .redirect / cookies | `axum::Json`, `(StatusCode, Json<T>)`, `Redirect::to`, `SET_COOKIE` headers / `axum-extra` `CookieJar` | §6. |
 | next/headers `headers()`/`cookies()` | `req.headers()` in middleware/props; `HeaderMap`/`CookieJar` extractors in route.rs | |
 | @vercel/og, next/og | Skip or pre-render | No equivalent; static OG images in `public/`. |
+
+### 10.1 The production schema is the spec — not your migrations
+
+The one failure class in the hhh conversion that got past **every** local
+verification layer — unit tests, byte-level wire parity, browser e2e, the
+deployed read-only smoke — was type drift between production and the repo's
+own migrations. sqlx makes that drift fatal where the JS stack made it
+invisible. Do this section before the first sqlx query.
+
+How it actually happened **[hhh]** (slice 7, a deployed-breakage fix):
+
+- Production Postgres was created by **Prisma**, so every enum column is a
+  **native PG enum type** with a quoted, case-preserved name (`"Role"`,
+  `"Status"`, `"PaymentMethod"`, …).
+- The repo's raw-SQL local-dev migrations recreated those columns as
+  `TEXT` + CHECK. postgres-js sends params untyped and decodes enums as
+  strings, so the TS app behaved identically against both schemas — nothing
+  ever noticed.
+- sqlx is strict in both directions: it refuses to decode an enum into
+  `String`, and it binds `&str` as TEXT, which has no `=` operator against
+  an enum. The deployed Rust binary 500'd on the first row decode of every
+  enum column (sign-in) and failed the first write (sign-up's
+  `INSERT … RETURNING role` → 422) — while the entire local suite stayed
+  green, because local matched the migrations, not prod.
+- Worse, the repo's `schema.prisma` was itself **generated from the local
+  TEXT database by a lossy script**, so even "the schema file" lied:
+  first-wins enum value unions (a 2-value `Status` whose own
+  `@default(ACTIVE)` couldn't have validated) and a substring-match phantom
+  enum on an INTEGER column. Generated schema files are *evidence*, not
+  spec.
+
+The procedure:
+
+1. **Determine what actually created prod** (Prisma? drizzle? hand SQL?),
+   then introspect the live database — `information_schema.columns`
+   (`udt_name`) and `pg_enum` — and treat that as the only source of truth.
+   Diff it against what the repo's migrations build locally.
+2. **Make local mirror prod's real types before any Rust is written**, as a
+   migration in the established pattern (**[hhh]**
+   `migrations/015_native_enums.sql`: converts the 10 enum columns to the
+   native types and drops the value-list CHECKs prod never had).
+3. **sqlx cast conventions for native enums**, every query, no exceptions:
+   - *Reads*: `SELECT *` / `RETURNING *` are forbidden on enum-bearing
+     tables. Use shared per-table column-list consts (`USER_COLS`, …) that
+     cast `col::text AS col`. PG-built JSON (`json_build_object`,
+     `json_agg`) needs **no** cast — enums render as label strings, wire
+     bytes unchanged.
+   - *Writes & filters*: every bound param hitting an enum column gets the
+     cast in SQL — `VALUES (…, $3::"Type", …)`,
+     `status = COALESCE($2::"Status", status)`,
+     `WHERE status = $1::"Status"`; in `QueryBuilder`, `push_bind(v)` then
+     `push("::\"Status\"")`. String *literals* (`status = 'CONFIRMED'`)
+     are fine — unknown-typed literals resolve to the enum.
+4. **Pin it with regression tests** (pattern: hhh `tests/schema_drift.rs`):
+   pin `udt_name` for every enum column (and any almost-enum column the
+   generated schema lied about), pin each type's value set via `pg_enum`,
+   assert the **negative** — an un-cast `String` decode and an un-cast
+   TEXT bind must *fail* (if they succeed, local has drifted back to TEXT
+   and every cast in the codebase is masking nothing) — and round-trip
+   every enum column through the real domain/auth code paths.
+5. **The deployed smoke test must include at least one write path.** hhh's
+   deployed app passed every read-only smoke while every enum-touching
+   read and write was broken; one sign-up would have caught it in seconds.
+   Related sharp edge: a non-transactional `INSERT … RETURNING` commits
+   server-side even when sqlx then fails to decode the returned row
+   client-side — the failed deployed sign-up left an orphaned `user` row
+   that blocked re-registration. Wrap multi-effect writes in transactions
+   so a decode failure can't strand partial state.
 
 ### 10.2 better-auth: keep the client; sidecar or reimplement the server
 
@@ -1176,23 +1266,90 @@ curl -si localhost:3000/api/auth/get-session -H "cookie: $COOKIE"
 curl -si -X POST localhost:3000/api/auth/sign-out -H "cookie: $COOKIE"
 ```
 
-Implementation notes for the Rust side:
+#### The (b) playbook: verified constants and behaviors
 
-- **Session cookie**: replicate the exact cookie name (default
-  `better-auth.session_token`; `__Secure-` prefix on HTTPS), value format
-  (token + HMAC signature), and attributes (HttpOnly, SameSite=Lax, Path=/,
-  expiry) as observed in the captures. Crates: `hmac` + `sha2` + `base64`.
-  Sessions live in the `session` table — token lookup, expiry check, sliding
-  refresh per the observed behavior.
-- **Password hashing**: better-auth defaults to **scrypt**. Verify the stored
-  format from a fixture row (register a user via the Next app, then make the
-  Rust verifier accept that exact hash) before writing any login code. Crate:
-  `scrypt` (or `password-hash`-compatible wrapper). Existing users must keep
-  logging in: never re-hash, only verify.
-- **Google OAuth**: standard code flow — build the consent URL
-  (`sign-in/social` returns `{url}` for the client to navigate to), exchange
-  the code in the callback, upsert `user`+`account`, set the session cookie,
-  302 to the app. Crates: `oauth2` or hand-rolled with `reqwest`.
+hhh slice 6 landed (b) in one ~60-minute slice and deleted the sidecar.
+Every fact below was read out of **better-auth 1.4.18** source
+(`better-auth`, `better-call`, `@better-auth/core`) and verified against
+fixtures plus the live sidecar as an oracle (hhh `src/auth/`) — for any
+other better-auth version, re-verify each one before trusting it:
+
+- **Password hashing — scrypt** `N=16384, r=16, p=1, dkLen=64`, stored as
+  `<hex salt(32)>:<hex key(128)>` in `account.password`. Two traps: the
+  salt fed to scrypt is the **ASCII bytes of the 32-char hex string** (16
+  random bytes hex-encoded *first*), not the decoded bytes; and the
+  password is **NFKC-normalized** before hashing. Existing users must keep
+  logging in — verify-only against stored rows; fresh hashes are
+  indistinguishable. Gate on a golden vector: a captured sidecar-created
+  row must verify byte-for-byte before any login code ships.
+- **IDs/tokens**: every row id and the session token are `generateId(32)` —
+  32 chars uniform over `[a-zA-Z0-9]` via rejection sampling. Reset tokens
+  are 24 chars of the same alphabet; OAuth `state` is 32 chars and the PKCE
+  verifier 128 chars over the wider `[a-z0-9A-Z-_]`.
+- **Session cookie**: `better-auth.session_token` (`__Secure-` prefix +
+  `Secure` when the base URL is https) =
+  `encodeURIComponent(<token>.<std-base64-padded HMAC-SHA256(secret, token)>)`.
+  The **raw token** (not the signed value) is what's stored in the
+  `session` table. Attributes in better-call's serialization order:
+  `Max-Age, Path=/, HttpOnly, [Secure,] SameSite=Lax`. Session lifetimes:
+  `expiresIn` 7d, `updateAge` 1d rolling refresh on get-session;
+  `rememberMe: false` adds a signed `dont_remember` cookie.
+- **Google OAuth**: state is **double-stored** — a `verification` row
+  (`identifier = state`, value = `{callbackURL, codeVerifier, expiresAt}`,
+  10-min expiry) *and* a signed `better-auth.state` cookie (Max-Age 300)
+  that the callback must round-trip. S256 PKCE on the consent URL + token
+  exchange. The profile is read from the **id_token payload without a
+  signature check** (same as better-auth — it arrives over TLS from
+  Google). Account linking, in order: existing linked account → token
+  refresh; existing user matched by email → implicit link **only if the
+  provider says the email is verified** (else an `account_not_linked`
+  error redirect); otherwise register.
+- **Sign-out** clears **three** cookies (`session_token`, `session_data`,
+  `dont_remember`) and returns `{"success":true}`.
+- **better-call quirks worth byte-matching**: a non-empty body with a
+  missing or wrong `content-type` → 415 `APIError` (empty body: no 415);
+  error bodies are `{"code": UPPER_SNAKE(message), "message": message}`;
+  **302 redirects still carry `content-type: application/json`** with an
+  empty body; unknown `/api/auth/*` paths answer an empty-body 404.
+- **`isDevelopment()`** means `NODE_ENV ∈ {"dev", "development"}`
+  *exactly* — an unset NODE_ENV is NOT development. Observable: dev mode
+  writes `session.ip_address = ""` for header-less requests (the
+  localhost-IP fallback).
+- **Timestamp asymmetry**: with postgres-js and `timestamp` (no tz)
+  columns, the better-auth stack *writes* UTC wall time but *reads* it
+  back as node-local — on a non-UTC dev machine every wire timestamp (and
+  the refreshed cookie's Max-Age) is skewed by the UTC offset; in prod
+  (TZ=UTC) the halves coincide. Replicate it, don't fix it — and run
+  oracle and port under the **same TZ**, or every diff is noise.
+
+Crates that cover all of it: `scrypt`, `unicode-normalization`, `hmac` +
+`sha2` + `base64`, `percent-encoding`, `getrandom`, `reqwest` (token
+exchange).
+
+#### Oracle diff: the required verification protocol
+
+Do not delete the sidecar on the strength of unit tests. Run the sidecar
+and the Rust port **side by side on the same database** and diff every
+endpoint — status, the headers that matter (`set-cookie`, `location`,
+`content-type`), and `jq -S` JSON bodies — across success *and* every
+error/edge path: anon/bad-signature/expired/unknown-token get-session,
+rolling refresh, each sign-up and sign-in error shape, the CSRF/origin
+matrix, sign-out variants (including both 415 flavors), consent-URL
+fields and the state cookie, the callback state machine, and reset-token
+single-use/expiry. **[hhh]**: 48/48 comparisons green before deletion.
+Document the accepted-inert diffs (header name case, refreshed-cookie
+Max-Age ±1s, reason phrases, per-request random tokens/timestamps) so the
+next run doesn't re-litigate them.
+
+The oracle dies with the sidecar, so land durable replacements first:
+golden crypto vectors (the scrypt fixture row, cookie/state signatures vs
+captures, a PKCE RFC 7636 vector), an OAuth-callback integration test
+against a **mocked token endpoint** (register / implicit-link /
+token-refresh / unverified-email-rejection paths), and tamper/expiry
+rejection tests for every signed cookie.
+
+Two notes that survive from the general case:
+
 - Unannotated handlers are fine here — the better-auth client brings its own
   fetch layer; these endpoints don't need to be in the orval client. Leave
   them un-annotated (raw `impl IntoResponse` allowed) and exact-match the
@@ -1391,6 +1548,8 @@ cookie) and diff status, headers that matter (`set-cookie`, `location`,
       client says `client ✓`.
 - [ ] Deployed: streaming verified on Vercel (`curl --no-buffer`), static
       assets show `x-vercel-cache: HIT`, region as intended.
+- [ ] Deployed smoke includes at least one **write** flow (sign-up or a
+      mutation) — read-only smokes pass right through schema drift (§10.1).
 
 ## 13. Framework gaps (verified against `nextrs` source)
 
@@ -1424,11 +1583,23 @@ during) a conversion that needs them.
 These come from the apps being migrated, not from nextrs — the first survey
 (hhh) hit every one of them. Ranked roughly by blast radius:
 
-- **Auth server parity** (§10.2). The single riskiest decision; default to
-  the sidecar.
+- **Auth server parity** (§10.2). The single riskiest decision — but now a
+  proven two-step path, not a leap: sidecar (a) first, then swap in the
+  Rust port against the §10.2 playbook with the sidecar as a live oracle
+  before deleting it (**[hhh]**: 48/48 endpoint diffs green, sidecar gone,
+  single binary restored, in one ~60-minute slice).
+- **Prod/local schema drift** (§10.1). The only hazard on this list that
+  passes *every* local verification layer and still takes prod down: type
+  drift (native enums vs TEXT) is invisible to a tolerant JS driver and
+  fatal to sqlx. Introspect prod, mirror it locally, pin it with negative
+  tests, smoke-test a deployed write.
 - **Server-action serialization drift** (§6.2): Dates, DECIMAL strings,
   null/undefined tri-state, throw-vs-envelope. Surfaces as subtle UI breakage
-  spread across every consuming component; fixture-diff per module.
+  spread across every consuming component; fixture-diff per module. A fifth
+  case, from the enum work: the *wire* shape of an enum column is a plain
+  string either way, so wire fixtures stay green while prod's native enum
+  types break the Rust reads/writes outright — that one is §10.1's, not a
+  fixture's, to catch.
 - **Timezone semantics.** JS date math (`new Date()`, `getDay()`, week
   bucketing, "next N days" windows) runs in the server process's local TZ;
   chrono in Rust defaults to UTC. A naive port silently shifts times and
