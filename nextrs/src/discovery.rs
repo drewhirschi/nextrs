@@ -38,11 +38,17 @@ pub struct DiscoveredRoute {
 }
 
 /// Converts a directory name to a URL segment.
-/// `[param]` becomes `{param}` (Axum dynamic segment syntax).
+/// `[param]` becomes `{param}` (Axum dynamic segment syntax);
+/// `[...param]` (Next.js catch-all) becomes `{*param}` (Axum wildcard —
+/// matches one or more trailing segments, like Next's required catch-all).
 fn dir_name_to_segment(name: &str) -> String {
     if name.starts_with('[') && name.ends_with(']') {
         let param = &name[1..name.len() - 1];
-        format!("{{{}}}", param)
+        if let Some(rest) = param.strip_prefix("...") {
+            format!("{{*{}}}", rest)
+        } else {
+            format!("{{{}}}", param)
+        }
     } else {
         name.to_string()
     }
@@ -161,6 +167,18 @@ mod tests {
         assert!(routes[0].page.rs.is_some());
         assert!(routes[0].page.html.is_none());
         assert!(!routes[0].layout.exists());
+    }
+
+    #[test]
+    fn test_dynamic_and_catch_all_segments() {
+        assert_eq!(dir_name_to_segment("[id]"), "{id}");
+        assert_eq!(dir_name_to_segment("[...all]"), "{*all}");
+        assert_eq!(dir_name_to_segment("plain"), "plain");
+
+        let tmp = setup_app_dir(&[("api/auth/[...all]", &["route.rs"])]);
+        let routes = discover_routes(tmp.path());
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].url_path, "/api/auth/{*all}");
     }
 
     #[test]

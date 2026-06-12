@@ -6,6 +6,9 @@
 @source "../site/app/**/*.html";
 @source "../site/app/**/*.rs";
 @source "../api/**/*.rs";
+/* Docs markdown can embed raw HTML (e.g. the stat band on the performance
+   page) — scan it so those classes compile. */
+@source "../site/content/**/*.md";
 
 /* Exclude the build tooling from being scanned. */
 @source not "./tailwindcss";

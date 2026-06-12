@@ -31,9 +31,12 @@ async fn main() {
     #[cfg(debug_assertions)]
     let app = app.layer(tower_livereload::LiveReloadLayer::new());
 
-    let addr = "0.0.0.0:3000";
+    let addr = format!(
+        "0.0.0.0:{}",
+        std::env::var("PORT").unwrap_or_else(|_| "3000".into())
+    );
     tracing::info!("Listening on {}", addr);
 
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }

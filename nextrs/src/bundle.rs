@@ -181,21 +181,35 @@ fn build_aliases(
     client_alias: &str,
     user_aliases: &[(&str, &str)],
 ) -> Vec<(String, Vec<Option<String>>)> {
-    let mut aliases = vec![
-        (
-            client_alias.to_string(),
-            vec![Some(client_dir.join("src/index.ts").display().to_string())],
-        ),
-        (
-            "@/*".to_string(),
-            vec![Some(client_dir.join("src/*").display().to_string())],
-        ),
-    ];
-    for (pattern, replacement) in user_aliases {
-        aliases.push((
-            pattern.to_string(),
-            vec![Some(client_dir.join(replacement).display().to_string())],
-        ));
+    // The resolver's alias keys are webpack-style PREFIX matches — `*` is not
+    // a glob. Accept the tsconfig-style `X/*` spelling in configs but
+    // normalize it to the `X/` prefix form the resolver actually substitutes
+    // (replacement loses its `*` too, becoming a directory prefix).
+    fn norm(pattern: &str, replacement: String) -> (String, Vec<Option<String>>) {
+        match pattern.strip_suffix("/*") {
+            Some(prefix) => (
+                format!("{prefix}/"),
+                vec![Some(replacement.trim_end_matches('*').to_string())],
+            ),
+            None => (pattern.to_string(), vec![Some(replacement)]),
+        }
+    }
+
+    // User aliases first: the first matching key wins, so a user `@/*` entry
+    // overrides the built-in `@/*` → `<client_dir>/src/*` default.
+    let mut aliases: Vec<(String, Vec<Option<String>>)> = user_aliases
+        .iter()
+        .map(|(pattern, replacement)| {
+            norm(pattern, client_dir.join(replacement).display().to_string())
+        })
+        .collect();
+    aliases.push((
+        client_alias.to_string(),
+        vec![Some(client_dir.join("src/index.ts").display().to_string())],
+    ));
+    let builtin = norm("@/*", client_dir.join("src/*").display().to_string());
+    if !aliases.iter().any(|(k, _)| *k == builtin.0) {
+        aliases.push(builtin);
     }
     aliases
 }
@@ -317,12 +331,13 @@ mod tests {
                 .any(|(k, v)| k == "@site/client" && v[0].as_deref() == Some("/proj/client/src/index.ts")),
             "{aliases:?}"
         );
-        // Built-in shadcn-style @/* → <client>/src/* (directory target, so
-        // subpaths like @/components/ui/button resolve).
+        // Built-in shadcn-style @/* → <client>/src/*, normalized to the
+        // resolver's prefix form (`*` is not a glob to the resolver — alias
+        // keys are webpack-style prefix matches).
         assert!(
             aliases
                 .iter()
-                .any(|(k, v)| k == "@/*" && v[0].as_deref() == Some("/proj/client/src/*")),
+                .any(|(k, v)| k == "@/" && v[0].as_deref() == Some("/proj/client/src/")),
             "{aliases:?}"
         );
     }
@@ -337,7 +352,39 @@ mod tests {
         assert!(
             aliases
                 .iter()
-                .any(|(k, v)| k == "~/*" && v[0].as_deref() == Some("/proj/client/vendor/*")),
+                .any(|(k, v)| k == "~/" && v[0].as_deref() == Some("/proj/client/vendor/")),
+            "{aliases:?}"
+        );
+    }
+
+    #[test]
+    fn user_alias_overrides_builtin_shadcn_default() {
+        let aliases = build_aliases(
+            Path::new("/proj/client"),
+            "@site/client",
+            &[("@/*", "../src/*")],
+        );
+        let at_entries: Vec<_> = aliases.iter().filter(|(k, _)| k == "@/").collect();
+        assert_eq!(at_entries.len(), 1, "{aliases:?}");
+        assert_eq!(
+            at_entries[0].1[0].as_deref(),
+            Some("/proj/client/../src/"),
+            "{aliases:?}"
+        );
+        // And the user entry must come before any built-in would (first match wins).
+        assert_eq!(aliases[0].0, "@/", "{aliases:?}");
+    }
+
+    #[test]
+    fn exact_aliases_pass_through_unnormalized() {
+        let aliases = build_aliases(
+            Path::new("/proj/client"),
+            "@site/client",
+            &[("react-dom/client", "vendor/react-dom-client.ts")],
+        );
+        assert!(
+            aliases.iter().any(|(k, v)| k == "react-dom/client"
+                && v[0].as_deref() == Some("/proj/client/vendor/react-dom-client.ts")),
             "{aliases:?}"
         );
     }

@@ -163,7 +163,7 @@ fn first_generic_arg(ty: &syn::Type) -> Option<&syn::Type> {
 
 /// Turn a `route.rs` file path into its URL, mirroring `nextrs::discovery`:
 /// anchor on the `app/` segment, drop the trailing `route.rs`, and map
-/// `[param]` segments to `{param}`.
+/// `[param]` segments to `{param}` and `[...param]` (catch-all) to `{*param}`.
 fn url_from_file(file: &str) -> String {
     let after = file.rsplit_once("app/").map_or(file, |(_, rest)| rest);
     let dir = after
@@ -176,7 +176,10 @@ fn url_from_file(file: &str) -> String {
     let segments: Vec<String> = dir
         .split('/')
         .map(|seg| match seg.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            Some(param) => format!("{{{param}}}"),
+            Some(param) => match param.strip_prefix("...") {
+                Some(rest) => format!("{{*{rest}}}"),
+                None => format!("{{{param}}}"),
+            },
             None => seg.to_string(),
         })
         .collect();
@@ -192,7 +195,7 @@ fn default_operation_id(method: &str, url: &str) -> String {
         match seg.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
             Some(param) => {
                 id.push_str("By");
-                id.push_str(&pascal(param));
+                id.push_str(&pascal(param.trim_start_matches('*')));
             }
             None => id.push_str(&pascal(seg)),
         }
@@ -238,6 +241,18 @@ mod tests {
         assert_eq!(
             url_from_file("app/users/[id]/posts/[postId]/route.rs"),
             "/users/{id}/posts/{postId}"
+        );
+    }
+
+    #[test]
+    fn url_maps_catch_all_segments() {
+        assert_eq!(
+            url_from_file("app/api/auth/[...all]/route.rs"),
+            "/api/auth/{*all}"
+        );
+        assert_eq!(
+            default_operation_id("post", "/api/auth/{*all}"),
+            "postApiAuthByAll"
         );
     }
 
