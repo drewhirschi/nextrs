@@ -7,7 +7,7 @@ fn main() {
     // friends), all into OUT_DIR from the same sources.
     nextrs::docs::emit_docs(&nextrs::docs::DocsConfig {
         content_dir: "site/content/docs",
-        base_url: "https://nextrs-umber.vercel.app",
+        base_url: "https://nextrs-docs.vercel.app",
         route_prefix: "/docs",
         site_name: "nextrs",
         site_description: "A Next.js-style routing framework for Rust built on Axum and Askama.",
