@@ -28,6 +28,11 @@ pub struct DiscoveredRoute {
     pub page: Slot,
     pub layout: Slot,
     pub loading: Slot,
+    /// `not-found.{rs,html,tsx}` — the 404 surface for this segment's subtree.
+    /// Rendered (wrapped in this segment's layouts) when no route under it
+    /// matches. Like `page`, it may have a `.tsx` client-rendered variant;
+    /// `.tsx` alongside `.rs`/`.html` is a codegen conflict.
+    pub not_found: Slot,
     /// `middleware.rs` request guard — no `.html` variant.
     pub middleware: Option<PathBuf>,
     /// `route.rs` (API handler) — no `.html` variant.
@@ -104,6 +109,11 @@ fn scan_dir(app_root: &Path, current: &Path, routes: &mut BTreeMap<String, Disco
         html: optional_path(current, "loading.html"),
         tsx: None,
     };
+    let not_found = Slot {
+        rs: optional_path(current, "not-found.rs"),
+        html: optional_path(current, "not-found.html"),
+        tsx: optional_path(current, "not-found.tsx"),
+    };
     let middleware = optional_path(current, "middleware.rs");
     let route = optional_path(current, "route.rs");
     let props = optional_path(current, "props.rs");
@@ -111,6 +121,7 @@ fn scan_dir(app_root: &Path, current: &Path, routes: &mut BTreeMap<String, Disco
     if page.exists()
         || layout.exists()
         || loading.exists()
+        || not_found.exists()
         || middleware.is_some()
         || route.is_some()
         || props.is_some()
@@ -123,6 +134,7 @@ fn scan_dir(app_root: &Path, current: &Path, routes: &mut BTreeMap<String, Disco
                 page,
                 layout,
                 loading,
+                not_found,
                 middleware,
                 route,
                 props,
@@ -378,6 +390,43 @@ mod tests {
         assert!(!routes[0].layout.exists());
         assert!(routes[0].loading.tsx.is_none());
         assert!(!routes[0].loading.exists());
+    }
+
+    // -- not-found convention --------------------------------------------------
+
+    #[test]
+    fn test_discover_not_found_variants() {
+        let tmp = setup_app_dir(&[
+            ("", &["not-found.rs"]),
+            ("admin", &["not-found.html"]),
+            ("app", &["not-found.tsx"]),
+        ]);
+
+        let routes = discover_routes(tmp.path());
+        assert_eq!(routes.len(), 3);
+
+        // routes sort alphabetically: /, /admin, /app
+        assert_eq!(routes[0].url_path, "/");
+        assert!(routes[0].not_found.exists());
+        assert!(routes[0].not_found.rs.is_some());
+
+        assert_eq!(routes[1].url_path, "/admin");
+        assert!(routes[1].not_found.html.is_some());
+
+        assert_eq!(routes[2].url_path, "/app");
+        assert!(routes[2].not_found.tsx.is_some());
+    }
+
+    #[test]
+    fn test_not_found_only_segment_registers() {
+        // A directory with ONLY a not-found file still registers a route.
+        let tmp = setup_app_dir(&[("admin", &["not-found.rs"])]);
+
+        let routes = discover_routes(tmp.path());
+        assert_eq!(routes.len(), 1);
+        assert_eq!(routes[0].url_path, "/admin");
+        assert!(!routes[0].page.exists());
+        assert!(routes[0].not_found.rs.is_some());
     }
 
     #[test]

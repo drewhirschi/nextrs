@@ -25,8 +25,8 @@
 
 use std::path::{Path, PathBuf};
 
-pub use crate::build::page_slug;
-use crate::discovery::discover_routes;
+pub use crate::build::{not_found_slug, page_slug};
+use crate::discovery::{DiscoveredRoute, discover_routes};
 
 /// Configuration for [`bundle_pages`]. Directory paths are interpreted
 /// relative to `CARGO_MANIFEST_DIR`.
@@ -94,9 +94,21 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<()> {
         client_dir.join("package.json").display()
     );
 
+    // Both `page.tsx` and `not-found.tsx` are client-rendered entries; each gets
+    // its own bundle under a distinct slug so a segment can have both.
     let tsx_pages: Vec<(String, PathBuf)> = discover_routes(&abs_app)
         .into_iter()
-        .filter_map(|r| r.page.tsx.map(|p| (page_slug(&r.url_path), p)))
+        .flat_map(|r| {
+            let DiscoveredRoute {
+                url_path,
+                page,
+                not_found,
+                ..
+            } = r;
+            let page_entry = page.tsx.map(|p| (page_slug(&url_path), p));
+            let nf_entry = not_found.tsx.map(|p| (not_found_slug(&url_path), p));
+            page_entry.into_iter().chain(nf_entry)
+        })
         .collect();
 
     let dist = manifest_dir.join(cfg.public_dist);

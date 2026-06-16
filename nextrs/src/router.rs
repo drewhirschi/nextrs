@@ -7,7 +7,9 @@ use bytes::Bytes;
 use std::convert::Infallible;
 use std::sync::Arc;
 
-use crate::conventions::{LayoutFn, MiddlewareFn, MiddlewareResult, RouteEntry, RouteRegistry};
+use crate::conventions::{
+    LayoutFn, MiddlewareFn, MiddlewareResult, NotFoundEntry, RouteEntry, RouteRegistry,
+};
 
 /// Internal sentinel that gets substituted into composed layouts so we can
 /// split the result into the "before children" and "after children" halves.
@@ -121,14 +123,36 @@ pub fn build_router_with_public(
     registry: RouteRegistry,
     public_dir: impl AsRef<std::path::Path>,
 ) -> Router {
-    let router = build_router(registry);
+    use axum::handler::HandlerWithoutStateExt;
+
+    let entries = Arc::new(registry.entries);
+    let not_found = Arc::new(registry.not_found);
+    let router = build_route_table(Arc::clone(&entries));
     let path = public_dir.as_ref();
+
     if path.is_dir() {
-        router
-            .fallback_service(tower_http::services::ServeDir::new(path))
-            .layer(axum::middleware::map_response(declare_utf8_charset))
+        // ServeDir is tried for unmatched paths; when it misses, fall through
+        // to the not-found surfaces (if any) rather than ServeDir's bare 404.
+        if not_found.is_empty() {
+            router
+                .fallback_service(tower_http::services::ServeDir::new(path))
+                .layer(axum::middleware::map_response(declare_utf8_charset))
+        } else {
+            let nf_entries = Arc::clone(&entries);
+            let nf_list = Arc::clone(&not_found);
+            let nf_handler = move |req: Request| {
+                let entries = Arc::clone(&nf_entries);
+                let not_found = Arc::clone(&nf_list);
+                async move { render_not_found(&entries, &not_found, req).await }
+            };
+            let serve = tower_http::services::ServeDir::new(path)
+                .not_found_service(nf_handler.into_service());
+            router
+                .fallback_service(serve)
+                .layer(axum::middleware::map_response(declare_utf8_charset))
+        }
     } else {
-        router
+        with_not_found_fallback(router, entries, not_found)
     }
 }
 
@@ -154,6 +178,13 @@ async fn declare_utf8_charset(mut resp: Response) -> Response {
 /// Build an Axum router from a [`RouteRegistry`].
 pub fn build_router(registry: RouteRegistry) -> Router {
     let entries = Arc::new(registry.entries);
+    let not_found = Arc::new(registry.not_found);
+    let router = build_route_table(Arc::clone(&entries));
+    with_not_found_fallback(router, entries, not_found)
+}
+
+/// Build just the route table (no fallback) from the registry's entries.
+fn build_route_table(entries: Arc<Vec<RouteEntry>>) -> Router {
     let mut router = Router::new();
 
     for i in 0..entries.len() {
@@ -201,6 +232,54 @@ pub fn build_router(registry: RouteRegistry) -> Router {
     }
 
     router
+}
+
+/// Install the not-found surfaces as the router's fallback, if any exist.
+/// With none registered, the router keeps Axum's default bare `404`.
+fn with_not_found_fallback(
+    router: Router,
+    entries: Arc<Vec<RouteEntry>>,
+    not_found: Arc<Vec<NotFoundEntry>>,
+) -> Router {
+    if not_found.is_empty() {
+        return router;
+    }
+    router.fallback(move |req: Request| {
+        let entries = Arc::clone(&entries);
+        let not_found = Arc::clone(&not_found);
+        async move { render_not_found(&entries, &not_found, req).await }
+    })
+}
+
+/// Render the not-found surface for an unmatched request. Picks the entry whose
+/// declaring path is the *deepest* ancestor of the requested path (so
+/// `/admin/x` prefers an `/admin` not-found over the root one), wraps it in that
+/// segment's layouts, and responds `404`. Falls back to a bare `404` when no
+/// not-found surface covers the path.
+///
+/// Per-directory middleware does not run here — middleware is scoped to matched
+/// routes, and an unmatched path matched none.
+async fn render_not_found(
+    entries: &[RouteEntry],
+    not_found: &[NotFoundEntry],
+    req: Request,
+) -> Response {
+    let path = req.uri().path().to_string();
+    let chosen = not_found
+        .iter()
+        .filter(|nf| entry_applies_to_path(&nf.path, &path))
+        .max_by_key(|nf| route_depth(&nf.path));
+
+    let Some(nf) = chosen else {
+        return http::StatusCode::NOT_FOUND.into_response();
+    };
+
+    let layouts = collect_layouts_for_path(entries, &nf.path);
+    let (before, after) = layout_shell(&layouts);
+    let body = (nf.render)(req).await;
+    let full = format!("{}{}{}", before, body, after);
+
+    (http::StatusCode::NOT_FOUND, Html(full)).into_response()
 }
 
 async fn render_route(
@@ -1148,6 +1227,173 @@ mod tests {
             .unwrap();
 
         assert_eq!(body_to_string(resp.into_body()).await, "acme");
+    }
+
+    // -- not-found surfaces ---------------------------------------------------
+
+    #[tokio::test]
+    async fn test_not_found_renders_with_layout_and_404() {
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/".to_string(),
+            page: Some(dyn_page("home")),
+            layout: Some(dyn_layout("root")),
+            loading: None,
+            middleware: None,
+            methods: vec![],
+        });
+        registry.add_not_found("/", static_page("nope"));
+
+        let app = build_router(registry);
+
+        // Matched route is unaffected.
+        let ok = app
+            .clone()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+
+        // Unmatched path renders the not-found wrapped in the root layout.
+        let nf = app
+            .oneshot(
+                Request::builder()
+                    .uri("/does/not/exist")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(nf.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            body_to_string(nf.into_body()).await,
+            "<div class=\"root\">nope</div>",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_deepest_not_found_wins() {
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/".to_string(),
+            page: None,
+            layout: Some(dyn_layout("root")),
+            loading: None,
+            middleware: None,
+            methods: vec![],
+        });
+        registry.add(RouteEntry {
+            path: "/admin".to_string(),
+            page: None,
+            layout: Some(dyn_layout("admin")),
+            loading: None,
+            middleware: None,
+            methods: vec![],
+        });
+        registry.add_not_found("/", static_page("root-404"));
+        registry.add_not_found("/admin", static_page("admin-404"));
+
+        let app = build_router(registry);
+
+        // Path under /admin picks the /admin surface, wrapped in root+admin layouts.
+        let under_admin = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/admin/missing")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(under_admin.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            body_to_string(under_admin.into_body()).await,
+            "<div class=\"root\"><div class=\"admin\">admin-404</div></div>",
+        );
+
+        // A path outside /admin falls to the root surface (root layout only).
+        let elsewhere = app
+            .oneshot(
+                Request::builder()
+                    .uri("/other")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(elsewhere.status(), StatusCode::NOT_FOUND);
+        assert_eq!(
+            body_to_string(elsewhere.into_body()).await,
+            "<div class=\"root\">root-404</div>",
+        );
+    }
+
+    #[tokio::test]
+    async fn test_no_not_found_yields_bare_404() {
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/".to_string(),
+            page: Some(dyn_page("home")),
+            layout: None,
+            loading: None,
+            middleware: None,
+            methods: vec![],
+        });
+
+        let app = build_router(registry);
+        let resp = app
+            .oneshot(Request::builder().uri("/nope").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+        assert_eq!(body_to_string(resp.into_body()).await, "");
+    }
+
+    #[tokio::test]
+    async fn test_public_dir_miss_falls_through_to_not_found() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("hello.txt"), "hi from public").unwrap();
+
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/".to_string(),
+            page: Some(dyn_page("home")),
+            layout: None,
+            loading: None,
+            middleware: None,
+            methods: vec![],
+        });
+        registry.add_not_found("/", static_page("custom-404"));
+
+        let app = build_router_with_public(registry, tmp.path());
+
+        // Static file still served.
+        let file = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/hello.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(file.status(), StatusCode::OK);
+        assert_eq!(body_to_string(file.into_body()).await, "hi from public");
+
+        // Missing file falls through ServeDir to the not-found surface.
+        let missing = app
+            .oneshot(
+                Request::builder()
+                    .uri("/missing.txt")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+        assert_eq!(body_to_string(missing.into_body()).await, "custom-404");
     }
 
     // -- API routes -----------------------------------------------------------

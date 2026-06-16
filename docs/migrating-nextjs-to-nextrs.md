@@ -90,7 +90,7 @@ local migrations and prod disagreed about column *types*.
 | `app/(group)/` (route groups) | **Unsupported** | A `(group)` directory becomes a literal `(group)` URL segment. Flatten the tree; if two sibling groups had different layouts, give each subtree its own real segment or push the layout difference down. |
 | `app/@slot/`, `(.)intercept` | **Unsupported** | No parallel/intercepting routes. Restructure as normal routes. |
 | `app/error.tsx`, `global-error.tsx` | **No convention** | Use a client-side `ErrorBoundary` inside each `page.tsx` (the error component is a client component already — reuse it). Server-side failures: see §13 gaps. |
-| `app/not-found.tsx` | **No convention** | The router 404s with an empty default. App-level workaround: add a custom fallback in `main.rs`/`api/index.rs` (§13). |
+| `app/not-found.tsx` | `app/**/not-found.{rs,html,tsx}` | **Now a convention** (framework source 2026-06-15; ships in `0.2.1`). Subtree-scoped 404 surface, wrapped in that segment's layouts, served with status `404`. Like `page`, it has `.rs`/`.html`/`.tsx` variants; the deepest ancestor of the unmatched path wins. See §5.3. Not in published `0.2.0` — needs a git/path dep or `0.2.1`. |
 | `app/**/template.tsx`, `default.tsx` | **Unsupported** | Restructure. |
 | Server Actions (`"use server"`) | `/api/actions/**` POST endpoints + same-signature client shim | §6.2. Call sites don't change; no backport. |
 | `metadata` / `generateMetadata` | Static `<head>` in `layout.html`; per-page `document.title` in the client | See §13. |
@@ -669,6 +669,38 @@ With a `loading` slot present the route streams: layout-open + skeleton at
 TTFB, then (after `props()` resolves) the seeds + mount div, then the swap
 script + layout-close. Without one, the response is a single synchronous
 chunk. Give every page whose `props.rs` does real work a `loading.html`.
+
+### 5.3 Not-found surfaces
+
+`not-found.{rs,html,tsx}` is the 404 surface for its segment's subtree —
+nextrs's analog of Next's `not-found.tsx`. When a request matches no route, the
+router renders the not-found entry whose directory is the **deepest ancestor**
+of the requested path, wraps it in that segment's layouts, and responds with
+status `404`. A path under `/admin/*` prefers `app/admin/not-found.*` over a
+root `app/not-found.*`; with no not-found anywhere, the router keeps Axum's bare
+empty 404 (unchanged behavior).
+
+Variants mirror `page`:
+
+- **`not-found.html`** — static markup, baked via `include_str!`. The common
+  case; port the JSX to HTML like any static page.
+- **`not-found.rs`** — `pub async fn render(req: Request<Body>) -> String`. Use
+  when the 404 body needs the request (e.g. echoing the missing path). Same
+  signature as `page.rs`.
+- **`not-found.tsx`** — a client-rendered shell, bundled under its own slug
+  (`/` → `not-found`, `/admin` → `admin-not-found`), so a segment can have both
+  a `page.tsx` and a `not-found.tsx` without their bundles colliding. `.tsx`
+  beside `.rs`/`.html` for the same not-found is a build error.
+
+Two limitations to know: per-directory **middleware does not run** for a
+not-found (middleware is scoped to matched routes, and an unmatched path matched
+none), and there is no `notFound()`-style escape hatch yet to trigger the
+surface from inside a page — it fires only on genuinely unmatched paths. Both
+are tracked in §13.
+
+Migration note: the hhh conversion hand-rolled a `/404` page + a parity layer
+before this convention existed; new conversions should use `not-found.*`
+directly.
 
 ## 6. API routes: `route.ts` → `route.rs`
 
@@ -1563,7 +1595,7 @@ during) a conversion that needs them.
 | **Catch-all segments `[...x]`** | `discovery.rs::dir_name_to_segment` only handles `[x]` → `{x}`; `[...all]` emits `{...all}`, which Axum rejects at router build | Enumerate concrete endpoint dirs (works for better-auth, §10.2). **Framework-first** if true wildcards are needed: map `[...x]` → `{*x}`. |
 | **`layout.tsx` / `loading.tsx`** | `discovery.rs` sets `tsx: None` for both slots; react-tsx doc phase 3 unimplemented | Hand-port to `layout.html`/`.rs` and `loading.html` (§5). Exact for skeletons; interactive layouts need restructuring. |
 | **`error.tsx` / error boundaries for server failures** | README "Not yet"; with a loading slot the 200 + headers are committed before `props()`/page run, so a late failure can't change the status | Client `ErrorBoundary` for render errors; make `props()` infallible-ish (seed nothing on error → page falls back to fetch-on-mount, which surfaces errors through the hooks); guard auth/404-able conditions in middleware, *before* streaming. |
-| **`not-found.tsx` / custom 404** | Router has no 404 convention; fallback is ServeDir (or default 404) | App-level: wrap the public dir fallback — `ServeDir::new(dir).not_found_service(your_404_handler)` in `main.rs`/`api/index.rs`. On Vercel, also ensure the function (not the CDN) answers misses — it does, via the catch-all rewrite. |
+| **`notFound()` escape hatch** | `not-found.{rs,html,tsx}` now exists (§5.3, ships in `0.2.1`) and covers genuinely-unmatched paths, but there is no server-side `notFound()` to *trigger* the surface from inside a page/route (e.g. "booking 31 doesn't exist") | Guard 404-able conditions in middleware (redirect/respond before streaming), or have the client `notFound()` shim navigate to a real not-found route. The convention itself handles the common unmatched-URL case with no app-level wiring. |
 | **Route groups `(g)`, parallel `@slot`, intercepting routes** | No special-casing anywhere in discovery | Flatten/restructure the tree. |
 | **Server Actions** | No concept; POST handlers are `route.rs` | Same-signature fetch shim over `/api/actions/**` endpoints (§6.2) — call sites unchanged, nothing to backport. |
 | **Metadata API (`metadata`, `generateMetadata`)** | Nothing reads page metadata; the tsx shell is a fixed mount div | Static `<head>` per layout segment (`layout.html` nests, so `/admin/**` can have its own `<title>`); truly per-page/dynamic titles via `document.title` in the page (SEO-relevant pages: consider a `layout.rs` that derives title from the path). |
