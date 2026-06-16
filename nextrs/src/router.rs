@@ -8,6 +8,7 @@ use std::convert::Infallible;
 use std::sync::Arc;
 
 use crate::conventions::{LayoutFn, MiddlewareFn, MiddlewareResult, RouteEntry, RouteRegistry};
+use crate::prefetch::PrefetchConfig;
 
 /// Internal sentinel that gets substituted into composed layouts so we can
 /// split the result into the "before children" and "after children" halves.
@@ -151,9 +152,23 @@ async fn declare_utf8_charset(mut resp: Response) -> Response {
     resp
 }
 
-/// Build an Axum router from a [`RouteRegistry`].
+/// Build an Axum router from a [`RouteRegistry`], with speculative-navigation
+/// (prefetch) injection on by default. See [`build_router_with_prefetch`] to
+/// customize or disable it.
 pub fn build_router(registry: RouteRegistry) -> Router {
+    build_router_with_prefetch(registry, PrefetchConfig::default())
+}
+
+/// Build an Axum router from a [`RouteRegistry`] with an explicit
+/// [`PrefetchConfig`].
+///
+/// The framework injects a `<script type="speculationrules">` into the `<head>`
+/// of every full-document page response so same-origin links are speculatively
+/// fetched (or prerendered) by the browser — no client-side JS. Pass
+/// [`PrefetchConfig::OFF`] to disable.
+pub fn build_router_with_prefetch(registry: RouteRegistry, prefetch: PrefetchConfig) -> Router {
     let entries = Arc::new(registry.entries);
+    let prefetch = Arc::new(prefetch);
     let mut router = Router::new();
 
     for i in 0..entries.len() {
@@ -165,6 +180,7 @@ pub fn build_router(registry: RouteRegistry) -> Router {
 
         if has_page {
             let entries_for_get = Arc::clone(&entries_clone);
+            let prefetch_for_get = Arc::clone(&prefetch);
             let path_for_get = path.clone();
             let idx = i;
 
@@ -172,8 +188,9 @@ pub fn build_router(registry: RouteRegistry) -> Router {
                 &path,
                 get(move |req: Request| {
                     let entries = Arc::clone(&entries_for_get);
+                    let prefetch = Arc::clone(&prefetch_for_get);
                     let path = path_for_get.clone();
-                    async move { render_route(entries, idx, path, req).await }
+                    async move { render_route(entries, prefetch, idx, path, req).await }
                 }),
             );
         }
@@ -205,6 +222,7 @@ pub fn build_router(registry: RouteRegistry) -> Router {
 
 async fn render_route(
     entries: Arc<Vec<RouteEntry>>,
+    prefetch: Arc<PrefetchConfig>,
     idx: usize,
     path: String,
     req: Request,
@@ -216,6 +234,10 @@ async fn render_route(
 
     let layouts = collect_layouts_for_path(&entries, &path);
     let (before, after) = layout_shell(&layouts);
+    // Inject the speculation-rules <script> into <head>. A no-op for head-less
+    // fragments and when prefetch is off, so both the streaming and
+    // non-streaming branches below can use `before` directly.
+    let before = prefetch.inject_into_head(before);
 
     let has_loading = entries[idx].loading.is_some();
 
@@ -1275,5 +1297,117 @@ mod tests {
 
         assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
         assert!(!handler_called.load(Ordering::SeqCst));
+    }
+
+    // -- Prefetch / speculation rules -----------------------------------------
+
+    #[tokio::test]
+    async fn test_prefetch_injected_into_full_document_head() {
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/".to_string(),
+            page: Some(dyn_page("<h1>Home</h1>")),
+            layout: Some(static_layout(
+                "<html><head><title>t</title></head><body>{{children}}</body></html>",
+            )),
+            loading: None,
+            middleware: None,
+            methods: vec![],
+        });
+
+        // Default config has prefetch ON.
+        let app = build_router(registry);
+        let resp = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = body_to_string(resp.into_body()).await;
+
+        assert!(body.contains(r#"type="speculationrules""#));
+        assert!(body.contains(r#""eagerness":"moderate""#));
+        // Inside <head>, before the page content.
+        let script = body.find("speculationrules").unwrap();
+        let head_close = body.find("</head>").unwrap();
+        let content = body.find("<h1>Home</h1>").unwrap();
+        assert!(script < head_close);
+        assert!(head_close < content);
+    }
+
+    #[tokio::test]
+    async fn test_prefetch_not_injected_into_headless_fragment() {
+        // No <head> → a fragment; output stays byte-identical to no-prefetch.
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/".to_string(),
+            page: Some(dyn_page("<h1>Hi</h1>")),
+            layout: Some(dyn_layout("root")),
+            loading: None,
+            middleware: None,
+            methods: vec![],
+        });
+
+        let app = build_router(registry);
+        let resp = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = body_to_string(resp.into_body()).await;
+        assert_eq!(body, "<div class=\"root\"><h1>Hi</h1></div>");
+        assert!(!body.contains("speculationrules"));
+    }
+
+    #[tokio::test]
+    async fn test_prefetch_off_emits_no_script() {
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/".to_string(),
+            page: Some(dyn_page("<h1>Home</h1>")),
+            layout: Some(static_layout(
+                "<html><head></head><body>{{children}}</body></html>",
+            )),
+            loading: None,
+            middleware: None,
+            methods: vec![],
+        });
+
+        let app = build_router_with_prefetch(registry, PrefetchConfig::OFF);
+        let resp = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = body_to_string(resp.into_body()).await;
+        assert!(!body.contains("speculationrules"));
+        assert_eq!(body, "<html><head></head><body><h1>Home</h1></body></html>");
+    }
+
+    #[tokio::test]
+    async fn test_prefetch_injected_in_streaming_path() {
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/dashboard".to_string(),
+            page: Some(slow_dyn_page("<h1>D</h1>", 10)),
+            layout: Some(static_layout(
+                "<html><head></head><body>{{children}}</body></html>",
+            )),
+            loading: Some(static_loading("loading")),
+            middleware: None,
+            methods: vec![],
+        });
+
+        let app = build_router(registry);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/dashboard")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body_to_string(resp.into_body()).await;
+        // Injected into the streamed head, before the loading slot.
+        let script = body.find("speculationrules").expect("script present");
+        let slot = body.find("__nx_slot__").expect("slot present");
+        assert!(script < slot);
     }
 }

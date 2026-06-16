@@ -1,8 +1,11 @@
 pub mod conventions;
 pub mod discovery;
 pub mod openapi;
+pub mod prefetch;
 pub mod router;
 pub mod seed;
+
+pub use prefetch::{Eagerness, PrefetchConfig, SpeculationMode};
 
 pub use axum;
 pub use http;
