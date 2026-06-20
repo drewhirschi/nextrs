@@ -78,18 +78,16 @@ routes and serves normally — it just won't appear in `openapi.json` or the
 generated hooks. Nothing breaks; the endpoint is simply untyped from the
 client's perspective.
 
-Each `cargo build` prints a summary of what's in the client and what isn't, so
-an unannotated endpoint is visible rather than silently missing:
+Each build writes an inspection summary under `target/nextrs/`, so an
+unannotated endpoint is visible without turning routine Cargo output into
+warnings. Set `NEXTRS_VERBOSE=1` to also echo the same summary during codegen.
 
 ```
-warning: site@0.1.0: nextrs: typed client generated for 2/3 route.rs handler(s)
-warning: site@0.1.0:   GET     /api/ping                client ✓
-warning: site@0.1.0:   POST    /api/ping                client ✓
-warning: site@0.1.0:   GET     /api/health              no client (add #[nextrs::api])
+nextrs: typed client generated for 2/3 route.rs handler(s)
+  GET     /api/ping                client ✓
+  POST    /api/ping                client ✓
+  GET     /api/health              no client (add #[nextrs::api])
 ```
-
-(These show on the build that regenerates the codegen — i.e. when something
-under `app/` changes.)
 
 The generator emits same-origin `fetch` calls (`baseUrl: "/"`), so it works
 against the app serving it with no extra config. Adding or changing a

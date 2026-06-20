@@ -202,7 +202,7 @@ If the streaming test fails, swap our `Body::from_stream` for `vercel_runtime::a
 - A `nextrs` CLI binary (or a make-style script) that wraps `cargo build` for local vs Vercel targets
 - README: getting started, conventions reference, deploy walkthrough
 - Workflow file (`.github/workflows/ci.yml`) running `cargo test --workspace` and the example deploy on push
-- Optional: move the repo-local `nextrs-dev` watcher into a published CLI
+- Optional: move the repo-local `cargo dev`/`xtask` watcher into a published CLI
 
 ### Phase 4 — Per-route bundling (future)
 

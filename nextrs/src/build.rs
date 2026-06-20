@@ -157,11 +157,11 @@ pub fn emit_registry(
     let routes = discover_routes(&abs_app);
     let code = generate_code(&routes);
 
-    // Surface, per build, which route.rs handlers got a typed client and which
-    // were left out (unannotated). `cargo:warning=` is the only build-script
-    // channel cargo prints by default; it replays these lines whenever the
-    // script reruns (i.e. when anything under app/ changes).
-    print_client_summary(&routes);
+    // Keep the normal typed-client route summary inspectable without making
+    // healthy builds look warning-heavy. Set NEXTRS_VERBOSE=1 to echo it in
+    // Cargo output while debugging codegen.
+    println!("cargo:rerun-if-env-changed=NEXTRS_VERBOSE");
+    print_client_summary_if_verbose(&routes);
 
     // page.tsx without the `tsx` feature: the shell handler is emitted either
     // way, but nothing builds the bundle it points at.
@@ -190,6 +190,7 @@ pub fn emit_registry(
         let inspect_dir = target_dir.join("nextrs");
         if std::fs::create_dir_all(&inspect_dir).is_ok() {
             let _ = std::fs::write(inspect_dir.join(out_name), &code);
+            let _ = write_client_summary_file(&inspect_dir, out_name, &routes);
         }
     }
 
@@ -271,10 +272,12 @@ fn url_snake(url: &str) -> String {
     let parts: Vec<String> = url
         .split('/')
         .filter(|s| !s.is_empty())
-        .map(|seg| match seg.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
-            Some(param) => format!("by_{}", param.to_lowercase()),
-            None => seg.replace('-', "_").to_lowercase(),
-        })
+        .map(
+            |seg| match seg.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+                Some(param) => format!("by_{}", param.to_lowercase()),
+                None => seg.replace('-', "_").to_lowercase(),
+            },
+        )
         .collect();
     if parts.is_empty() {
         "root".to_string()
@@ -550,26 +553,81 @@ fn client_status(routes: &[DiscoveredRoute]) -> Vec<ClientStatus> {
     out
 }
 
-/// Print a per-handler client-codegen summary as `cargo:warning=` lines, so it
-/// shows up in `cargo build` output. No-op when the app has no API handlers.
-fn print_client_summary(routes: &[DiscoveredRoute]) {
+fn client_summary_text(routes: &[DiscoveredRoute]) -> Option<String> {
     let statuses = client_status(routes);
     if statuses.is_empty() {
-        return;
+        return None;
     }
+
     let in_client = statuses.iter().filter(|s| s.in_client).count();
-    println!(
-        "cargo:warning=nextrs: typed client generated for {in_client}/{} route.rs handler(s)",
+    let mut out = format!(
+        "nextrs: typed client generated for {in_client}/{} route.rs handler(s)\n",
         statuses.len()
     );
+
     for s in &statuses {
         let mark = if s.in_client {
             "client ✓"
         } else {
             "no client (add #[nextrs::api])"
         };
-        println!("cargo:warning=  {:<7} {:<24} {}", s.method, s.url_path, mark);
+        let _ = writeln!(out, "  {:<7} {:<24} {}", s.method, s.url_path, mark);
     }
+
+    Some(out)
+}
+
+fn client_summary_file_name(out_name: &str) -> String {
+    let stem = Path::new(out_name)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("nextrs_routes");
+    format!("{stem}.client-summary.txt")
+}
+
+fn write_client_summary_file(
+    inspect_dir: &Path,
+    out_name: &str,
+    routes: &[DiscoveredRoute],
+) -> std::io::Result<()> {
+    let path = inspect_dir.join(client_summary_file_name(out_name));
+    if let Some(summary) = client_summary_text(routes) {
+        std::fs::write(path, summary)?;
+    } else if let Err(err) = std::fs::remove_file(path) {
+        if err.kind() != std::io::ErrorKind::NotFound {
+            return Err(err);
+        }
+    }
+    Ok(())
+}
+
+/// Print a per-handler client-codegen summary only when explicitly requested.
+///
+/// Build scripts have no stable informational output channel; `cargo:warning=`
+/// is the only way to surface these lines in normal Cargo output. Keeping this
+/// behind NEXTRS_VERBOSE prevents routine route summaries from being replayed
+/// as warnings on healthy cached builds.
+fn print_client_summary_if_verbose(routes: &[DiscoveredRoute]) {
+    if !env_flag("NEXTRS_VERBOSE") {
+        return;
+    }
+
+    let Some(summary) = client_summary_text(routes) else {
+        return;
+    };
+
+    for line in summary.lines() {
+        println!("cargo:warning={line}");
+    }
+}
+
+fn env_flag(name: &str) -> bool {
+    std::env::var(name).is_ok_and(|value| {
+        matches!(
+            value.as_str(),
+            "1" | "true" | "TRUE" | "yes" | "YES" | "on" | "ON"
+        )
+    })
 }
 
 /// Whether `fn_name` in `source` is immediately preceded by a
@@ -769,7 +827,8 @@ fn emit_path_mod(out: &mut String, name: &str, target: &Path) {
 /// seeds as a JSON script tag ahead of the mount div — the await sits exactly
 /// where a `page.rs` await would, so a loading slot still ships first.
 fn emit_page_slot(out: &mut String, idx: usize, route: &DiscoveredRoute) {
-    let is_tsx_only = route.page.tsx.is_some() && route.page.rs.is_none() && route.page.html.is_none();
+    let is_tsx_only =
+        route.page.tsx.is_some() && route.page.rs.is_none() && route.page.html.is_none();
     if !is_tsx_only {
         emit_slot(out, "page", idx, &route.page);
         return;
@@ -1155,7 +1214,10 @@ pub async fn post() -> &'static str { "y" }
 )]
 pub async fn post() -> &'static str { "x" }
 "#;
-        assert_eq!(extract_annotated_path(src, "post").as_deref(), Some("/api/ping"));
+        assert_eq!(
+            extract_annotated_path(src, "post").as_deref(),
+            Some("/api/ping")
+        );
     }
 
     #[test]
@@ -1262,6 +1324,29 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
         assert!(!post.in_client, "unannotated POST should be excluded");
     }
 
+    #[test]
+    fn client_summary_text_is_inspection_friendly() {
+        let route_body = r#"
+#[nextrs::api(get, responses((status = 200, body = Pong)))]
+pub async fn get() -> axum::Json<Pong> { todo!() }
+
+pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED }
+"#;
+        let tmp = setup_app_with_file_bodies(&[("api/ping", &[("route.rs", route_body)])]);
+        let routes = discover_routes(tmp.path());
+        let summary = client_summary_text(&routes).expect("route.rs handlers should summarize");
+
+        assert!(summary.starts_with("nextrs: typed client generated for 1/2 route.rs handler(s)"));
+        assert!(summary.contains("GET     /api/ping                client ✓"));
+        assert!(
+            summary.contains("POST    /api/ping                no client (add #[nextrs::api])")
+        );
+        assert_eq!(
+            client_summary_file_name("nextrs_routes.rs"),
+            "nextrs_routes.client-summary.txt"
+        );
+    }
+
     // -- React/TSX additions ---------------------------------------------------
 
     #[test]
@@ -1298,8 +1383,7 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
             let routes = discover_routes(tmp.path());
             let code = generate_code(&routes);
             assert!(
-                code.contains("compile_error!")
-                    && code.contains("one rendering model per segment"),
+                code.contains("compile_error!") && code.contains("one rendering model per segment"),
                 "expected tsx/{} conflict:\n{}",
                 other,
                 code

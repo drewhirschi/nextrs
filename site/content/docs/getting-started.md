@@ -105,10 +105,10 @@ cargo run
 The repo ships a file watcher that restarts the server when anything relevant changes (source, templates, content, assets):
 
 ```bash
-cargo run --bin nextrs-dev
+cargo dev
 ```
 
-It polls for changes, debounces, SIGTERMs the server cleanly, and restarts. Combined with `tower-livereload`, the browser refreshes itself after the rebuild.
+It polls for changes, debounces, SIGTERMs the server cleanly, and restarts. It also watches the env file the server loads (`.env` by default, or `NEXTRS_ENV_FILE` when set) and runs the child with `NEXTRS_SKIP_BUNDLE=0` so local page bundles are regenerated. Combined with `tower-livereload`, the browser refreshes itself after the rebuild. For a single foreground run, use `cargo dev-once`.
 
 ## Where to go next
 

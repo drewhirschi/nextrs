@@ -291,7 +291,25 @@ if you'll benchmark.
 
 Note: env vars. Rust does not auto-load `.env`. Either export them in your
 shell for local dev or add `dotenvy::dotenv().ok();` at the top of `main()`
-(dev binary only). On Vercel, set them in the project settings as usual.
+(dev binary only). On Vercel, set them in the project settings as usual. If
+you support `NEXTRS_ENV_FILE`, make the watcher include that file; otherwise
+watch `.env`.
+
+Recommended local workflow for converted apps:
+
+- Keep the Vercel `.cargo/config.toml` escape hatch (`NEXTRS_SKIP_BUNDLE=1`) for
+  cloud builds that cannot run the Node bundler.
+- Run local dev with `NEXTRS_SKIP_BUNDLE=0` so `page.tsx` bundles and route
+  assets are regenerated.
+- Put the watcher/helper in a tiny workspace package such as `xtask`, not as a
+  binary in the main app package. Then `cargo dev` can compile the helper
+  independently before it starts the real app build.
+- Make `cargo dev` the watch-and-restart loop and `cargo dev-once` the single
+  foreground server run. Watch Rust sources, `app/`, client sources and
+  package files, and the env file the server loads.
+
+Use `docs/local-dev-workflow.md` as the canonical template so converted apps do
+not drift into slightly different `cargo dev` behavior.
 
 ### 2.4 The client package
 
@@ -702,8 +720,9 @@ What the annotation does (verified in `nextrs-macros` and `build.rs`):
   **not** inferred from the return — `responses((status = 200, body = T))` is
   required for a typed response.
 - Annotation is opt-in per handler. Unannotated handlers still route; they
-  just don't appear in the spec/client. The build prints a per-handler
-  `cargo:warning` summary (`client ✓` / `no client`) — check it.
+  just don't appear in the spec/client. The build writes a per-handler summary
+  under `target/nextrs/`; set `NEXTRS_VERBOSE=1` when you want the same
+  `client ✓` / `no client` lines echoed during codegen.
 
 Other rules:
 
@@ -1387,8 +1406,8 @@ cookie) and diff status, headers that matter (`set-cookie`, `location`,
       components match (Tailwind output parity).
 - [ ] `public/` assets byte-identical at the same URLs.
 - [ ] `npm run typecheck` clean in `client/`.
-- [ ] `cargo build` warnings reviewed — every handler that should be in the
-      client says `client ✓`.
+- [ ] `target/nextrs/*.client-summary.txt` reviewed — every handler that should
+      be in the client says `client ✓`.
 - [ ] Deployed: streaming verified on Vercel (`curl --no-buffer`), static
       assets show `x-vercel-cache: HIT`, region as intended.
 

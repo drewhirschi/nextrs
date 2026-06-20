@@ -80,7 +80,7 @@ Server-fetched initial data (avoiding the mount-then-fetch round-trip) is design
 
 ## Dev server
 
-`dev/main.rs` grows from "restart cargo on any change" to a two-track watcher:
+The `xtask` watcher grows from "restart cargo on any change" to a two-track watcher:
 
 - **Rust/template/content changes** → cargo rebuild + restart (today's behavior).
 - **`.tsx` changes** → re-run the swc bundling step only (milliseconds, in-process), then touch the livereload trigger. No server restart — bundles are static assets.

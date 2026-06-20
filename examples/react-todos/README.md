@@ -38,6 +38,10 @@ cargo run -p react-todos
 into `public/dist/`; `npm run gen` regenerates `client/` from the app's
 OpenAPI document.
 
+Run that command from the workspace root. If you invoke Cargo from inside
+`examples/react-todos/`, its Vercel `.cargo/config.toml` is active; prefix the
+local run with `NEXTRS_SKIP_BUNDLE=0` so the page bundle is regenerated.
+
 ## What to look at
 
 - **No fetch on load** — open the network panel: the todo list is there on

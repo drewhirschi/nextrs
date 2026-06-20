@@ -9,7 +9,11 @@ include!(concat!(env!("OUT_DIR"), "/nextrs_routes.rs"));
 
 #[tokio::main]
 async fn main() {
-    dotenvy::dotenv().ok();
+    if let Ok(path) = std::env::var("NEXTRS_ENV_FILE") {
+        dotenvy::from_path(path).ok();
+    } else {
+        dotenvy::dotenv().ok();
+    }
 
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))

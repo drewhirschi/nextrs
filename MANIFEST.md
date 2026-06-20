@@ -13,9 +13,9 @@ Cargo workspace at the repo root. The root is also a package (the Vercel deploym
 | Member | Purpose |
 |---|---|
 | `nextrs/` | The framework crate (library). Source at `nextrs/src/{lib,conventions,discovery,router,vercel,build}.rs`. The `vercel` and `build` modules are feature-gated. |
-| `site/` | The consumer crate — currently the framework's own demo / docs site. Run with `cargo run --bin nextrs-dev` → http://localhost:3000. |
+| `site/` | The consumer crate — currently the framework's own demo / docs site. Run with `cargo dev` → http://localhost:3000. |
 | (root package) | `nextrs-deploy` — single binary at `api/index.rs` that wraps the framework's axum router for `vercel_runtime::run`. |
-| `dev/main.rs` | Repo-local dev watcher. Starts `cargo run -p site`, watches framework and demo app source paths, and restarts the child process on changes. |
+| `xtask/` | Repo-local dev watcher. Starts `cargo run -p site`, watches framework and demo app source paths, and restarts the child process on changes. |
 
 The framework is a normal Rust library. The user writes only convention files (`app/.../{page,layout,loading}.{rs,html}`); `nextrs::build` (gated by the `build` feature, depended on from `[build-dependencies]`) runs at compile time via a tiny `build.rs` and emits the registry into `$OUT_DIR/nextrs_routes.rs`. The user's `main.rs` (or `api/index.rs`) does `include!(concat!(env!("OUT_DIR"), "/nextrs_routes.rs"))` and calls `generated_registry()`. No `#[path]` mod declarations or `RouteEntry` constructors by hand.
 
@@ -78,11 +78,9 @@ Middleware files export `pub async fn handle(req) -> nextrs::conventions::Middle
 - **No client-side framework.** No htmx, no React, no JS bundle. The loading→page swap is a single inline script the framework emits; nothing else runs in the browser.
 - **Not pinning a public API.** Types and helpers may move as conventions harden.
 
-## Roadmap (rough)
+## Roadmap
 
-1. **`error.{rs,html}`** segment convention.
-2. **Per-route Vercel binaries** as an option for very large apps (current single-binary fits everything we need now).
-3. **Dev-server ergonomics**: the repo-local `nextrs-dev` watcher restarts `cargo run -p site` when Rust, template, or public asset files change. Further polish could move this into a proper published CLI.
-4. **Suspense-style nested streaming**: today there's exactly one loading slot per route. React Server Components-style nested boundaries would need a more sophisticated streaming protocol.
-5. **`route.rs` codegen hardening.** Basic API method codegen is in place; future work is richer diagnostics and request extraction conventions.
-6. **Upstream**: file an issue/PR with the Vercel team to make `vercel_runtime::axum::VercelLayer` recognize `text/html` for streaming (or take an `always_stream` flag), so `nextrs::vercel::StreamingVercelLayer` becomes optional.
+See `ROADMAP.md` for the working roadmap. Current deferred items include React
+HMR/Fast Refresh, a first-class app scaffolder command, `error.{rs,html}`,
+per-route Vercel binaries, richer `route.rs` diagnostics, nested streaming, and
+upstream Vercel adapter support for streaming `text/html`.

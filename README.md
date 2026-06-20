@@ -99,15 +99,21 @@ The browser sees the loading shell at TTFB (~250ms warm) and the page chunk arri
 ## Run locally
 
 ```bash
-cargo run --bin nextrs-dev
+cargo dev
 # → http://localhost:3000
 ```
 
-`nextrs-dev` starts `cargo run -p site`, watches the framework and demo app
-sources, and restarts the server when Rust, template, or public asset files
-change. The demo app also uses `tower-livereload` in debug builds, so the
-browser refreshes after the restarted server is ready. If you want the raw
-server without watching, run `cargo run -p site`.
+`cargo dev` runs the tiny `xtask` watcher, which starts `cargo run -p site`,
+watches the framework and demo app sources, and restarts the server when Rust,
+template, content, public asset, or env-file inputs change. The child command
+gets `NEXTRS_SKIP_BUNDLE=0`, so local React page bundles are regenerated even
+when a deploy config sets `NEXTRS_SKIP_BUNDLE=1`. The demo app also uses
+`tower-livereload` in debug builds, so the browser refreshes after the
+restarted server is ready.
+
+If you want the raw server without watching, run `cargo dev-once`.
+The canonical setup for using this in other apps is documented in
+[docs/local-dev-workflow.md](docs/local-dev-workflow.md).
 
 Three demo routes — `/simple`, `/with-loading`, `/with-layout` — each progressively adding one more convention file. Each demo page lists its own source files inline so you can see exactly what's involved.
 
@@ -139,9 +145,10 @@ Cargo workspace at root:
 
 ```
 Cargo.toml         workspace + nextrs-deploy package (Vercel binary)
+.cargo/config.toml cargo dev / cargo dev-once aliases
 build.rs           emits the registry + mirrors site/public/ → public/ for Vercel
 api/index.rs       Vercel entry point (22 lines) — generated registry + StreamingVercelLayer
-dev/main.rs        local dev watcher that restarts cargo run -p site
+xtask/             local dev watcher that restarts cargo run -p site
 vercel.json        catch-all rewrite to /api/index
 askama.toml        points askama at site/app/
 public/            generated mirror of site/public/ (gitignored — CDN-served on Vercel)
@@ -183,6 +190,9 @@ cargo test --workspace --all-features
 - Middleware before loading/page/API handlers ✓
 - `.rs` and `.html` for every slot ✓
 - Build-time codegen (no hand-wired `#[path]` mods or `RouteEntry` constructors) ✓
+
+Future work lives in [ROADMAP.md](ROADMAP.md), including React HMR/Fast Refresh
+and a first-class app scaffolder command.
 
 Not yet:
 
