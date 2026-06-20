@@ -108,7 +108,7 @@ The repo ships a file watcher that restarts the server when anything relevant ch
 cargo dev
 ```
 
-It polls for changes, debounces, SIGTERMs the server cleanly, and restarts. It also watches the env file the server loads (`.env` by default, or `NEXTRS_ENV_FILE` when set) and runs the child with `NEXTRS_SKIP_BUNDLE=0` so local page bundles are regenerated. Combined with `tower-livereload`, the browser refreshes itself after the rebuild. For a single foreground run, use `cargo dev-once`.
+It polls for changes, debounces, SIGTERMs the server cleanly, and restarts. It also watches the env file the server loads (`.env` by default, or `NEXTRS_ENV_FILE` when set) and runs the child with `NEXTRS_SKIP_BUNDLE=0` so local page bundles are regenerated. Combined with `tower-livereload`, the browser refreshes itself after the rebuild. This is full-page live reload, not React HMR. For a single foreground run, use `cargo dev-once`.
 
 ## Where to go next
 

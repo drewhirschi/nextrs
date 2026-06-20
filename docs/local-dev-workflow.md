@@ -10,15 +10,16 @@ real server with local-dev environment. A tiny `xtask` package avoids that.
 ## Commands
 
 ```bash
-cargo dev       # watch, rebuild, restart
+cargo dev       # watch, rebuild, restart, full-page browser reload
 cargo dev-once  # one foreground server run, no watcher
 ```
 
 These are Cargo aliases, not built-in Cargo subcommands.
 
-If the served app wires `tower-livereload` in debug builds, the browser will
-also perform a full-page reload after the restarted server responds again. That
-is useful, but it is not React HMR/Fast Refresh.
+The baseline dev experience is full-page live reload: save a watched file,
+`cargo dev` restarts the server, and the browser reloads after the restarted
+server responds. That is not React HMR/Fast Refresh; React state is not
+preserved across the reload.
 
 ## Workspace Shape
 
@@ -85,6 +86,22 @@ edition = "2024"
 publish = false
 ```
 
+Served app `Cargo.toml`:
+
+```toml
+[dependencies]
+tower-livereload = "0.9"
+```
+
+Served app `main.rs`:
+
+```rust
+let app = nextrs::router::build_router_with_public(generated_registry(), &public_dir);
+
+#[cfg(debug_assertions)]
+let app = app.layer(tower_livereload::LiveReloadLayer::new());
+```
+
 ## Helper Behavior
 
 The `xtask` helper should do four things:
@@ -98,6 +115,10 @@ The `xtask` helper should do four things:
   file the server loads.
 - Restart the child cleanly on changes.
 
+The served app should add `tower-livereload` in debug builds. The watcher owns
+process restart; the app owns browser reload injection. That split keeps the
+helper generic and keeps production builds free of reload machinery.
+
 `cargo dev` should be the one stable user command. Internally, the helper may
 own more than one child process when that becomes necessary, for example a
 future frontend HMR/bundler process. The convention is not "only one process";
@@ -107,11 +128,9 @@ the convention is "one user-facing command owns the whole dev loop."
 
 Keep these distinct:
 
-1. Current minimum: rebuild and restart on backend, env, route, and frontend
-   source changes.
-2. Near term: browser live reload after restart via `tower-livereload`. This is
-   a full-page reload.
-3. Next.js-style parity: frontend HMR/Fast Refresh under the same `cargo dev`
+1. Baseline: rebuild, restart, and full-page browser reload on backend, env,
+   route, and frontend source changes.
+2. Next.js-style parity: frontend HMR/Fast Refresh under the same `cargo dev`
    command. This should preserve compatible React component state and falls
    back to full reload when needed.
 

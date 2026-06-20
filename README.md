@@ -107,9 +107,10 @@ cargo dev
 watches the framework and demo app sources, and restarts the server when Rust,
 template, content, public asset, or env-file inputs change. The child command
 gets `NEXTRS_SKIP_BUNDLE=0`, so local React page bundles are regenerated even
-when a deploy config sets `NEXTRS_SKIP_BUNDLE=1`. The demo app also uses
+when a deploy config sets `NEXTRS_SKIP_BUNDLE=1`. The demo app wires
 `tower-livereload` in debug builds, so the browser refreshes after the
-restarted server is ready. That is full-page live reload, not React HMR.
+restarted server is ready. That full-page live reload is the baseline dev
+experience; React HMR/Fast Refresh is separate future work.
 
 If you want the raw server without watching, run `cargo dev-once`.
 The canonical setup for using this in other apps is documented in
