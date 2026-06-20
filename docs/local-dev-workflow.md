@@ -65,8 +65,10 @@ resolver = "3"
 ```
 
 Use whatever package name actually serves the app: the root package, `site`,
-`hhh`, or another member. The `xtask` default command is the only place that
-needs to know that name.
+`hhh`, or another member. For a root-package app with multiple binaries, either
+set `default-run` in `Cargo.toml` or make the helper run
+`cargo run --bin <server-bin>`. The `xtask` default command is the only place
+that needs to know that package or binary name.
 
 `.cargo/config.toml`:
 
@@ -106,8 +108,9 @@ let app = app.layer(tower_livereload::LiveReloadLayer::new());
 
 The `xtask` helper should do four things:
 
-- Spawn the real app command: `cargo run` for a root-package app, or
-  `cargo run -p <app-package>` for a member package.
+- Spawn the real app command: `cargo run` for a root-package app with a single
+  binary or `default-run`, `cargo run --bin <server-bin>` for a root package
+  with multiple binaries, or `cargo run -p <app-package>` for a member package.
 - Set `NEXTRS_SKIP_BUNDLE=0` for the child so local TSX bundles regenerate even
   if deploy config sets `NEXTRS_SKIP_BUNDLE=1`.
 - Watch app inputs: Rust sources, the Nextrs `app/` route tree, `client/src`,
