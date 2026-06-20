@@ -10,19 +10,30 @@ real server with local-dev environment. A tiny `xtask` package avoids that.
 ## Commands
 
 ```bash
-cargo dev       # watch, rebuild, restart, live reload
+cargo dev       # watch, rebuild, restart
 cargo dev-once  # one foreground server run, no watcher
 ```
 
 These are Cargo aliases, not built-in Cargo subcommands.
 
+If the served app wires `tower-livereload` in debug builds, the browser will
+also perform a full-page reload after the restarted server responds again. That
+is useful, but it is not React HMR/Fast Refresh.
+
 ## Workspace Shape
+
+`app/` is the Nextrs route tree. It is not a required Cargo package name.
+Avoid naming the served Cargo package `app` unless you really want that
+overload.
+
+A standalone project can keep the served app as the root package and add only
+`xtask` as a workspace member:
 
 ```text
 my-app/
 ├── .cargo/config.toml
-├── Cargo.toml
-├── app/
+├── Cargo.toml                      # root package + workspace
+├── app/                            # Nextrs route tree
 ├── build.rs
 ├── client/
 ├── src/main.rs
@@ -34,13 +45,27 @@ my-app/
 Root `Cargo.toml`:
 
 ```toml
+[package]
+name = "my-app"
+version = "0.1.0"
+edition = "2024"
+
 [workspace]
-members = ["app", "xtask"]
+members = ["xtask"]
 resolver = "3"
 ```
 
-Use whatever member name holds the served app. In this repo it is `site`; in a
-standalone app it may be the root package or an `app` member.
+In a larger repo, the served app can be a separate workspace member:
+
+```toml
+[workspace]
+members = ["site", "xtask"]
+resolver = "3"
+```
+
+Use whatever package name actually serves the app: the root package, `site`,
+`hhh`, or another member. The `xtask` default command is the only place that
+needs to know that name.
 
 `.cargo/config.toml`:
 
@@ -64,17 +89,31 @@ publish = false
 
 The `xtask` helper should do four things:
 
-- Spawn the real app command, usually `cargo run -p <app-package>`.
+- Spawn the real app command: `cargo run` for a root-package app, or
+  `cargo run -p <app-package>` for a member package.
 - Set `NEXTRS_SKIP_BUNDLE=0` for the child so local TSX bundles regenerate even
   if deploy config sets `NEXTRS_SKIP_BUNDLE=1`.
-- Watch app inputs: Rust sources, `app/`, `client/src`, package files,
-  `build.rs`, templates, static assets, and the env file the server loads.
-- Restart the child cleanly on changes. In debug, `tower-livereload` handles the
-  browser reload after the server comes back.
+- Watch app inputs: Rust sources, the Nextrs `app/` route tree, `client/src`,
+  JS package and lock files, `build.rs`, templates, static assets, and the env
+  file the server loads.
+- Restart the child cleanly on changes.
 
-The helper should not run two long-lived commands in parallel as the default
-dev path. If an app needs extra generated assets, make the helper own that flow
-so `cargo dev` remains the one stable command.
+`cargo dev` should be the one stable user command. Internally, the helper may
+own more than one child process when that becomes necessary, for example a
+future frontend HMR/bundler process. The convention is not "only one process";
+the convention is "one user-facing command owns the whole dev loop."
+
+## Dev Tiers
+
+Keep these distinct:
+
+1. Current minimum: rebuild and restart on backend, env, route, and frontend
+   source changes.
+2. Near term: browser live reload after restart via `tower-livereload`. This is
+   a full-page reload.
+3. Next.js-style parity: frontend HMR/Fast Refresh under the same `cargo dev`
+   command. This should preserve compatible React component state and falls
+   back to full reload when needed.
 
 ## Env Files
 
@@ -105,7 +144,7 @@ let env_file = std::env::var_os("NEXTRS_ENV_FILE")
 
 This is app scaffolding, not behavior the `nextrs` library can automatically
 install into an existing project. Today, copy `.cargo/config.toml` and `xtask/`
-from this repo and adjust the served package name and watch paths.
+from this repo and adjust the served package command and watch paths.
 
 Longer term, the roadmap app-builder command should generate this exact shape
 so new projects get the same `cargo dev` behavior by default.

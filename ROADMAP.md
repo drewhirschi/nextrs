@@ -9,9 +9,10 @@ expect to revisit as real apps expose enough friction to justify the work.
 
 Status: on the roadmap; no specific implementation plan or timeline yet.
 
-Today `cargo dev` gives a watch-and-restart loop plus browser live reload. That
-is enough for the current TSX support, but it is not React HMR: edits rebuild
-the bundle, reload the page, and remount React from scratch.
+Today `cargo dev` gives a watch-and-restart loop. Apps can add
+`tower-livereload` for full-page browser reload after restart, but that is not
+React HMR: edits rebuild the bundle, reload the page, and remount React from
+scratch.
 
 Real React HMR should preserve compatible component state by updating changed
 modules in place. This should be feasible to explore without abandoning the
@@ -43,7 +44,7 @@ framework seams:
 - A pure React route: `app/page.tsx`.
 - A React route backed by Rust server code: a `page.tsx` that calls a typed
   client hook generated from a `route.rs` API handler.
-- The standard local workflow: `cargo dev` for watch/restart/live reload and
+- The standard local workflow: `cargo dev` for watch/restart and
   `cargo dev-once` for a single foreground run, matching the template in
   `docs/local-dev-workflow.md`.
 - The Vercel bundling escape hatch documented clearly:

@@ -109,7 +109,7 @@ template, content, public asset, or env-file inputs change. The child command
 gets `NEXTRS_SKIP_BUNDLE=0`, so local React page bundles are regenerated even
 when a deploy config sets `NEXTRS_SKIP_BUNDLE=1`. The demo app also uses
 `tower-livereload` in debug builds, so the browser refreshes after the
-restarted server is ready.
+restarted server is ready. That is full-page live reload, not React HMR.
 
 If you want the raw server without watching, run `cargo dev-once`.
 The canonical setup for using this in other apps is documented in
