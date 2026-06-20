@@ -112,7 +112,7 @@ fn scaffold(target: &Path, nextrs_path: Option<&Path>) -> io::Result<()> {
     println!();
     println!("Next steps:");
     println!("  cd {}", display_cd_path(target));
-    println!("  cd client && npm install && cd ..");
+    println!("  cd client && npm install && npm run gen && cd ..");
     println!("  cargo dev");
     println!();
     println!("Routes:");
@@ -220,13 +220,15 @@ fn template_files(
         ("build.rs", build_rs(client_alias)),
         ("src/main.rs", main_rs()),
         ("src/bin/dev.rs", dev_rs()),
+        ("src/bin/dump-openapi.rs", dump_openapi_rs()),
         ("app/layout.tsx", layout_tsx()),
-        ("app/page.tsx", page_tsx()),
+        ("app/page.tsx", page_tsx(client_alias)),
         ("app/slow/page.tsx", slow_page_tsx(client_alias)),
         ("app/slow/loading.tsx", slow_loading_tsx()),
         ("app/slow/props.rs", slow_props_rs()),
         ("app/api/ping/route.rs", ping_route_rs()),
         ("client/package.json", client_package_json(crate_name)),
+        ("client/orval.config.ts", client_orval_config_ts()),
         ("client/tsconfig.json", client_tsconfig_json(client_alias)),
         ("client/src/index.ts", client_index_ts()),
         ("client/src/nextrs-client.ts", nextrs_client_ts()),
@@ -514,6 +516,20 @@ fn stop(child: &mut Child) -> std::io::Result<()> {
     .into()
 }
 
+fn dump_openapi_rs() -> String {
+    r#"include!(concat!(env!("OUT_DIR"), "/nextrs_routes.rs"));
+
+fn main() {
+    let spec = generated_openapi();
+    let json = spec.to_pretty_json().expect("serialize OpenAPI document");
+    let out = concat!(env!("CARGO_MANIFEST_DIR"), "/client/openapi.json");
+    std::fs::write(out, json).expect("write client/openapi.json");
+    eprintln!("wrote {out}");
+}
+"#
+    .into()
+}
+
 fn layout_tsx() -> String {
     r#"import type { ReactNode } from "react";
 
@@ -536,21 +552,12 @@ export default function Layout({ children }: { children: ReactNode }) {
     .into()
 }
 
-fn page_tsx() -> String {
-    r#"import { useState } from "react";
+fn page_tsx(client_alias: &str) -> String {
+    format!(
+        r#"import {{ useGetApiPing }} from "{client_alias}";
 
-type Ping = {
-  message: string;
-};
-
-export default function Page() {
-  const [ping, setPing] = useState<string>("Not called yet");
-
-  async function callPing() {
-    const res = await fetch("/api/ping");
-    const body = (await res.json()) as Ping;
-    setPing(body.message);
-  }
+export default function Page() {{
+  const ping = useGetApiPing({{ query: {{ enabled: false }} }});
 
   return (
     <main className="page">
@@ -559,16 +566,18 @@ export default function Page() {
         <h1>Build React apps with Rust routes.</h1>
         <p>
           This page renders immediately in the browser. The button calls a Rust
-          route handler at <code>/api/ping</code>.
+          route handler at <code>/api/ping</code> through a generated typed client.
         </p>
-        <button type="button" onClick={callPing}>Ping Rust</button>
-        <p className="result">{ping}</p>
+        <button type="button" onClick={{() => ping.refetch()}} disabled={{ping.isFetching}}>
+          {{ping.isFetching ? "Pinging..." : "Ping Rust"}}
+        </button>
+        <p className="result">{{ping.data?.data.message ?? "Not called yet"}}</p>
       </section>
     </main>
   );
-}
+}}
 "#
-    .into()
+    )
 }
 
 fn slow_page_tsx(client_alias: &str) -> String {
@@ -635,13 +644,18 @@ pub async fn props(_req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
 
 fn ping_route_rs() -> String {
     r#"use axum::Json;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
 
-#[derive(Serialize)]
+#[derive(Serialize, Deserialize, ToSchema)]
 pub struct PingResponse {
     pub message: String,
 }
 
+#[nextrs::api(
+    get,
+    responses((status = 200, description = "Pong", body = PingResponse)),
+)]
 pub async fn get() -> Json<PingResponse> {
     Json(PingResponse {
         message: "pong from Rust".to_string(),
@@ -660,6 +674,9 @@ fn client_package_json(crate_name: &str) -> String {
   "type": "module",
   "scripts": {{
     "postinstall": "ln -sfn client/node_modules ../node_modules",
+    "dump": "NEXTRS_SKIP_BUNDLE=1 cargo run --bin dump-openapi",
+    "orval": "orval --config ./orval.config.ts",
+    "gen": "npm run dump && npm run orval",
     "typecheck": "tsc --noEmit"
   }},
   "dependencies": {{
@@ -670,11 +687,34 @@ fn client_package_json(crate_name: &str) -> String {
   "devDependencies": {{
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.0.0",
+    "orval": "^7.3.0",
     "typescript": "^5.7.0"
   }}
 }}
 "#
     )
+}
+
+fn client_orval_config_ts() -> String {
+    r#"import { defineConfig } from "orval";
+
+export default defineConfig({
+  api: {
+    input: "./openapi.json",
+    output: {
+      mode: "tags-split",
+      target: "./src/generated",
+      schemas: "./src/generated/model",
+      client: "react-query",
+      httpClient: "fetch",
+      baseUrl: "/",
+      clean: true,
+      prettier: false,
+    },
+  },
+});
+"#
+    .into()
 }
 
 fn client_tsconfig_json(client_alias: &str) -> String {
@@ -707,6 +747,9 @@ fn client_index_ts() -> String {
 export function useSeed<T>(key: unknown[]): T | undefined {
   return useQueryClient().getQueryData<{ data: T }>(key)?.data;
 }
+
+export * from "./generated/ping/ping";
+export * from "./generated/model";
 "#
     .into()
 }
@@ -863,11 +906,13 @@ mod tests {
         let names: Vec<_> = files.iter().map(|(name, _)| *name).collect();
         assert!(names.contains(&".cargo/config.toml"));
         assert!(names.contains(&"src/bin/dev.rs"));
+        assert!(names.contains(&"src/bin/dump-openapi.rs"));
         assert!(names.contains(&"app/layout.tsx"));
         assert!(names.contains(&"app/page.tsx"));
         assert!(names.contains(&"app/slow/loading.tsx"));
         assert!(names.contains(&"app/slow/props.rs"));
         assert!(names.contains(&"app/api/ping/route.rs"));
+        assert!(names.contains(&"client/orval.config.ts"));
         assert!(!names.iter().any(|name| name.ends_with(".html")));
 
         let cargo_config = files
@@ -885,6 +930,34 @@ mod tests {
             .1
             .as_str();
         assert!(cargo_toml.contains("tower-livereload"));
+
+        let page = files
+            .iter()
+            .find(|(name, _)| *name == "app/page.tsx")
+            .unwrap()
+            .1
+            .as_str();
+        assert!(page.contains(r#"import { useGetApiPing } from "@demo/client";"#));
+        assert!(page.contains("useGetApiPing({ query: { enabled: false } })"));
+        assert!(!page.contains(r#"fetch("/api/ping")"#));
+
+        let route = files
+            .iter()
+            .find(|(name, _)| *name == "app/api/ping/route.rs")
+            .unwrap()
+            .1
+            .as_str();
+        assert!(route.contains("#[nextrs::api("));
+        assert!(route.contains("ToSchema"));
+
+        let package_json = files
+            .iter()
+            .find(|(name, _)| *name == "client/package.json")
+            .unwrap()
+            .1
+            .as_str();
+        assert!(package_json.contains(r#""gen": "npm run dump && npm run orval""#));
+        assert!(package_json.contains(r#""orval": "^7.3.0""#));
     }
 
     #[test]
