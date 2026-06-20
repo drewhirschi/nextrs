@@ -79,7 +79,7 @@ not the route list, is the real API surface.
 | `app/api/**/route.ts` | `app/api/**/route.rs` | §6. |
 | `middleware.ts` / `proxy.ts` (Next 16) | `app/middleware.rs` + nested `app/<seg>/middleware.rs` | No `matcher` config — scoping is by directory placement (§7). |
 | `app/[param]/` | `app/[param]/` | Same directory convention. Becomes `/{param}` in Axum syntax. Verified for pages and API routes (`examples/react-todos/app/api/todos/[id]/`). |
-| `app/[...all]/` (catch-all) | `{*all}` Axum wildcard | **Fixed in framework source 2026-06-11** (`discovery.rs::dir_name_to_segment` + macro `url_from_file` now map `[...x]` → `{*x}`); NOT yet in the published `nextrs 0.2.0` crate — a conversion that needs it must use a git/path dep or wait for `0.2.1`. Until then the §10.2 enumeration workaround stands. |
+| `app/[...all]/` (catch-all) | `{*all}` Axum wildcard | **Fixed in framework source 2026-06-11** (`discovery.rs::dir_name_to_segment` + macro `url_from_file` now map `[...x]` → `{*x}`); available in published `nextrs >= 0.2.1`. Projects pinned to `0.2.0` should use a git/path dep, upgrade, or keep the §10.2 enumeration workaround. |
 | `app/(group)/` (route groups) | **Unsupported** | A `(group)` directory becomes a literal `(group)` URL segment. Flatten the tree; if two sibling groups had different layouts, give each subtree its own real segment or push the layout difference down. |
 | `app/@slot/`, `(.)intercept` | **Unsupported** | No parallel/intercepting routes. Restructure as normal routes. |
 | `app/error.tsx`, `global-error.tsx` | **No convention** | Use a client-side `ErrorBoundary` inside each `page.tsx` (the error component is a client component already — reuse it). Server-side failures: see §13 gaps. |
@@ -238,7 +238,7 @@ Notes, all verified in `nextrs/src/bundle.rs`:
   `paths` (the hhh conversion exploits exactly that fallback). Fixed in
   framework source 2026-06-11 (`bundle.rs::build_aliases` normalizes `X/*` →
   `X/` prefix form, and a user `@/*` entry now overrides the built-in); lands
-  in `0.2.1`.
+  in `0.2.1` and later.
 - Release builds (`cargo build --release`) minify and set
   `process.env.NODE_ENV = "production"`; debug builds don't.
 - Bundle names are stable: `/dist/<slug>.js` where `/` → `index`, `/todos` →
