@@ -38,24 +38,28 @@ async fn main() -> Result<(), vercel_runtime::Error> {
             .duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.as_nanos())
             .unwrap_or(0);
-        format!("{:x}-{:x}", std::process::id(), nanos).parse().unwrap()
+        format!("{:x}-{:x}", std::process::id(), nanos)
+            .parse()
+            .unwrap()
     };
 
     let router = nextrs::router::build_router(generated_registry())
         .merge(nextrs::openapi::spec_router(generated_openapi()))
-        .layer(axum::middleware::map_response(move |mut res: axum::response::Response| {
-            let instance_id = instance_id.clone();
-            async move {
-                let cold = !FIRST_SEEN.swap(true, Ordering::Relaxed);
-                let headers = res.headers_mut();
-                headers.insert("x-cold", if cold { "1" } else { "0" }.parse().unwrap());
-                if let Ok(v) = boot.elapsed().as_millis().to_string().parse() {
-                    headers.insert("x-init-ms", v);
+        .layer(axum::middleware::map_response(
+            move |mut res: axum::response::Response| {
+                let instance_id = instance_id.clone();
+                async move {
+                    let cold = !FIRST_SEEN.swap(true, Ordering::Relaxed);
+                    let headers = res.headers_mut();
+                    headers.insert("x-cold", if cold { "1" } else { "0" }.parse().unwrap());
+                    if let Ok(v) = boot.elapsed().as_millis().to_string().parse() {
+                        headers.insert("x-init-ms", v);
+                    }
+                    headers.insert("x-instance", instance_id);
+                    res
                 }
-                headers.insert("x-instance", instance_id);
-                res
-            }
-        }));
+            },
+        ));
     let app = ServiceBuilder::new()
         .layer(StreamingVercelLayer::new())
         .service(router);

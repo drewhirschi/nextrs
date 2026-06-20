@@ -176,8 +176,12 @@ fn load_docs(content_dir: &Path) -> std::io::Result<Vec<ParsedDoc>> {
         *rank = (*rank).min(d.order);
     }
     docs.sort_by(|a, b| {
-        (section_rank[&a.section], &a.section, a.order, &a.slug)
-            .cmp(&(section_rank[&b.section], &b.section, b.order, &b.slug))
+        (section_rank[&a.section], &a.section, a.order, &a.slug).cmp(&(
+            section_rank[&b.section],
+            &b.section,
+            b.order,
+            &b.slug,
+        ))
     });
 
     Ok(docs)
@@ -190,7 +194,9 @@ fn invalid(msg: String) -> std::io::Error {
 /// Split `+++\n<toml>\n+++\n<body>`; returns (toml, body).
 fn split_frontmatter(source: &str) -> Option<(&str, &str)> {
     let rest = source.strip_prefix("+++")?;
-    let rest = rest.strip_prefix("\r\n").or_else(|| rest.strip_prefix('\n'))?;
+    let rest = rest
+        .strip_prefix("\r\n")
+        .or_else(|| rest.strip_prefix('\n'))?;
     let end = rest.find("\n+++")?;
     let front = &rest[..end];
     let body = rest[end + "\n+++".len()..].trim_start_matches(['\r', '\n']);
@@ -436,7 +442,9 @@ mod tests {
         assert!(txt.contains("## Guides"), "{}", txt);
         assert!(txt.contains("## Deploy"), "{}", txt);
         assert!(
-            txt.contains("- [Getting Started](https://example.com/docs/getting-started): First steps"),
+            txt.contains(
+                "- [Getting Started](https://example.com/docs/getting-started): First steps"
+            ),
             "{}",
             txt
         );
@@ -458,11 +466,18 @@ mod tests {
         let docs = load_docs(tmp.path()).unwrap();
         let manifest = generate_manifest_rs(&docs);
         assert!(manifest.contains("pub struct DocMeta"), "{}", manifest);
-        assert!(manifest.contains("slug: \"getting-started\""), "{}", manifest);
+        assert!(
+            manifest.contains("slug: \"getting-started\""),
+            "{}",
+            manifest
+        );
         let content = generate_content_rs(&docs);
         assert!(content.contains("pub struct Doc"), "{}", content);
         // HTML with quotes must be debug-escaped into a valid string literal.
-        assert!(content.contains("\\\"hello\\\"") || content.contains("id=\\\""), "{}", content);
+        assert!(
+            content.contains("\\\"hello\\\"") || content.contains("id=\\\""),
+            "{}",
+            content
+        );
     }
-
 }

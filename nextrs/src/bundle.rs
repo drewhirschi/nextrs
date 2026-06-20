@@ -1,13 +1,13 @@
-//! Build-time bundling of `page.tsx` entries. Feature-gated behind `tsx`.
+//! Build-time bundling of React convention files. Feature-gated behind `tsx`.
 //!
 //! For every `page.tsx` under the app dir, this emits a small entry wrapper
-//! (React Query provider + seed hydration + `createRoot` mount) into
-//! `$OUT_DIR/nextrs_tsx/`, bundles all entries with rolldown (ESM, browser,
-//! shared chunks) into a staging dir under `$OUT_DIR`, then mirrors the result
-//! into `<public_dist>` with a byte-compare so unchanged builds never touch
-//! the destination — `site/public` is watched by both cargo
-//! (`rerun-if-changed` via `sync_public_dir`) and the dev watcher, and
-//! unconditional writes would loop rebuilds/restarts.
+//! (layout composition + React Query provider + seed hydration + `createRoot`
+//! mount) into `$OUT_DIR/nextrs_tsx/`. For every `loading.tsx`, it emits a
+//! loading entry wrapper. Rolldown bundles all entries into a staging dir under
+//! `$OUT_DIR`, then mirrors the result into `<public_dist>` with a byte-compare
+//! so unchanged builds never touch the destination — `site/public` is watched
+//! by both cargo (`rerun-if-changed` via `sync_public_dir`) and the dev watcher,
+//! and unconditional writes would loop rebuilds/restarts.
 //!
 //! Call from a consumer crate's `build.rs`, after `emit_registry`:
 //!
@@ -25,8 +25,8 @@
 
 use std::path::{Path, PathBuf};
 
-pub use crate::build::page_slug;
-use crate::discovery::discover_routes;
+pub use crate::build::{loading_slug, page_slug};
+use crate::discovery::{DiscoveredRoute, discover_routes};
 
 /// Configuration for [`bundle_pages`]. Directory paths are interpreted
 /// relative to `CARGO_MANIFEST_DIR`.
@@ -94,13 +94,21 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<()> {
         client_dir.join("package.json").display()
     );
 
-    let tsx_pages: Vec<(String, PathBuf)> = discover_routes(&abs_app)
-        .into_iter()
-        .filter_map(|r| r.page.tsx.map(|p| (page_slug(&r.url_path), p)))
+    let routes = discover_routes(&abs_app);
+    let tsx_pages = page_bundles(&routes);
+    let tsx_loadings: Vec<(String, PathBuf)> = routes
+        .iter()
+        .filter_map(|route| {
+            route
+                .loading
+                .tsx
+                .as_ref()
+                .map(|path| (loading_slug(&route.url_path), path.clone()))
+        })
         .collect();
 
     let dist = manifest_dir.join(cfg.public_dist);
-    if tsx_pages.is_empty() {
+    if tsx_pages.is_empty() && tsx_loadings.is_empty() {
         // Prune a stale dist from a previous build that had tsx pages.
         if dist.is_dir() {
             std::fs::remove_dir_all(&dist)?;
@@ -122,10 +130,20 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<()> {
     std::fs::create_dir_all(&entries_dir)?;
 
     let client_helper = client_dir.join("src/nextrs-client.ts");
-    let mut inputs = Vec::with_capacity(tsx_pages.len());
-    for (slug, page_path) in &tsx_pages {
+    let mut inputs = Vec::with_capacity(tsx_pages.len() + tsx_loadings.len());
+    for page in &tsx_pages {
+        let slug = &page.slug;
         let entry_path = entries_dir.join(format!("{}.tsx", slug));
-        let entry_src = entry_wrapper(page_path, &client_helper);
+        let entry_src = entry_wrapper(&page.page_path, &page.layout_paths, &client_helper);
+        write_if_changed(&entry_path, entry_src.as_bytes())?;
+        inputs.push(rolldown::InputItem {
+            name: Some(slug.clone()),
+            import: entry_path.display().to_string(),
+        });
+    }
+    for (slug, loading_path) in &tsx_loadings {
+        let entry_path = entries_dir.join(format!("{}.tsx", slug));
+        let entry_src = loading_entry_wrapper(loading_path);
         write_if_changed(&entry_path, entry_src.as_bytes())?;
         inputs.push(rolldown::InputItem {
             name: Some(slug.clone()),
@@ -145,13 +163,83 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<()> {
     mirror_by_content(&staging, &dist)
 }
 
-fn entry_wrapper(page_path: &Path, client_helper: &Path) -> String {
+#[derive(Debug, Clone)]
+struct PageBundle {
+    slug: String,
+    page_path: PathBuf,
+    layout_paths: Vec<PathBuf>,
+}
+
+fn page_bundles(routes: &[DiscoveredRoute]) -> Vec<PageBundle> {
+    routes
+        .iter()
+        .filter_map(|route| {
+            let page_path = route.page.tsx.clone()?;
+            Some(PageBundle {
+                slug: page_slug(&route.url_path),
+                page_path,
+                layout_paths: collect_layouts_for_path(routes, &route.url_path),
+            })
+        })
+        .collect()
+}
+
+fn collect_layouts_for_path(routes: &[DiscoveredRoute], target_path: &str) -> Vec<PathBuf> {
+    let mut layouts: Vec<&DiscoveredRoute> = routes
+        .iter()
+        .filter(|route| {
+            route.layout.tsx.is_some() && entry_applies_to_path(&route.url_path, target_path)
+        })
+        .collect();
+    layouts.sort_by_key(|route| route_depth(&route.url_path));
+    layouts
+        .into_iter()
+        .filter_map(|route| route.layout.tsx.clone())
+        .collect()
+}
+
+fn route_depth(path: &str) -> usize {
+    if path == "/" {
+        0
+    } else {
+        path.matches('/').count()
+    }
+}
+
+fn entry_applies_to_path(entry_path: &str, target_path: &str) -> bool {
+    entry_path == "/"
+        || target_path == entry_path
+        || target_path
+            .strip_prefix(entry_path)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn layout_tree(layout_count: usize) -> String {
+    let mut tree = String::new();
+    for i in 0..layout_count {
+        tree.push_str(&format!("<Layout{i}>"));
+    }
+    tree.push_str("<Page />");
+    for i in (0..layout_count).rev() {
+        tree.push_str(&format!("</Layout{i}>"));
+    }
+    tree
+}
+
+fn entry_wrapper(page_path: &Path, layout_paths: &[PathBuf], client_helper: &Path) -> String {
+    let layout_imports = layout_paths
+        .iter()
+        .enumerate()
+        .map(|(i, path)| format!("import Layout{i} from \"{}\";\n", path.display()))
+        .collect::<String>();
+    let tree = layout_tree(layout_paths.len());
     format!(
         r#"// @generated by nextrs::bundle. Do not edit by hand.
 import {{ createRoot }} from "react-dom/client";
 import {{ QueryClient, QueryClientProvider }} from "@tanstack/react-query";
 import {{ seedQueryClient }} from "{helper}";
 import Page from "{page}";
+{layout_imports}
 
 // staleTime > 0 so server-seeded entries (see props.rs) render without an
 // immediate background refetch; with no seeds this is just a sane default.
@@ -162,12 +250,26 @@ seedQueryClient(qc);
 
 createRoot(document.getElementById("__nx_root__")!).render(
   <QueryClientProvider client={{qc}}>
-    <Page />
+    {tree}
   </QueryClientProvider>,
 );
 "#,
         helper = client_helper.display(),
         page = page_path.display(),
+        layout_imports = layout_imports,
+        tree = tree,
+    )
+}
+
+fn loading_entry_wrapper(loading_path: &Path) -> String {
+    format!(
+        r#"// @generated by nextrs::bundle. Do not edit by hand.
+import {{ createRoot }} from "react-dom/client";
+import Loading from "{loading}";
+
+createRoot(document.getElementById("__nx_loading_root__")!).render(<Loading />);
+"#,
+        loading = loading_path.display(),
     )
 }
 
@@ -326,9 +428,8 @@ mod tests {
         let aliases = build_aliases(Path::new("/proj/client"), "@site/client", &[]);
         // The client barrel maps to the index file (exact match).
         assert!(
-            aliases
-                .iter()
-                .any(|(k, v)| k == "@site/client" && v[0].as_deref() == Some("/proj/client/src/index.ts")),
+            aliases.iter().any(|(k, v)| k == "@site/client"
+                && v[0].as_deref() == Some("/proj/client/src/index.ts")),
             "{aliases:?}"
         );
         // Built-in shadcn-style @/* → <client>/src/*, normalized to the
@@ -431,10 +532,49 @@ mod tests {
 
     #[test]
     fn entry_wrapper_mentions_mount_and_provider() {
-        let s = entry_wrapper(Path::new("/abs/page.tsx"), Path::new("/abs/helper.ts"));
+        let s = entry_wrapper(Path::new("/abs/page.tsx"), &[], Path::new("/abs/helper.ts"));
         assert!(s.contains("__nx_root__"));
         assert!(s.contains("QueryClientProvider"));
         assert!(s.contains("seedQueryClient"));
         assert!(s.contains("/abs/page.tsx"));
+    }
+
+    #[test]
+    fn entry_wrapper_composes_layouts_root_to_leaf() {
+        let s = entry_wrapper(
+            Path::new("/abs/app/dashboard/page.tsx"),
+            &[
+                PathBuf::from("/abs/app/layout.tsx"),
+                PathBuf::from("/abs/app/dashboard/layout.tsx"),
+            ],
+            Path::new("/abs/client.ts"),
+        );
+        assert!(s.contains("import Layout0 from \"/abs/app/layout.tsx\";"));
+        assert!(s.contains("import Layout1 from \"/abs/app/dashboard/layout.tsx\";"));
+        assert!(s.contains("<Layout0><Layout1><Page /></Layout1></Layout0>"));
+    }
+
+    #[test]
+    fn loading_entry_wrapper_mounts_loading_component() {
+        let s = loading_entry_wrapper(Path::new("/abs/app/loading.tsx"));
+        assert!(s.contains("__nx_loading_root__"));
+        assert!(s.contains("import Loading from \"/abs/app/loading.tsx\";"));
+    }
+
+    #[test]
+    fn page_bundles_include_applicable_layouts() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("dashboard/settings")).unwrap();
+        std::fs::write(tmp.path().join("layout.tsx"), "").unwrap();
+        std::fs::write(tmp.path().join("dashboard/layout.tsx"), "").unwrap();
+        std::fs::write(tmp.path().join("dashboard/settings/page.tsx"), "").unwrap();
+
+        let routes = discover_routes(tmp.path());
+        let pages = page_bundles(&routes);
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].slug, "dashboard-settings");
+        assert_eq!(pages[0].layout_paths.len(), 2);
+        assert!(pages[0].layout_paths[0].ends_with("layout.tsx"));
+        assert!(pages[0].layout_paths[1].ends_with("dashboard/layout.tsx"));
     }
 }

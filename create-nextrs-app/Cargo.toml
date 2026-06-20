@@ -1,0 +1,13 @@
+[package]
+name = "create-nextrs-app"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "Scaffold a React-first nextrs app."
+repository = "https://github.com/drewhirschi/nextrs"
+publish = false
+
+[[bin]]
+name = "create-nextrs-app"
+path = "src/main.rs"

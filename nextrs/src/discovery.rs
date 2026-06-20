@@ -2,9 +2,9 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 /// One slot at a route segment — may have a `.rs` (logic) variant, an `.html`
-/// (static) variant, both, or neither. Codegen prefers `.rs` when both exist.
-/// The page slot may additionally have a `.tsx` (client-rendered React)
-/// variant; `.tsx` alongside `.rs`/`.html` is a codegen conflict error.
+/// (static) variant, a `.tsx` (React) variant, or none. Codegen preserves the
+/// legacy `.rs`/`.html` path for existing apps, while `.tsx` is the active
+/// frontend direction.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct Slot {
     pub rs: Option<PathBuf>,
@@ -76,8 +76,8 @@ fn optional_path(dir: &Path, name: &str) -> Option<PathBuf> {
     if p.exists() { Some(p) } else { None }
 }
 
-/// Scan a directory tree for convention files (page.{rs,html}, layout.{rs,html},
-/// loading.{rs,html}, route.rs). Returns discovered routes sorted by URL path.
+/// Scan a directory tree for convention files. Returns discovered routes sorted
+/// by URL path.
 pub fn discover_routes(app_dir: &Path) -> Vec<DiscoveredRoute> {
     let mut routes = BTreeMap::new();
     scan_dir(app_dir, app_dir, &mut routes);
@@ -97,12 +97,12 @@ fn scan_dir(app_root: &Path, current: &Path, routes: &mut BTreeMap<String, Disco
     let layout = Slot {
         rs: optional_path(current, "layout.rs"),
         html: optional_path(current, "layout.html"),
-        tsx: None,
+        tsx: optional_path(current, "layout.tsx"),
     };
     let loading = Slot {
         rs: optional_path(current, "loading.rs"),
         html: optional_path(current, "loading.html"),
-        tsx: None,
+        tsx: optional_path(current, "loading.tsx"),
     };
     let middleware = optional_path(current, "middleware.rs");
     let route = optional_path(current, "route.rs");
@@ -208,6 +208,24 @@ mod tests {
         assert!(routes[2].page.exists());
         assert!(routes[2].middleware.is_some());
         assert!(routes[2].route.is_some());
+    }
+
+    #[test]
+    fn test_discover_tsx_layout_and_loading() {
+        let tmp = setup_app_dir(&[
+            ("", &["layout.tsx", "loading.tsx"]),
+            ("dashboard", &["page.tsx", "props.rs", "loading.tsx"]),
+        ]);
+
+        let routes = discover_routes(tmp.path());
+        assert_eq!(routes.len(), 2);
+        assert_eq!(routes[0].url_path, "/");
+        assert!(routes[0].layout.tsx.is_some());
+        assert!(routes[0].loading.tsx.is_some());
+        assert_eq!(routes[1].url_path, "/dashboard");
+        assert!(routes[1].page.tsx.is_some());
+        assert!(routes[1].props.is_some());
+        assert!(routes[1].loading.tsx.is_some());
     }
 
     #[test]
@@ -369,15 +387,15 @@ mod tests {
     }
 
     #[test]
-    fn test_layout_and_loading_do_not_pick_up_tsx() {
+    fn test_layout_and_loading_pick_up_tsx() {
         let tmp = setup_app_dir(&[("x", &["page.tsx", "layout.tsx", "loading.tsx"])]);
 
         let routes = discover_routes(tmp.path());
         assert_eq!(routes.len(), 1);
-        assert!(routes[0].layout.tsx.is_none());
-        assert!(!routes[0].layout.exists());
-        assert!(routes[0].loading.tsx.is_none());
-        assert!(!routes[0].loading.exists());
+        assert!(routes[0].layout.tsx.is_some());
+        assert!(routes[0].layout.exists());
+        assert!(routes[0].loading.tsx.is_some());
+        assert!(routes[0].loading.exists());
     }
 
     #[test]

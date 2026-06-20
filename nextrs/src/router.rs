@@ -21,15 +21,24 @@ const NX_SLOT_ID: &str = "__nx_slot__";
 /// CSS id assigned to the `<template>` element holding the late page content.
 const NX_PAGE_ID: &str = "__nx_page__";
 
-/// Tiny inline script that swaps the loading slot for the page template.
-/// Runs synchronously when its `<script>` tag is parsed — by which time both
-/// the slot and the template are already in the DOM (they were streamed
-/// earlier in the same response).
+/// Inline script that swaps the loading slot for the page template. Script
+/// elements moved out of a `<template>` are inert in browsers, so the swapper
+/// recreates them before insertion. That lets streamed React pages execute
+/// their final page bundle after `props.rs` resolves.
 const NX_SWAP_SCRIPT: &str = concat!(
     "<script>(function(){",
     "var s=document.getElementById('__nx_slot__');",
     "var t=document.getElementById('__nx_page__');",
-    "if(s&&t){s.replaceWith(t.content);t.remove();}",
+    "if(!s||!t)return;",
+    "var c=t.content.cloneNode(true);",
+    "c.querySelectorAll('script').forEach(function(o){",
+    "var n=document.createElement('script');",
+    "for(var i=0;i<o.attributes.length;i++){var a=o.attributes[i];n.setAttribute(a.name,a.value);}",
+    "n.text=o.text;",
+    "o.replaceWith(n);",
+    "});",
+    "s.replaceWith(c);",
+    "t.remove();",
     "})();</script>",
 );
 
@@ -145,8 +154,7 @@ async fn declare_utf8_charset(mut resp: Response) -> Response {
     if ct.starts_with("text/") && !ct.contains("charset") {
         let with_charset = format!("{}; charset=utf-8", ct);
         if let Ok(value) = http::HeaderValue::from_str(&with_charset) {
-            resp.headers_mut()
-                .insert(http::header::CONTENT_TYPE, value);
+            resp.headers_mut().insert(http::header::CONTENT_TYPE, value);
         }
     }
     resp

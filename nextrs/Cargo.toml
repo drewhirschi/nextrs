@@ -1,7 +1,7 @@
 [package]
 name = "nextrs"
-version = "0.2.2"
-description = "A Next.js-style routing framework for Rust built on Axum and Askama."
+version = "0.3.0"
+description = "A Next.js-style React routing framework for Rust built on Axum."
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -32,7 +32,32 @@ build = ["dep:pulldown-cmark", "dep:toml"]
 # Enables `nextrs::bundle`: build-time bundling of page.tsx entries via
 # rolldown (all-Rust, the Vite 8 engine). Heavy dependency tree — only enable
 # in [build-dependencies] of apps that actually use .tsx pages.
-tsx = ["build", "dep:rolldown"]
+tsx = [
+    "build",
+    "dep:rolldown",
+    "dep:rolldown_common",
+    "dep:rolldown_dev_common",
+    "dep:rolldown_devtools",
+    "dep:rolldown_devtools_action",
+    "dep:rolldown_ecmascript",
+    "dep:rolldown_ecmascript_utils",
+    "dep:rolldown_error",
+    "dep:rolldown_fs",
+    "dep:rolldown_plugin",
+    "dep:rolldown_plugin_asset_module",
+    "dep:rolldown_plugin_chunk_import_map",
+    "dep:rolldown_plugin_copy_module",
+    "dep:rolldown_plugin_data_url",
+    "dep:rolldown_plugin_hmr",
+    "dep:rolldown_plugin_lazy_compilation",
+    "dep:rolldown_plugin_oxc_runtime",
+    "dep:rolldown_resolver",
+    "dep:rolldown_sourcemap",
+    "dep:rolldown_std_utils",
+    "dep:rolldown_tracing",
+    "dep:rolldown_utils",
+    "dep:string_wizard",
+]
 
 [dependencies]
 nextrs-macros = { path = "../nextrs-macros", version = "0.1.0" }
@@ -56,6 +81,28 @@ toml = { version = "0.8", optional = true }
 # Pinned exactly: the crates.io releases are new (May 2026) and the Rust API
 # has no semver promise yet. Bump deliberately.
 rolldown = { version = "=1.1.0", optional = true }
+rolldown_common = { version = "=1.1.0", optional = true }
+rolldown_dev_common = { version = "=1.1.0", optional = true }
+rolldown_devtools = { version = "=1.1.0", optional = true }
+rolldown_devtools_action = { version = "=1.1.0", optional = true }
+rolldown_ecmascript = { version = "=1.1.0", optional = true }
+rolldown_ecmascript_utils = { version = "=1.1.0", optional = true }
+rolldown_error = { version = "=1.1.0", optional = true }
+rolldown_fs = { version = "=1.1.0", optional = true }
+rolldown_plugin = { version = "=1.1.0", optional = true }
+rolldown_plugin_asset_module = { version = "=1.1.0", optional = true }
+rolldown_plugin_chunk_import_map = { version = "=1.1.0", optional = true }
+rolldown_plugin_copy_module = { version = "=1.1.0", optional = true }
+rolldown_plugin_data_url = { version = "=1.1.0", optional = true }
+rolldown_plugin_hmr = { version = "=1.1.0", optional = true }
+rolldown_plugin_lazy_compilation = { version = "=1.1.0", optional = true }
+rolldown_plugin_oxc_runtime = { version = "=1.1.0", optional = true }
+rolldown_resolver = { version = "=1.1.0", optional = true }
+rolldown_sourcemap = { version = "=1.1.0", optional = true }
+rolldown_std_utils = { version = "=1.1.0", optional = true }
+rolldown_tracing = { version = "=1.1.0", optional = true }
+rolldown_utils = { version = "=1.1.0", optional = true }
+string_wizard = { version = "=1.1.0", optional = true }
 
 # Optional — only pulled in when the `vercel` feature is on.
 vercel_runtime = { version = "2", features = ["axum"], optional = true }

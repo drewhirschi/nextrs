@@ -465,6 +465,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "create-nextrs-app"
+version = "0.1.0"
+
+[[package]]
 name = "crossbeam-deque"
 version = "0.8.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1263,7 +1267,7 @@ dependencies = [
 
 [[package]]
 name = "nextrs"
-version = "0.2.2"
+version = "0.3.0"
 dependencies = [
  "askama",
  "async-stream",
@@ -1276,8 +1280,30 @@ dependencies = [
  "nextrs-macros",
  "pulldown-cmark",
  "rolldown",
+ "rolldown_common",
+ "rolldown_dev_common",
+ "rolldown_devtools",
+ "rolldown_devtools_action",
+ "rolldown_ecmascript",
+ "rolldown_ecmascript_utils",
+ "rolldown_error",
+ "rolldown_fs",
+ "rolldown_plugin",
+ "rolldown_plugin_asset_module",
+ "rolldown_plugin_chunk_import_map",
+ "rolldown_plugin_copy_module",
+ "rolldown_plugin_data_url",
+ "rolldown_plugin_hmr",
+ "rolldown_plugin_lazy_compilation",
+ "rolldown_plugin_oxc_runtime",
+ "rolldown_resolver",
+ "rolldown_sourcemap",
+ "rolldown_std_utils",
+ "rolldown_tracing",
+ "rolldown_utils",
  "serde",
  "serde_json",
+ "string_wizard",
  "tempfile",
  "tokio",
  "toml",

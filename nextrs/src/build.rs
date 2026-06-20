@@ -15,11 +15,10 @@
 //! ```
 //!
 //! `generated_registry()` is in scope after the include, returning a
-//! `RouteRegistry` populated with every page/layout/loading slot the build.rs
-//! discovered under `app/`. `.rs` slots are wired via `#[path]` mod
-//! declarations; `.html` slots use `include_str!` + the framework's static
-//! helpers. `middleware.rs` and `route.rs` are Rust-only conventions. `.rs`
-//! wins when both are present.
+//! `RouteRegistry` populated with every route slot the build.rs discovered
+//! under `app/`. Legacy `.rs` slots are wired via `#[path]` mod declarations;
+//! legacy `.html` slots use `include_str!` + the framework's static helpers.
+//! React `.tsx` slots are bundled by `nextrs::bundle`.
 //!
 //! Lives in the framework crate (gated by the `build` feature) rather than a
 //! separate `nextrs-build` workspace member because the codegen needs
@@ -162,13 +161,17 @@ pub fn emit_registry(
     // Cargo output while debugging codegen.
     println!("cargo:rerun-if-env-changed=NEXTRS_VERBOSE");
     print_client_summary_if_verbose(&routes);
+    print_loading_warnings(&routes);
 
-    // page.tsx without the `tsx` feature: the shell handler is emitted either
-    // way, but nothing builds the bundle it points at.
+    // React convention files without the `tsx` feature: the shell handlers are
+    // emitted either way, but nothing builds the bundles they point at.
     #[cfg(not(feature = "tsx"))]
-    if routes.iter().any(|r| r.page.tsx.is_some()) {
+    if routes
+        .iter()
+        .any(|r| r.page.tsx.is_some() || r.layout.tsx.is_some() || r.loading.tsx.is_some())
+    {
         println!(
-            "cargo:warning=nextrs: page.tsx pages found but the `tsx` feature is not enabled — \
+            "cargo:warning=nextrs: .tsx convention files found but the `tsx` feature is not enabled — \
              enable it in [build-dependencies] and call nextrs::bundle::bundle_pages, or /dist/*.js will 404"
         );
     }
@@ -372,6 +375,29 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
                 )
             );
         }
+        if route.layout.tsx.is_some() && (route.layout.rs.is_some() || route.layout.html.is_some())
+        {
+            let _ = writeln!(
+                out,
+                "::core::compile_error!({:?});",
+                format!(
+                    "nextrs layout conflict at {}: layout.tsx cannot coexist with layout.rs/layout.html — one layout model per segment",
+                    route.url_path
+                )
+            );
+        }
+        if route.loading.tsx.is_some()
+            && (route.loading.rs.is_some() || route.loading.html.is_some())
+        {
+            let _ = writeln!(
+                out,
+                "::core::compile_error!({:?});",
+                format!(
+                    "nextrs loading conflict at {}: loading.tsx cannot coexist with loading.rs/loading.html — one loading model per segment",
+                    route.url_path
+                )
+            );
+        }
         if route.props.is_some() && route.page.tsx.is_none() {
             let _ = writeln!(
                 out,
@@ -416,7 +442,7 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
 
         emit_page_slot(&mut out, i, route);
         emit_slot(&mut out, "layout", i, &route.layout);
-        emit_slot(&mut out, "loading", i, &route.loading);
+        emit_loading_slot(&mut out, i, route, routes);
         emit_middleware(&mut out, i, route);
 
         emit_methods(&mut out, i, route);
@@ -551,6 +577,73 @@ fn client_status(routes: &[DiscoveredRoute]) -> Vec<ClientStatus> {
         }
     }
     out
+}
+
+fn has_props_backed_tsx_page(route: &DiscoveredRoute) -> bool {
+    route.page.tsx.is_some() && route.props.is_some()
+}
+
+fn loading_tsx_applies_to_any_props_route(
+    routes: &[DiscoveredRoute],
+    loading_route: &DiscoveredRoute,
+) -> bool {
+    routes.iter().any(|route| {
+        has_props_backed_tsx_page(route)
+            && entry_applies_to_path(&loading_route.url_path, &route.url_path)
+    })
+}
+
+/// Warn when a `loading.tsx` cannot affect any props-backed React route. A
+/// parent `app/loading.tsx` is valid when any descendant has `props.rs`.
+fn print_loading_warnings(routes: &[DiscoveredRoute]) {
+    for route in routes.iter().filter(|route| route.loading.tsx.is_some()) {
+        if !loading_tsx_applies_to_any_props_route(routes, route) {
+            println!(
+                "cargo:warning=nextrs: {} has loading.tsx but no props-backed page.tsx route uses it",
+                route.url_path
+            );
+        }
+    }
+}
+
+fn route_depth(path: &str) -> usize {
+    if path == "/" {
+        0
+    } else {
+        path.matches('/').count()
+    }
+}
+
+fn entry_applies_to_path(entry_path: &str, target_path: &str) -> bool {
+    entry_path == "/"
+        || target_path == entry_path
+        || target_path
+            .strip_prefix(entry_path)
+            .is_some_and(|suffix| suffix.starts_with('/'))
+}
+
+fn nearest_tsx_loading<'a>(
+    routes: &'a [DiscoveredRoute],
+    target_path: &str,
+) -> Option<&'a DiscoveredRoute> {
+    routes
+        .iter()
+        .filter(|route| {
+            route.loading.tsx.is_some() && entry_applies_to_path(&route.url_path, target_path)
+        })
+        .max_by_key(|route| route_depth(&route.url_path))
+}
+
+/// URL path → loading bundle entry name. `/` → `index.loading`.
+pub fn loading_slug(url_path: &str) -> String {
+    format!("{}.loading", page_slug(url_path))
+}
+
+fn tsx_loading_shell(loading_route: &DiscoveredRoute) -> String {
+    format!(
+        r#"<div id="__nx_loading_root__"></div><script type="module" src="/dist/{}.js"></script>"#,
+        loading_slug(&loading_route.url_path)
+    )
 }
 
 fn client_summary_text(routes: &[DiscoveredRoute]) -> Option<String> {
@@ -771,7 +864,7 @@ fn emit_methods(out: &mut String, idx: usize, route: &DiscoveredRoute) {
             out,
             "        methods: {{ compile_error!({:?}); vec![] }},",
             format!(
-                "nextrs route conflict at {}: page.rs/page.html owns GET, so route.rs cannot export get()",
+                "nextrs route conflict at {}: page owns GET, so route.rs cannot export get()",
                 route.url_path
             )
         );
@@ -855,6 +948,32 @@ fn emit_page_slot(out: &mut String, idx: usize, route: &DiscoveredRoute) {
             shell
         );
     }
+}
+
+fn emit_loading_slot(
+    out: &mut String,
+    idx: usize,
+    route: &DiscoveredRoute,
+    routes: &[DiscoveredRoute],
+) {
+    if route.loading.rs.is_some() || route.loading.html.is_some() {
+        emit_slot(out, "loading", idx, &route.loading);
+        return;
+    }
+
+    if has_props_backed_tsx_page(route) {
+        if let Some(loading_route) = nearest_tsx_loading(routes, &route.url_path) {
+            let shell = tsx_loading_shell(loading_route);
+            let _ = writeln!(
+                out,
+                "        loading: Some(::nextrs::conventions::static_loading({:?})),",
+                shell
+            );
+            return;
+        }
+    }
+
+    out.push_str("        loading: None,\n");
 }
 
 fn emit_slot(out: &mut String, slot: &str, idx: usize, s: &crate::discovery::Slot) {
@@ -1426,6 +1545,69 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
     }
 
     #[test]
+    fn loading_tsx_is_inherited_by_props_backed_tsx_pages() {
+        let tmp = setup_app(&[
+            ("", &["loading.tsx"]),
+            ("dashboard", &["page.tsx", "props.rs"]),
+            (
+                "dashboard/reports",
+                &["page.tsx", "props.rs", "loading.tsx"],
+            ),
+        ]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        let dashboard = code
+            .split("\"/dashboard\".to_string()")
+            .nth(1)
+            .expect("dashboard route emitted");
+        assert!(
+            dashboard.contains(r#"src=\"/dist/index.loading.js\""#),
+            "dashboard should inherit root loading.tsx:\n{}",
+            dashboard
+        );
+
+        let reports = code
+            .split("\"/dashboard/reports\".to_string()")
+            .nth(1)
+            .expect("reports route emitted");
+        assert!(
+            reports.contains(r#"src=\"/dist/dashboard-reports.loading.js\""#),
+            "nearest loading.tsx should win:\n{}",
+            reports
+        );
+    }
+
+    #[test]
+    fn loading_tsx_without_props_backed_descendant_is_detected() {
+        let tmp = setup_app(&[("", &["loading.tsx"]), ("about", &["page.tsx"])]);
+        let routes = discover_routes(tmp.path());
+        let root = routes.iter().find(|route| route.url_path == "/").unwrap();
+
+        assert!(!loading_tsx_applies_to_any_props_route(&routes, root));
+    }
+
+    #[test]
+    fn tsx_layout_or_loading_beside_legacy_files_is_a_conflict() {
+        for (slot, legacy) in [
+            ("layout", "layout.rs"),
+            ("layout", "layout.html"),
+            ("loading", "loading.rs"),
+            ("loading", "loading.html"),
+        ] {
+            let tsx = format!("{slot}.tsx");
+            let tmp = setup_app(&[("dashboard", &[tsx.as_str(), legacy])]);
+            let routes = discover_routes(tmp.path());
+            let code = generate_code(&routes);
+            assert!(
+                code.contains("compile_error!") && code.contains("cannot coexist"),
+                "expected {tsx}/{legacy} conflict:\n{}",
+                code
+            );
+        }
+    }
+
+    #[test]
     fn props_without_tsx_page_is_a_conflict() {
         let tmp = setup_app(&[("todos", &["page.rs", "props.rs"])]);
         let routes = discover_routes(tmp.path());
@@ -1489,6 +1671,6 @@ pub async fn get(_req: Request<Body>) -> impl IntoResponse { StatusCode::OK }
         let code = generate_code(&routes);
 
         assert!(code.contains("compile_error!"));
-        assert!(code.contains("page.rs/page.html owns GET"));
+        assert!(code.contains("page owns GET"));
     }
 }

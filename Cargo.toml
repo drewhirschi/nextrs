@@ -1,6 +1,13 @@
 [workspace]
 resolver = "3"
-members = ["nextrs", "nextrs-macros", "site", "examples/react-todos", "xtask"]
+members = [
+    "nextrs",
+    "nextrs-macros",
+    "site",
+    "examples/react-todos",
+    "xtask",
+    "create-nextrs-app",
+]
 
 # The workspace root is also a package — it's the Vercel deployment target.
 # Its single binary (api/index.rs) wraps the framework's axum router for

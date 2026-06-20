@@ -175,13 +175,15 @@ fn url_from_file(file: &str) -> String {
     }
     let segments: Vec<String> = dir
         .split('/')
-        .map(|seg| match seg.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
-            Some(param) => match param.strip_prefix("...") {
-                Some(rest) => format!("{{*{rest}}}"),
-                None => format!("{{{param}}}"),
+        .map(
+            |seg| match seg.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+                Some(param) => match param.strip_prefix("...") {
+                    Some(rest) => format!("{{*{rest}}}"),
+                    None => format!("{{{param}}}"),
+                },
+                None => seg.to_string(),
             },
-            None => seg.to_string(),
-        })
+        )
         .collect();
     format!("/{}", segments.join("/"))
 }
@@ -289,10 +291,9 @@ mod tests {
 
     #[test]
     fn seed_companion_for_zero_arg_get() {
-        let item: proc_macro2::TokenStream =
-            "pub async fn get() -> Json<PingResponse> { todo!() }"
-                .parse()
-                .unwrap();
+        let item: proc_macro2::TokenStream = "pub async fn get() -> Json<PingResponse> { todo!() }"
+            .parse()
+            .unwrap();
         let c = seed_companion(item, "/api/ping").unwrap().to_string();
         assert!(c.contains("__nextrs_seed_get"), "{}", c);
         assert!(c.contains("None"), "{}", c);

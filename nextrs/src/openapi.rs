@@ -84,6 +84,9 @@ mod tests {
         let bytes = resp.into_body().collect().await.unwrap().to_bytes();
         // Valid JSON with the OpenAPI marker key.
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert!(value.get("openapi").is_some(), "missing openapi version key");
+        assert!(
+            value.get("openapi").is_some(),
+            "missing openapi version key"
+        );
     }
 }
