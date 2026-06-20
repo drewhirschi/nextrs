@@ -640,9 +640,10 @@ pub fn loading_slug(url_path: &str) -> String {
 }
 
 fn tsx_loading_shell(loading_route: &DiscoveredRoute) -> String {
+    let src = format!("/dist/{}.js", loading_slug(&loading_route.url_path));
     format!(
-        r#"<div id="__nx_loading_root__"></div><script type="module" src="/dist/{}.js"></script>"#,
-        loading_slug(&loading_route.url_path)
+        r#"<div id="__nx_loading_root__"></div><script>import({:?});</script>"#,
+        src
     )
 }
 
@@ -1562,7 +1563,7 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
             .nth(1)
             .expect("dashboard route emitted");
         assert!(
-            dashboard.contains(r#"src=\"/dist/index.loading.js\""#),
+            dashboard.contains(r#"import(\"/dist/index.loading.js\")"#),
             "dashboard should inherit root loading.tsx:\n{}",
             dashboard
         );
@@ -1572,7 +1573,7 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
             .nth(1)
             .expect("reports route emitted");
         assert!(
-            reports.contains(r#"src=\"/dist/dashboard-reports.loading.js\""#),
+            reports.contains(r#"import(\"/dist/dashboard-reports.loading.js\")"#),
             "nearest loading.tsx should win:\n{}",
             reports
         );
