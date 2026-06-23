@@ -352,6 +352,20 @@ fn run_bundler(
             modules: Some(vec![client_dir.join("node_modules").display().to_string()]),
             ..Default::default()
         }),
+        // Pin the JSX transform to the automatic runtime. Rolldown discovers
+        // each file's nearest tsconfig.json and merges its compilerOptions
+        // into the transform; zero-copy setups bundle .tsx files owned by a
+        // foreign Next.js tsconfig whose `"jsx": "preserve"` would otherwise
+        // disable JSX lowering for exactly those files and emit raw JSX into
+        // the chunk (a syntax error at load time in the browser). An explicit
+        // runtime wins the merge — rolldown then only warns about the conflict.
+        transform: Some(rolldown::BundlerTransformOptions {
+            jsx: Some(rolldown::Either::Right(rolldown::JsxOptions {
+                runtime: Some("automatic".to_string()),
+                ..Default::default()
+            })),
+            ..Default::default()
+        }),
         ..Default::default()
     };
 
