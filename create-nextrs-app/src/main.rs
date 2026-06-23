@@ -15,6 +15,7 @@ fn run() -> io::Result<()> {
     let options = parse_args(std::env::args().skip(1))?;
     let target = match options.target {
         Some(path) => path,
+        None if options.here => PathBuf::from("."),
         None => prompt_project_path()?,
     };
 
@@ -24,7 +25,7 @@ fn run() -> io::Result<()> {
 
 fn print_help() {
     println!(
-        "create-nextrs-app\n\nUSAGE:\n    create-nextrs-app <path> [--nextrs-path <path>]\n\nCreates a React-first nextrs app with /, /api/ping, and /slow.\n\nOPTIONS:\n    --nextrs-path <path>  Use a local nextrs checkout instead of nextrs = \"0.3\""
+        "create-nextrs-app\n\nUSAGE:\n    create-nextrs-app <path> [--nextrs-path <path>]\n    create-nextrs-app --here [--nextrs-path <path>]\n\nCreates a React-first nextrs app with /, /api/ping, and /slow.\n\nOPTIONS:\n    --here                Create the app in the current directory\n    --nextrs-path <path>  Use a local nextrs checkout instead of nextrs = \"0.3\""
     );
 }
 
@@ -32,6 +33,7 @@ fn print_help() {
 struct Options {
     target: Option<PathBuf>,
     nextrs_path: Option<PathBuf>,
+    here: bool,
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> io::Result<Options> {
@@ -42,6 +44,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> io::Result<Options> {
             "-h" | "--help" => {
                 print_help();
                 std::process::exit(0);
+            }
+            "--here" => {
+                options.here = true;
             }
             "--nextrs-path" => {
                 let Some(path) = args.next() else {
@@ -68,6 +73,12 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> io::Result<Options> {
                 options.target = Some(PathBuf::from(arg));
             }
         }
+    }
+    if options.here && options.target.is_some() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "--here cannot be combined with a target path",
+        ));
     }
     Ok(options)
 }
@@ -111,7 +122,9 @@ fn scaffold(target: &Path, nextrs_path: Option<&Path>) -> io::Result<()> {
     println!("Created {}", target.display());
     println!();
     println!("Next steps:");
-    println!("  cd {}", display_cd_path(target));
+    if !is_current_dir(target) {
+        println!("  cd {}", display_cd_path(target));
+    }
     println!("  cd client && npm install && npm run gen && cd ..");
     println!("  cargo dev");
     println!();
@@ -123,6 +136,10 @@ fn scaffold(target: &Path, nextrs_path: Option<&Path>) -> io::Result<()> {
     Ok(())
 }
 
+fn is_current_dir(path: &Path) -> bool {
+    path.as_os_str() == "." || path.as_os_str().is_empty()
+}
+
 fn display_cd_path(path: &Path) -> String {
     if path.as_os_str().is_empty() {
         ".".to_string()
@@ -132,11 +149,20 @@ fn display_cd_path(path: &Path) -> String {
 }
 
 fn crate_name_from_path(path: &Path) -> String {
-    let raw = path
-        .file_name()
-        .and_then(OsStr::to_str)
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or("nextrs-app");
+    let current_dir_name = || {
+        std::env::current_dir()
+            .ok()
+            .and_then(|path| path.file_name().and_then(OsStr::to_str).map(str::to_string))
+    };
+    let raw = if is_current_dir(path) {
+        current_dir_name()
+    } else {
+        path.file_name()
+            .and_then(OsStr::to_str)
+            .filter(|name| !name.trim().is_empty())
+            .map(str::to_string)
+    }
+    .unwrap_or_else(|| "nextrs-app".to_string());
 
     let mut out = String::new();
     let mut last_was_sep = false;
@@ -215,6 +241,7 @@ fn template_files(
 ) -> Vec<(&'static str, String)> {
     vec![
         (".gitignore", gitignore()),
+        (".env.example", env_example()),
         (".cargo/config.toml", cargo_config_toml()),
         ("Cargo.toml", cargo_toml(crate_name, dep)),
         ("build.rs", build_rs(client_alias)),
@@ -238,6 +265,10 @@ fn template_files(
 
 fn gitignore() -> String {
     "/target\n/public/dist\n/node_modules\n/client/node_modules\n.env\n".into()
+}
+
+fn env_example() -> String {
+    "PORT=3000\n".into()
 }
 
 fn cargo_config_toml() -> String {
@@ -273,6 +304,8 @@ nextrs = {build_dependency}
 [dependencies]
 nextrs = {runtime_dependency}
 axum = "0.8"
+ctrlc = "3"
+dotenvy = "0.15"
 tokio = {{ version = "1", features = ["full"] }}
 http = "1"
 serde = {{ version = "1", features = ["derive"] }}
@@ -306,6 +339,8 @@ fn main_rs() -> String {
 
 #[tokio::main]
 async fn main() {
+    dotenvy::dotenv().ok();
+
     let public_dir = std::env::var("NEXTRS_PUBLIC_DIR")
         .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/public").to_string());
 
@@ -335,6 +370,8 @@ use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
@@ -367,15 +404,33 @@ fn main() -> std::io::Result<()> {
     eprintln!("nextrs-dev watching {} paths", WATCH_PATHS.len());
     eprintln!("nextrs-dev command: {}", display_command(&command));
 
+    let shutdown = Arc::new(AtomicBool::new(false));
+    let shutdown_signal = Arc::clone(&shutdown);
+    ctrlc::set_handler(move || {
+        if shutdown_signal.swap(true, Ordering::SeqCst) {
+            std::process::exit(130);
+        }
+    })
+    .map_err(std::io::Error::other)?;
+
     let mut current = snapshot(&root)?;
     let mut child = spawn(&command)?;
 
     loop {
         thread::sleep(Duration::from_millis(500));
 
+        if shutdown.load(Ordering::SeqCst) {
+            eprintln!("nextrs-dev shutting down child");
+            stop(&mut child)?;
+            return Ok(());
+        }
+
         if let Some(status) = child.try_wait()? {
             eprintln!("nextrs-dev child exited with {status}; waiting for changes");
-            wait_for_change(&root, &mut current)?;
+            wait_for_change(&root, &mut current, &shutdown)?;
+            if shutdown.load(Ordering::SeqCst) {
+                return Ok(());
+            }
             child = spawn(&command)?;
             continue;
         }
@@ -416,8 +471,12 @@ fn display_command(command: &[OsString]) -> String {
         .join(" ")
 }
 
-fn wait_for_change(root: &Path, current: &mut Snapshot) -> std::io::Result<()> {
-    loop {
+fn wait_for_change(
+    root: &Path,
+    current: &mut Snapshot,
+    shutdown: &AtomicBool,
+) -> std::io::Result<()> {
+    while !shutdown.load(Ordering::SeqCst) {
         thread::sleep(Duration::from_millis(500));
         let next = snapshot(root)?;
         if next != *current {
@@ -425,6 +484,7 @@ fn wait_for_change(root: &Path, current: &mut Snapshot) -> std::io::Result<()> {
             return Ok(());
         }
     }
+    Ok(())
 }
 
 fn snapshot(root: &Path) -> std::io::Result<Snapshot> {
@@ -490,8 +550,23 @@ fn spawn(command: &[OsString]) -> std::io::Result<Child> {
 fn stop(child: &mut Child) -> std::io::Result<()> {
     #[cfg(unix)]
     {
+        if child.try_wait()?.is_some() {
+            return Ok(());
+        }
+
         let pgid = format!("-{}", child.id());
-        let _ = Command::new("kill").arg("-TERM").arg(&pgid).status();
+        let term_status = Command::new("kill")
+            .arg("-TERM")
+            .arg("--")
+            .arg(&pgid)
+            .stderr(Stdio::null())
+            .status();
+        if !matches!(term_status, Ok(status) if status.success()) {
+            let _ = child.kill();
+        }
+        if child.try_wait()?.is_some() {
+            return Ok(());
+        }
 
         for _ in 0..20 {
             if child.try_wait()?.is_some() {
@@ -500,7 +575,13 @@ fn stop(child: &mut Child) -> std::io::Result<()> {
             thread::sleep(Duration::from_millis(50));
         }
 
-        let _ = Command::new("kill").arg("-KILL").arg(&pgid).status();
+        let _ = Command::new("kill")
+            .arg("-KILL")
+            .arg("--")
+            .arg(&pgid)
+            .stderr(Stdio::null())
+            .status();
+        let _ = child.kill();
         let _ = child.wait();
         return Ok(());
     }
@@ -898,6 +979,20 @@ mod tests {
             crate_name_from_path(Path::new("hello_world")),
             "hello_world"
         );
+    }
+
+    #[test]
+    fn here_flag_targets_current_directory() {
+        let opts = parse_args(["--here".to_string()]).unwrap();
+        assert!(opts.here);
+        assert!(opts.target.is_none());
+    }
+
+    #[test]
+    fn here_flag_rejects_target_path() {
+        let err = parse_args(["--here".to_string(), "demo".to_string()]).unwrap_err();
+        assert_eq!(err.kind(), io::ErrorKind::InvalidInput);
+        assert!(err.to_string().contains("--here cannot be combined"));
     }
 
     #[test]
