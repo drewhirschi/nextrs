@@ -642,9 +642,14 @@ pub fn loading_slug(url_path: &str) -> String {
 fn tsx_loading_shell(loading_route: &DiscoveredRoute) -> String {
     let src = format!("/dist/{}.js", loading_slug(&loading_route.url_path));
     format!(
-        r#"<div id="__nx_loading_root__"></div><script>import({:?});</script>"#,
+        r#"{}<div id="__nx_loading_root__"></div><script>import({:?});</script>"#,
+        tsx_document_head(),
         src
     )
+}
+
+fn tsx_document_head() -> &'static str {
+    r#"<link rel="stylesheet" href="/style.css" />"#
 }
 
 fn client_summary_text(routes: &[DiscoveredRoute]) -> Option<String> {
@@ -928,10 +933,7 @@ fn emit_page_slot(out: &mut String, idx: usize, route: &DiscoveredRoute) {
         return;
     }
 
-    let shell = format!(
-        r#"<div id="__nx_root__"></div><script type="module" src="/dist/{}.js"></script>"#,
-        page_slug(&route.url_path)
-    );
+    let shell = tsx_page_shell(&page_slug(&route.url_path));
     if route.props.is_some() {
         let props_mod = mod_name(idx, "props");
         let _ = writeln!(
@@ -949,6 +951,37 @@ fn emit_page_slot(out: &mut String, idx: usize, route: &DiscoveredRoute) {
             shell
         );
     }
+}
+
+fn tsx_page_shell(slug: &str) -> String {
+    format!(
+        r#"{}<div id="__nx_root__"></div><script>
+(() => {{
+  const renderError = (title, detail) => {{
+    const root = document.getElementById("__nx_root__");
+    if (!root || root.childElementCount > 0) return;
+    const wrap = document.createElement("div");
+    wrap.style.cssText = "box-sizing:border-box;margin:32px auto;max-width:860px;border:1px solid #f1a7a7;background:#fff7f7;color:#681414;border-radius:8px;padding:20px;font-family:ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;";
+    const h = document.createElement("h1");
+    h.textContent = title;
+    h.style.cssText = "margin:0 0 10px;font-size:20px;line-height:1.2;";
+    const pre = document.createElement("pre");
+    pre.textContent = detail || "No error detail available.";
+    pre.style.cssText = "margin:0;white-space:pre-wrap;overflow:auto;font:13px/1.5 ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,'Liberation Mono',monospace;";
+    wrap.append(h, pre);
+    root.append(wrap);
+  }};
+  window.addEventListener("error", (event) => {{
+    renderError("Client-side page error", event.error?.stack || event.message || String(event));
+  }});
+  window.addEventListener("unhandledrejection", (event) => {{
+    const reason = event.reason;
+    renderError("Client-side async error", reason?.stack || reason?.message || String(reason));
+  }});
+}})();
+</script><script type="module" src="/dist/{slug}.js"></script>"#,
+        tsx_document_head()
+    )
 }
 
 fn emit_loading_slot(
@@ -1484,8 +1517,10 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
         let code = generate_code(&routes);
 
         assert!(
-            code.contains(r#"static_page("<div id=\"__nx_root__\"></div>"#),
-            "expected shell mount div:\n{}",
+            code.contains(
+                r#"static_page("<link rel=\"stylesheet\" href=\"/style.css\" /><div id=\"__nx_root__\"></div>"#
+            ),
+            "expected stylesheet before shell mount div:\n{}",
             code
         );
         assert!(
@@ -1494,6 +1529,21 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
             code
         );
         assert!(!code.contains("compile_error!"), "{}", code);
+    }
+
+    #[test]
+    fn tsx_loading_shell_includes_stylesheet_before_mount() {
+        let tmp = setup_app(&[("", &["loading.tsx"]), ("todos", &["page.tsx", "props.rs"])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        assert!(
+            code.contains(
+                r#"static_loading("<link rel=\"stylesheet\" href=\"/style.css\" /><div id=\"__nx_loading_root__\"></div>"#
+            ),
+            "expected stylesheet before loading mount div:\n{}",
+            code
+        );
     }
 
     #[test]
