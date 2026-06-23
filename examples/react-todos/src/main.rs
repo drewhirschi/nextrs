@@ -18,8 +18,11 @@ async fn main() {
     let app = nextrs::router::build_router_with_public(generated_registry(), &public_dir)
         .merge(nextrs::openapi::spec_router(generated_openapi()));
 
-    let addr = "0.0.0.0:3000";
+    let addr = format!(
+        "0.0.0.0:{}",
+        std::env::var("PORT").unwrap_or_else(|_| "3000".to_string())
+    );
     tracing::info!("react-todos listening on http://{addr}");
-    let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
+    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
 }
