@@ -304,8 +304,10 @@ nextrs = {build_dependency}
 [dependencies]
 nextrs = {runtime_dependency}
 axum = "0.8"
+command-group = "5"
 ctrlc = "3"
 dotenvy = "0.15"
+notify-debouncer-full = "0.7"
 tokio = {{ version = "1", features = ["full"] }}
 http = "1"
 serde = {{ version = "1", features = ["derive"] }}
@@ -364,24 +366,19 @@ async fn main() {
 }
 
 fn dev_rs() -> String {
-    r#"use std::collections::BTreeMap;
+    r#"use command_group::{CommandGroup, GroupChild};
+use notify_debouncer_full::notify::event::{AccessKind, AccessMode, MetadataKind, ModifyKind};
+use notify_debouncer_full::notify::{EventKind, RecursiveMode};
+use notify_debouncer_full::{new_debouncer, DebounceEventResult, RecommendedCache};
 use std::env;
 use std::ffi::OsString;
-use std::fs;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, channel};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
-use std::time::{Duration, SystemTime};
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct FileState {
-    modified: Option<SystemTime>,
-    len: u64,
-}
-
-type Snapshot = BTreeMap<PathBuf, FileState>;
+use std::time::Duration;
 
 const WATCH_PATHS: &[&str] = &[
     ".cargo/config.toml",
@@ -399,10 +396,13 @@ const WATCH_PATHS: &[&str] = &[
 
 fn main() -> std::io::Result<()> {
     let root = env::current_dir()?;
-    let command = command_from_args();
+    let app_args = app_args_from_args();
+    let bin_name = env!("CARGO_PKG_NAME");
+    let app_path = target_binary(&root, bin_name);
 
     eprintln!("nextrs-dev watching {} paths", WATCH_PATHS.len());
-    eprintln!("nextrs-dev command: {}", display_command(&command));
+    eprintln!("nextrs-dev build: cargo build --bin {bin_name}");
+    eprintln!("nextrs-dev app: {}", app_path.display());
 
     let shutdown = Arc::new(AtomicBool::new(false));
     let shutdown_signal = Arc::clone(&shutdown);
@@ -413,185 +413,286 @@ fn main() -> std::io::Result<()> {
     })
     .map_err(std::io::Error::other)?;
 
-    let mut current = snapshot(&root)?;
-    let mut child = spawn(&command)?;
+    let (tx, rx) = channel();
+    let mut watcher = new_debouncer(Duration::from_secs(1), None, tx)
+        .map_err(std::io::Error::other)?;
+    watch_paths(&root, &mut watcher)?;
 
-    loop {
-        thread::sleep(Duration::from_millis(500));
-
-        if shutdown.load(Ordering::SeqCst) {
-            eprintln!("nextrs-dev shutting down child");
-            stop(&mut child)?;
-            return Ok(());
-        }
-
-        if let Some(status) = child.try_wait()? {
-            eprintln!("nextrs-dev child exited with {status}; waiting for changes");
-            wait_for_change(&root, &mut current, &shutdown)?;
-            if shutdown.load(Ordering::SeqCst) {
-                return Ok(());
-            }
-            child = spawn(&command)?;
-            continue;
-        }
-
-        let next = snapshot(&root)?;
-        if next != current {
-            thread::sleep(Duration::from_millis(150));
-            current = snapshot(&root)?;
-            eprintln!("nextrs-dev change detected; restarting");
-            stop(&mut child)?;
-            child = spawn(&command)?;
-        }
-    }
-}
-
-fn command_from_args() -> Vec<OsString> {
-    let mut args = env::args_os().skip(1);
-    if matches!(args.next().as_deref(), Some(arg) if arg == "--") {
-        let command: Vec<_> = args.collect();
-        if !command.is_empty() {
-            return command;
-        }
-    }
-
-    vec![
-        "cargo".into(),
-        "run".into(),
-        "--bin".into(),
-        env!("CARGO_PKG_NAME").into(),
-    ]
-}
-
-fn display_command(command: &[OsString]) -> String {
-    command
-        .iter()
-        .map(|arg| arg.to_string_lossy())
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
-fn wait_for_change(
-    root: &Path,
-    current: &mut Snapshot,
-    shutdown: &AtomicBool,
-) -> std::io::Result<()> {
-    while !shutdown.load(Ordering::SeqCst) {
-        thread::sleep(Duration::from_millis(500));
-        let next = snapshot(root)?;
-        if next != *current {
-            *current = next;
-            return Ok(());
-        }
-    }
-    Ok(())
-}
-
-fn snapshot(root: &Path) -> std::io::Result<Snapshot> {
-    let mut files = Snapshot::new();
-    for rel in WATCH_PATHS {
-        collect_path(&root.join(rel), &mut files)?;
-    }
-    Ok(files)
-}
-
-fn collect_path(path: &Path, files: &mut Snapshot) -> std::io::Result<()> {
-    let Ok(metadata) = fs::metadata(path) else {
-        return Ok(());
+    let mut child = match build_until_current(&root, bin_name, &rx, &shutdown)? {
+        BuildOutcome::Ready => Some(spawn_app(&app_path, &app_args)?),
+        BuildOutcome::Shutdown => return Ok(()),
     };
 
-    if metadata.is_file() {
-        files.insert(
-            path.to_path_buf(),
-            FileState {
-                modified: metadata.modified().ok(),
-                len: metadata.len(),
-            },
-        );
-        return Ok(());
-    }
-
-    if metadata.is_dir() {
-        if path.ends_with("node_modules") || path.ends_with("target") {
-            return Ok(());
-        }
-        if path.ends_with("dist") && path.parent().is_some_and(|p| p.ends_with("public")) {
-            return Ok(());
-        }
-        for entry in fs::read_dir(path)? {
-            let entry = entry?;
-            let name = entry.file_name();
-            if name.to_string_lossy().starts_with('.') {
-                continue;
+    loop {
+        if shutdown.load(Ordering::SeqCst) {
+            if let Some(child) = child.as_mut() {
+                eprintln!("nextrs-dev shutting down child");
+                stop(child)?;
             }
-            collect_path(&entry.path(), files)?;
+            return Ok(());
+        }
+
+        if let Some(status) = child.as_mut().and_then(|child| child.try_wait().transpose()).transpose()? {
+            eprintln!("nextrs-dev child exited with {status}; waiting for changes");
+            child = None;
+        }
+
+        match recv_change(&rx, &shutdown)? {
+            Change::Changed => {
+                eprintln!("nextrs-dev change detected; rebuilding");
+                match build_until_current(&root, bin_name, &rx, &shutdown)? {
+                    BuildOutcome::Ready => {
+                        if let Some(child) = child.as_mut() {
+                            stop(child)?;
+                        }
+                        child = Some(spawn_app(&app_path, &app_args)?);
+                    }
+                    BuildOutcome::Shutdown => {
+                        if let Some(child) = child.as_mut() {
+                            stop(child)?;
+                        }
+                        return Ok(());
+                    }
+                }
+            }
+            Change::Shutdown => {
+                if let Some(child) = child.as_mut() {
+                    stop(child)?;
+                }
+                return Ok(());
+            }
+            Change::None => {}
         }
     }
+}
 
+fn app_args_from_args() -> Vec<OsString> {
+    let mut args = env::args_os().skip(1);
+    if matches!(args.next().as_deref(), Some(arg) if arg == "--") {
+        return args.collect();
+    }
+    Vec::new()
+}
+
+fn target_binary(root: &Path, bin_name: &str) -> PathBuf {
+    let target_dir = env::var_os("CARGO_TARGET_DIR")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| root.join("target"));
+    target_dir
+        .join("debug")
+        .join(format!("{bin_name}{}", env::consts::EXE_SUFFIX))
+}
+
+fn watch_paths(
+    root: &Path,
+    watcher: &mut notify_debouncer_full::Debouncer<
+        notify_debouncer_full::notify::RecommendedWatcher,
+        RecommendedCache,
+    >,
+) -> std::io::Result<()> {
+    for rel in WATCH_PATHS {
+        let path = root.join(rel);
+        if path.exists() {
+            watcher
+                .watch(&path, RecursiveMode::Recursive)
+                .map_err(std::io::Error::other)?;
+        }
+    }
     Ok(())
 }
 
-fn spawn(command: &[OsString]) -> std::io::Result<Child> {
-    let mut cmd = Command::new(&command[0]);
-    cmd.args(&command[1..])
+enum Change {
+    Changed,
+    None,
+    Shutdown,
+}
+
+fn recv_change(rx: &Receiver<DebounceEventResult>, shutdown: &AtomicBool) -> std::io::Result<Change> {
+    if shutdown.load(Ordering::SeqCst) {
+        return Ok(Change::Shutdown);
+    }
+
+    match rx.recv_timeout(Duration::from_millis(250)) {
+        Ok(result) => {
+            let changed = log_watch_result(result)? | drain_changes(rx)?;
+            if changed {
+                Ok(Change::Changed)
+            } else {
+                Ok(Change::None)
+            }
+        }
+        Err(RecvTimeoutError::Timeout) => {
+            if shutdown.load(Ordering::SeqCst) {
+                Ok(Change::Shutdown)
+            } else {
+                Ok(Change::None)
+            }
+        }
+        Err(RecvTimeoutError::Disconnected) => Err(std::io::Error::other("file watcher stopped")),
+    }
+}
+
+fn wait_for_change(rx: &Receiver<DebounceEventResult>, shutdown: &AtomicBool) -> std::io::Result<Change> {
+    loop {
+        match recv_change(rx, shutdown)? {
+            Change::None => continue,
+            other => return Ok(other),
+        }
+    }
+}
+
+fn drain_changes(rx: &Receiver<DebounceEventResult>) -> std::io::Result<bool> {
+    let mut changed = false;
+    loop {
+        match rx.try_recv() {
+            Ok(result) => {
+                changed |= log_watch_result(result)?;
+            }
+            Err(TryRecvError::Empty) => return Ok(changed),
+            Err(TryRecvError::Disconnected) => {
+                return Err(std::io::Error::other("file watcher stopped"));
+            }
+        }
+    }
+}
+
+fn log_watch_result(result: DebounceEventResult) -> std::io::Result<bool> {
+    match result {
+        Ok(events) => {
+            let mut changed = 0usize;
+            for event in events {
+                if should_rebuild(&event.kind) {
+                    changed += 1;
+                    if changed <= 8 {
+                        eprintln!("nextrs-dev changed: {}", event_paths(&event.paths));
+                    }
+                }
+            }
+            if changed > 8 {
+                eprintln!("nextrs-dev changed: ... and {} more events", changed - 8);
+            }
+            Ok(changed > 0)
+        }
+        Err(errors) => {
+            for error in &errors {
+                eprintln!("nextrs-dev watcher error: {error}");
+            }
+            Err(std::io::Error::other("file watcher error"))
+        }
+    }
+}
+
+fn should_rebuild(kind: &EventKind) -> bool {
+    match kind {
+        EventKind::Create(_) | EventKind::Remove(_) => true,
+        EventKind::Modify(ModifyKind::Metadata(MetadataKind::AccessTime)) => false,
+        EventKind::Modify(_) => true,
+        EventKind::Access(AccessKind::Close(AccessMode::Write)) => true,
+        EventKind::Access(_) => false,
+        EventKind::Any | EventKind::Other => true,
+    }
+}
+
+fn event_paths(paths: &[PathBuf]) -> String {
+    if paths.is_empty() {
+        return "<unknown>".to_string();
+    }
+
+    paths
+        .iter()
+        .map(|path| path.display().to_string())
+        .collect::<Vec<_>>()
+        .join(" -> ")
+}
+
+enum BuildOutcome {
+    Ready,
+    Shutdown,
+}
+
+fn build_until_current(
+    root: &Path,
+    bin_name: &str,
+    rx: &Receiver<DebounceEventResult>,
+    shutdown: &AtomicBool,
+) -> std::io::Result<BuildOutcome> {
+    loop {
+        match run_build(root, bin_name, shutdown)? {
+            BuildRun::Success => {
+                if drain_changes(rx)? {
+                    eprintln!("nextrs-dev changes arrived during build; rebuilding once more");
+                    continue;
+                }
+                return Ok(BuildOutcome::Ready);
+            }
+            BuildRun::Failed(status) => {
+                eprintln!("nextrs-dev build failed with {status}; waiting for changes");
+                match wait_for_change(rx, shutdown)? {
+                    Change::Changed => continue,
+                    Change::Shutdown => return Ok(BuildOutcome::Shutdown),
+                    Change::None => {}
+                }
+            }
+            BuildRun::Shutdown => return Ok(BuildOutcome::Shutdown),
+        }
+    }
+}
+
+enum BuildRun {
+    Success,
+    Failed(ExitStatus),
+    Shutdown,
+}
+
+fn run_build(root: &Path, bin_name: &str, shutdown: &AtomicBool) -> std::io::Result<BuildRun> {
+    eprintln!("nextrs-dev building {bin_name}");
+    let mut command = Command::new("cargo");
+    command
+        .arg("build")
+        .arg("--bin")
+        .arg(bin_name)
+        .current_dir(root)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
-    #[cfg(unix)]
-    {
-        use std::os::unix::process::CommandExt;
-        cmd.process_group(0);
-    }
+    let mut child = command.group_spawn()?;
+    loop {
+        if shutdown.load(Ordering::SeqCst) {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Ok(BuildRun::Shutdown);
+        }
 
-    cmd.spawn()
+        if let Some(status) = child.try_wait()? {
+            return if status.success() {
+                Ok(BuildRun::Success)
+            } else {
+                Ok(BuildRun::Failed(status))
+            };
+        }
+
+        thread::sleep(Duration::from_millis(250));
+    }
 }
 
-fn stop(child: &mut Child) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        if child.try_wait()?.is_some() {
-            return Ok(());
-        }
+fn spawn_app(path: &Path, args: &[OsString]) -> std::io::Result<GroupChild> {
+    eprintln!("nextrs-dev starting {}", path.display());
+    let mut cmd = Command::new(path);
+    cmd.args(args)
+        .stdin(Stdio::inherit())
+        .stdout(Stdio::inherit())
+        .stderr(Stdio::inherit());
+    cmd.group_spawn()
+}
 
-        let pgid = format!("-{}", child.id());
-        let term_status = Command::new("kill")
-            .arg("-TERM")
-            .arg("--")
-            .arg(&pgid)
-            .stderr(Stdio::null())
-            .status();
-        if !matches!(term_status, Ok(status) if status.success()) {
-            let _ = child.kill();
-        }
-        if child.try_wait()?.is_some() {
-            return Ok(());
-        }
-
-        for _ in 0..20 {
-            if child.try_wait()?.is_some() {
-                return Ok(());
-            }
-            thread::sleep(Duration::from_millis(50));
-        }
-
-        let _ = Command::new("kill")
-            .arg("-KILL")
-            .arg("--")
-            .arg(&pgid)
-            .stderr(Stdio::null())
-            .status();
-        let _ = child.kill();
-        let _ = child.wait();
+fn stop(child: &mut GroupChild) -> std::io::Result<()> {
+    if child.try_wait()?.is_some() {
         return Ok(());
     }
-
-    #[cfg(not(unix))]
-    {
-        child.kill()?;
-        let _ = child.wait();
-        Ok(())
-    }
+    let _ = child.kill();
+    let _ = child.wait();
+    Ok(())
 }
 "#
     .into()
@@ -1025,6 +1126,21 @@ mod tests {
             .1
             .as_str();
         assert!(cargo_toml.contains("tower-livereload"));
+        assert!(cargo_toml.contains("command-group"));
+        assert!(cargo_toml.contains("notify-debouncer-full"));
+        assert!(!cargo_toml.contains("notify-debouncer-mini"));
+
+        let dev_runner = files
+            .iter()
+            .find(|(name, _)| *name == "src/bin/dev.rs")
+            .unwrap()
+            .1
+            .as_str();
+        assert!(dev_runner.contains("cargo build"));
+        assert!(dev_runner.contains("spawn_app(&app_path"));
+        assert!(dev_runner.contains("notify_debouncer_full"));
+        assert!(dev_runner.contains("EventKind::Access(_) => false"));
+        assert!(!dev_runner.contains("cargo run"));
 
         let page = files
             .iter()
