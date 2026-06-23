@@ -307,6 +307,7 @@ axum = "0.8"
 command-group = "5"
 ctrlc = "3"
 dotenvy = "0.15"
+ignore = "0.4"
 notify-debouncer-full = "0.7"
 tokio = {{ version = "1", features = ["full"] }}
 http = "1"
@@ -367,6 +368,7 @@ async fn main() {
 
 fn dev_rs() -> String {
     r#"use command_group::{CommandGroup, GroupChild};
+use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify_debouncer_full::notify::event::{AccessKind, AccessMode, MetadataKind, ModifyKind};
 use notify_debouncer_full::notify::{EventKind, RecursiveMode};
 use notify_debouncer_full::{new_debouncer, DebounceEventResult, RecommendedCache};
@@ -394,11 +396,20 @@ const WATCH_PATHS: &[&str] = &[
     "src",
 ];
 
+const DEFAULT_IGNORES: &[&str] = &[
+    "/target/",
+    "/node_modules/",
+    "/client/node_modules/",
+    "/public/dist/",
+    ".env",
+];
+
 fn main() -> std::io::Result<()> {
     let root = env::current_dir()?;
     let app_args = app_args_from_args();
     let bin_name = env!("CARGO_PKG_NAME");
     let app_path = target_binary(&root, bin_name);
+    let ignore_filter = IgnoreFilter::new(&root)?;
 
     eprintln!("nextrs-dev watching {} paths", WATCH_PATHS.len());
     eprintln!("nextrs-dev build: cargo build --bin {bin_name}");
@@ -418,7 +429,7 @@ fn main() -> std::io::Result<()> {
         .map_err(std::io::Error::other)?;
     watch_paths(&root, &mut watcher)?;
 
-    let mut child = match build_until_current(&root, bin_name, &rx, &shutdown)? {
+    let mut child = match build_until_current(&root, bin_name, &rx, &shutdown, &ignore_filter)? {
         BuildOutcome::Ready => Some(spawn_app(&app_path, &app_args)?),
         BuildOutcome::Shutdown => return Ok(()),
     };
@@ -432,15 +443,19 @@ fn main() -> std::io::Result<()> {
             return Ok(());
         }
 
-        if let Some(status) = child.as_mut().and_then(|child| child.try_wait().transpose()).transpose()? {
+        if let Some(status) = child
+            .as_mut()
+            .and_then(|child| child.try_wait().transpose())
+            .transpose()?
+        {
             eprintln!("nextrs-dev child exited with {status}; waiting for changes");
             child = None;
         }
 
-        match recv_change(&rx, &shutdown)? {
+        match recv_change(&rx, &shutdown, &ignore_filter)? {
             Change::Changed => {
                 eprintln!("nextrs-dev change detected; rebuilding");
-                match build_until_current(&root, bin_name, &rx, &shutdown)? {
+                match build_until_current(&root, bin_name, &rx, &shutdown, &ignore_filter)? {
                     BuildOutcome::Ready => {
                         if let Some(child) = child.as_mut() {
                             stop(child)?;
@@ -463,6 +478,57 @@ fn main() -> std::io::Result<()> {
             }
             Change::None => {}
         }
+    }
+}
+
+struct IgnoreFilter {
+    root: PathBuf,
+    matcher: Gitignore,
+}
+
+impl IgnoreFilter {
+    fn new(root: &Path) -> std::io::Result<Self> {
+        let mut builder = GitignoreBuilder::new(root);
+
+        for name in [".gitignore", ".ignore"] {
+            let path = root.join(name);
+            if path.is_file() {
+                if let Some(err) = builder.add(&path) {
+                    eprintln!("nextrs-dev ignore warning: {err}");
+                }
+            }
+        }
+
+        for pattern in DEFAULT_IGNORES {
+            builder
+                .add_line(None, pattern)
+                .map_err(std::io::Error::other)?;
+        }
+
+        Ok(Self {
+            root: root.to_path_buf(),
+            matcher: builder.build().map_err(std::io::Error::other)?,
+        })
+    }
+
+    fn is_ignored(&self, path: &Path) -> bool {
+        let path = if path.is_absolute() {
+            path.to_path_buf()
+        } else {
+            self.root.join(path)
+        };
+
+        if !path.starts_with(&self.root) {
+            return false;
+        }
+
+        self.matcher
+            .matched_path_or_any_parents(&path, false)
+            .is_ignore()
+            || self
+                .matcher
+                .matched_path_or_any_parents(&path, true)
+                .is_ignore()
     }
 }
 
@@ -507,14 +573,19 @@ enum Change {
     Shutdown,
 }
 
-fn recv_change(rx: &Receiver<DebounceEventResult>, shutdown: &AtomicBool) -> std::io::Result<Change> {
+fn recv_change(
+    rx: &Receiver<DebounceEventResult>,
+    shutdown: &AtomicBool,
+    ignore_filter: &IgnoreFilter,
+) -> std::io::Result<Change> {
     if shutdown.load(Ordering::SeqCst) {
         return Ok(Change::Shutdown);
     }
 
     match rx.recv_timeout(Duration::from_millis(250)) {
         Ok(result) => {
-            let changed = log_watch_result(result)? | drain_changes(rx)?;
+            let changed =
+                log_watch_result(result, ignore_filter)? | drain_changes(rx, ignore_filter)?;
             if changed {
                 Ok(Change::Changed)
             } else {
@@ -532,21 +603,28 @@ fn recv_change(rx: &Receiver<DebounceEventResult>, shutdown: &AtomicBool) -> std
     }
 }
 
-fn wait_for_change(rx: &Receiver<DebounceEventResult>, shutdown: &AtomicBool) -> std::io::Result<Change> {
+fn wait_for_change(
+    rx: &Receiver<DebounceEventResult>,
+    shutdown: &AtomicBool,
+    ignore_filter: &IgnoreFilter,
+) -> std::io::Result<Change> {
     loop {
-        match recv_change(rx, shutdown)? {
+        match recv_change(rx, shutdown, ignore_filter)? {
             Change::None => continue,
             other => return Ok(other),
         }
     }
 }
 
-fn drain_changes(rx: &Receiver<DebounceEventResult>) -> std::io::Result<bool> {
+fn drain_changes(
+    rx: &Receiver<DebounceEventResult>,
+    ignore_filter: &IgnoreFilter,
+) -> std::io::Result<bool> {
     let mut changed = false;
     loop {
         match rx.try_recv() {
             Ok(result) => {
-                changed |= log_watch_result(result)?;
+                changed |= log_watch_result(result, ignore_filter)?;
             }
             Err(TryRecvError::Empty) => return Ok(changed),
             Err(TryRecvError::Disconnected) => {
@@ -556,12 +634,15 @@ fn drain_changes(rx: &Receiver<DebounceEventResult>) -> std::io::Result<bool> {
     }
 }
 
-fn log_watch_result(result: DebounceEventResult) -> std::io::Result<bool> {
+fn log_watch_result(
+    result: DebounceEventResult,
+    ignore_filter: &IgnoreFilter,
+) -> std::io::Result<bool> {
     match result {
         Ok(events) => {
             let mut changed = 0usize;
             for event in events {
-                if should_rebuild(&event.kind) {
+                if should_rebuild(&event.kind) && !event_ignored(&event.paths, ignore_filter) {
                     changed += 1;
                     if changed <= 8 {
                         eprintln!("nextrs-dev changed: {}", event_paths(&event.paths));
@@ -580,6 +661,10 @@ fn log_watch_result(result: DebounceEventResult) -> std::io::Result<bool> {
             Err(std::io::Error::other("file watcher error"))
         }
     }
+}
+
+fn event_ignored(paths: &[PathBuf], ignore_filter: &IgnoreFilter) -> bool {
+    !paths.is_empty() && paths.iter().all(|path| ignore_filter.is_ignored(path))
 }
 
 fn should_rebuild(kind: &EventKind) -> bool {
@@ -615,11 +700,12 @@ fn build_until_current(
     bin_name: &str,
     rx: &Receiver<DebounceEventResult>,
     shutdown: &AtomicBool,
+    ignore_filter: &IgnoreFilter,
 ) -> std::io::Result<BuildOutcome> {
     loop {
         match run_build(root, bin_name, shutdown)? {
             BuildRun::Success => {
-                if drain_changes(rx)? {
+                if drain_changes(rx, ignore_filter)? {
                     eprintln!("nextrs-dev changes arrived during build; rebuilding once more");
                     continue;
                 }
@@ -627,7 +713,7 @@ fn build_until_current(
             }
             BuildRun::Failed(status) => {
                 eprintln!("nextrs-dev build failed with {status}; waiting for changes");
-                match wait_for_change(rx, shutdown)? {
+                match wait_for_change(rx, shutdown, ignore_filter)? {
                     Change::Changed => continue,
                     Change::Shutdown => return Ok(BuildOutcome::Shutdown),
                     Change::None => {}
@@ -1127,6 +1213,7 @@ mod tests {
             .as_str();
         assert!(cargo_toml.contains("tower-livereload"));
         assert!(cargo_toml.contains("command-group"));
+        assert!(cargo_toml.contains("ignore"));
         assert!(cargo_toml.contains("notify-debouncer-full"));
         assert!(!cargo_toml.contains("notify-debouncer-mini"));
 
@@ -1138,6 +1225,8 @@ mod tests {
             .as_str();
         assert!(dev_runner.contains("cargo build"));
         assert!(dev_runner.contains("spawn_app(&app_path"));
+        assert!(dev_runner.contains("IgnoreFilter::new"));
+        assert!(dev_runner.contains("event_ignored"));
         assert!(dev_runner.contains("notify_debouncer_full"));
         assert!(dev_runner.contains("EventKind::Access(_) => false"));
         assert!(!dev_runner.contains("cargo run"));
