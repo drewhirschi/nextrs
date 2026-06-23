@@ -1,0 +1,19 @@
+[package]
+name = "cargo-nextrs-dev"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "Cargo subcommand for running nextrs apps in development."
+repository = "https://github.com/drewhirschi/nextrs"
+publish = false
+
+[[bin]]
+name = "cargo-nextrs-dev"
+path = "src/main.rs"
+
+[dependencies]
+command-group = "5"
+ctrlc = "3"
+ignore = "0.4"
+notify-debouncer-full = "0.7"
