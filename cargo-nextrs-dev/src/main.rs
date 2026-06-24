@@ -1,4 +1,6 @@
 use command_group::{CommandGroup, GroupChild};
+#[cfg(unix)]
+use command_group::{Signal, UnixChildExt};
 use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify_debouncer_full::notify::event::{AccessKind, AccessMode, MetadataKind, ModifyKind};
 use notify_debouncer_full::notify::{EventKind, RecursiveMode};
@@ -8,10 +10,10 @@ use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, TryRecvError, channel};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const WATCH_PATHS: &[&str] = &[
     ".cargo/config.toml",
@@ -31,9 +33,13 @@ const DEFAULT_IGNORES: &[&str] = &[
     "/target/",
     "/node_modules/",
     "/client/node_modules/",
+    "/client/src/generated/",
     "/public/dist/",
     ".env",
 ];
+
+const TERMINATE_GRACE: Duration = Duration::from_secs(1);
+const STOP_POLL: Duration = Duration::from_millis(50);
 
 const CARGO_BUILD_ENV: &[&str] = &[
     "CARGO",
@@ -83,11 +89,16 @@ fn run() -> std::io::Result<()> {
     eprintln!("nextrs-dev app: {}", app_path.display());
 
     let shutdown = Arc::new(AtomicBool::new(false));
+    let active_app_pgid = Arc::new(AtomicU32::new(0));
     let shutdown_signal = Arc::clone(&shutdown);
+    let active_app_signal = Arc::clone(&active_app_pgid);
     ctrlc::set_handler(move || {
+        let pgid = active_app_signal.load(Ordering::SeqCst);
         if shutdown_signal.swap(true, Ordering::SeqCst) {
+            force_process_group(pgid);
             std::process::exit(130);
         }
+        terminate_process_group(pgid);
     })
     .map_err(std::io::Error::other)?;
 
@@ -98,7 +109,7 @@ fn run() -> std::io::Result<()> {
 
     let mut child =
         match build_until_current(&root, &options.bin_name, &rx, &shutdown, &ignore_filter)? {
-            BuildOutcome::Ready => Some(spawn_app(&app_path, &options.app_args)?),
+            BuildOutcome::Ready => Some(spawn_app(&app_path, &options.app_args, &active_app_pgid)?),
             BuildOutcome::Shutdown => return Ok(()),
         };
 
@@ -106,17 +117,23 @@ fn run() -> std::io::Result<()> {
         if shutdown.load(Ordering::SeqCst) {
             if let Some(child) = child.as_mut() {
                 eprintln!("nextrs-dev shutting down child");
-                stop(child)?;
+                stop(child, &active_app_pgid)?;
             }
             return Ok(());
         }
 
-        if let Some(status) = child
-            .as_mut()
-            .and_then(|child| child.try_wait().transpose())
-            .transpose()?
-        {
-            eprintln!("nextrs-dev child exited with {status}; waiting for changes");
+        let child_exited = if let Some(child) = child.as_mut() {
+            if let Some(status) = child.try_wait()? {
+                eprintln!("nextrs-dev child exited with {status}; waiting for changes");
+                cleanup_exited_child(child, &active_app_pgid);
+                true
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        if child_exited {
             child = None;
         }
 
@@ -127,13 +144,13 @@ fn run() -> std::io::Result<()> {
                 {
                     BuildOutcome::Ready => {
                         if let Some(child) = child.as_mut() {
-                            stop(child)?;
+                            stop(child, &active_app_pgid)?;
                         }
-                        child = Some(spawn_app(&app_path, &options.app_args)?);
+                        child = Some(spawn_app(&app_path, &options.app_args, &active_app_pgid)?);
                     }
                     BuildOutcome::Shutdown => {
                         if let Some(child) = child.as_mut() {
-                            stop(child)?;
+                            stop(child, &active_app_pgid)?;
                         }
                         return Ok(());
                     }
@@ -141,7 +158,7 @@ fn run() -> std::io::Result<()> {
             }
             Change::Shutdown => {
                 if let Some(child) = child.as_mut() {
-                    stop(child)?;
+                    stop(child, &active_app_pgid)?;
                 }
                 return Ok(());
             }
@@ -508,21 +525,95 @@ fn key_string_starts_with(key: &OsStr, prefix: &str) -> bool {
     key.to_str().is_some_and(|key| key.starts_with(prefix))
 }
 
-fn spawn_app(path: &Path, args: &[OsString]) -> std::io::Result<GroupChild> {
+fn spawn_app(
+    path: &Path,
+    args: &[OsString],
+    active_app_pgid: &AtomicU32,
+) -> std::io::Result<GroupChild> {
     eprintln!("nextrs-dev starting {}", path.display());
     let mut cmd = Command::new(path);
     cmd.args(args)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
-    cmd.group_spawn()
+    let child = cmd.group_spawn()?;
+    active_app_pgid.store(child.id(), Ordering::SeqCst);
+    Ok(child)
 }
 
-fn stop(child: &mut GroupChild) -> std::io::Result<()> {
-    if child.try_wait()?.is_some() {
+fn stop(child: &mut GroupChild, active_app_pgid: &AtomicU32) -> std::io::Result<()> {
+    let pgid = child.id();
+    terminate_child_group(child);
+    if wait_for_child_group(child, TERMINATE_GRACE)? {
+        clear_active_app_pgid(active_app_pgid, pgid);
         return Ok(());
     }
-    let _ = child.kill();
+
+    force_child_group(child);
     let _ = child.wait();
+    clear_active_app_pgid(active_app_pgid, pgid);
     Ok(())
+}
+
+fn cleanup_exited_child(child: &mut GroupChild, active_app_pgid: &AtomicU32) {
+    let pgid = child.id();
+    terminate_child_group(child);
+    let _ = child.wait();
+    clear_active_app_pgid(active_app_pgid, pgid);
+}
+
+fn wait_for_child_group(child: &mut GroupChild, timeout: Duration) -> std::io::Result<bool> {
+    let started = Instant::now();
+    loop {
+        if child.try_wait()?.is_some() {
+            return Ok(true);
+        }
+        if started.elapsed() >= timeout {
+            return Ok(false);
+        }
+        thread::sleep(STOP_POLL);
+    }
+}
+
+fn clear_active_app_pgid(active_app_pgid: &AtomicU32, pgid: u32) {
+    let _ = active_app_pgid.compare_exchange(pgid, 0, Ordering::SeqCst, Ordering::SeqCst);
+}
+
+fn terminate_child_group(child: &GroupChild) {
+    #[cfg(unix)]
+    let _ = child.signal(Signal::SIGTERM);
+
+    #[cfg(not(unix))]
+    let _ = child;
+}
+
+fn force_child_group(child: &mut GroupChild) {
+    let _ = child.kill();
+}
+
+fn terminate_process_group(pgid: u32) {
+    signal_process_group(pgid, "TERM");
+}
+
+fn force_process_group(pgid: u32) {
+    signal_process_group(pgid, "KILL");
+}
+
+fn signal_process_group(pgid: u32, signal: &str) {
+    if pgid == 0 {
+        return;
+    }
+
+    #[cfg(unix)]
+    let _ = Command::new("kill")
+        .arg(format!("-{signal}"))
+        .arg("--")
+        .arg(format!("-{pgid}"))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status();
+
+    #[cfg(not(unix))]
+    let _ = signal;
 }
