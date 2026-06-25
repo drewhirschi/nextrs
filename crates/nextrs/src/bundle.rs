@@ -366,6 +366,21 @@ fn run_bundler(
         resolve: Some(rolldown::ResolveOptions {
             alias: Some(build_aliases(client_dir, client_alias, user_aliases)),
             modules: Some(vec![client_dir.join("node_modules").display().to_string()]),
+            // Prefix-alias substitution (`@/*`, `@workspace/x/*`) yields
+            // extension-less paths (e.g. `.../src/errors`); without explicit TS
+            // extensions the resolver can't find `errors.ts`, so the specifier
+            // leaks out as a bare import and the browser fails to resolve it.
+            // List .ts/.tsx first so zero-copy .tsx pages + workspace subpaths
+            // resolve. (dashboard-rs aliases regression, by drew's request.)
+            extensions: Some(vec![
+                ".ts".into(),
+                ".tsx".into(),
+                ".mjs".into(),
+                ".js".into(),
+                ".jsx".into(),
+                ".json".into(),
+                ".cjs".into(),
+            ]),
             ..Default::default()
         }),
         // Pin the JSX transform to the automatic runtime. Rolldown discovers
