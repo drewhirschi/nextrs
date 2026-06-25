@@ -339,7 +339,7 @@ fn run_bundler(
     client_alias: &str,
     user_aliases: &[(&str, &str)],
 ) -> std::io::Result<()> {
-    use rolldown::{Bundler, BundlerOptions, OutputFormat, Platform, RawMinifyOptions};
+    use rolldown::{BundlerOptions, OutputFormat, Platform, RawMinifyOptions};
 
     let release = std::env::var("PROFILE").is_ok_and(|p| p == "release");
 
@@ -400,8 +400,14 @@ fn run_bundler(
         ..Default::default()
     };
 
-    let mut bundler =
-        Bundler::new(options).map_err(|e| std::io::Error::other(format!("rolldown: {e:?}")))?;
+    // BundlerBuilder (not Bundler::new) so we can register the SVG-component
+    // loader: SVGR-style `.svg` imports in zero-copy React pages would otherwise
+    // be parsed as JS and fail. See SvgComponentPlugin below.
+    let mut bundler = rolldown::BundlerBuilder::default()
+        .with_options(options)
+        .with_plugins(vec![std::sync::Arc::new(SvgComponentPlugin)])
+        .build()
+        .map_err(|e| std::io::Error::other(format!("rolldown: {e:?}")))?;
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(bundler.write())
         .map_err(|e| std::io::Error::other(format!("rolldown bundling failed: {e:?}")))?;
@@ -660,4 +666,86 @@ mod tests {
         assert_eq!(nf.layout_paths.len(), 1);
         assert!(nf.layout_paths[0].ends_with("layout.tsx"));
     }
+}
+
+// --- SVG-as-React-component loader ------------------------------------------
+// SVGR-style `.svg` imports compile to a default-exported React component in
+// Next apps (e.g. `import Logo from "./logo.svg"; <Logo className=.. />`).
+// Rolldown has no SVG loader, so it parses the raw `<svg>` markup as JS and
+// fails ("Unexpected JSX expression"). This `load` hook intercepts `.svg` by
+// extension and emits a tiny component that inlines the markup via
+// dangerouslySetInnerHTML, so zero-copy pages importing `.svg` bundle unchanged.
+#[derive(Debug)]
+struct SvgComponentPlugin;
+
+impl SvgComponentPlugin {
+    async fn load_impl(
+        &self,
+        args: &rolldown_plugin::HookLoadArgs<'_>,
+    ) -> rolldown_plugin::HookLoadReturn {
+        let clean = args.id.split(['?', '#']).next().unwrap_or(args.id);
+        if !std::path::Path::new(clean)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
+        {
+            return Ok(None);
+        }
+        let svg = tokio::fs::read_to_string(clean).await?;
+        let lit = js_string_literal(&svg);
+        let code = format!(
+            "import {{ jsx }} from \"react/jsx-runtime\";\n\
+             const __HTML = {lit};\n\
+             export default function SvgAsset(props) {{\n  \
+             return jsx(\"span\", {{ ...props, dangerouslySetInnerHTML: {{ __html: __HTML }} }});\n}}\n"
+        );
+        Ok(Some(rolldown_plugin::HookLoadOutput {
+            code: code.into(),
+            module_type: Some(rolldown_common::ModuleType::Js),
+            ..Default::default()
+        }))
+    }
+}
+
+impl rolldown_plugin::Plugin for SvgComponentPlugin {
+    fn name(&self) -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("nextrs:svg-component")
+    }
+
+    fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
+        rolldown_plugin::HookUsage::Load
+    }
+
+    fn load_meta(&self) -> Option<rolldown_plugin::PluginHookMeta> {
+        // Resolve `.svg` before the builtin asset/default loaders.
+        Some(rolldown_plugin::PluginHookMeta {
+            order: Some(rolldown_plugin::PluginOrder::Pre),
+        })
+    }
+
+    fn load(
+        &self,
+        _ctx: rolldown_plugin::SharedLoadPluginContext,
+        args: &rolldown_plugin::HookLoadArgs<'_>,
+    ) -> impl std::future::Future<Output = rolldown_plugin::HookLoadReturn> + Send {
+        self.load_impl(args)
+    }
+}
+
+/// Minimal JS double-quoted string literal for arbitrary text (the SVG markup).
+fn js_string_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }
