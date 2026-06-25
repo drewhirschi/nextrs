@@ -283,18 +283,18 @@ fn build_aliases(
     client_alias: &str,
     user_aliases: &[(&str, &str)],
 ) -> Vec<(String, Vec<Option<String>>)> {
-    // The resolver's alias keys are webpack-style PREFIX matches — `*` is not
-    // a glob. Accept the tsconfig-style `X/*` spelling in configs but
-    // normalize it to the `X/` prefix form the resolver actually substitutes
-    // (replacement loses its `*` too, becoming a directory prefix).
+    // The resolver (oxc_resolver) supports `*` wildcards natively: a key
+    // containing `*` compiles to AliasMatchKind::Wildcard and the matched
+    // segment is substituted into the `*` in the value (compile_alias +
+    // load_alias_value). So pass tsconfig-style `X/*` → `dir/*` through with
+    // `*` intact in BOTH key and value; non-wildcard patterns map straight
+    // through. (Earlier code stripped `*` and appended a trailing slash, which
+    // produced a Prefix-kind key like `X/` that never matches `X/sub` —
+    // `strip_prefix("X/")` leaves `sub`, which doesn't start with `/` — so
+    // every `@workspace/ui/*`, `@workspace/common/*`, `@/*` subpath leaked out
+    // as a bare specifier. dashboard-rs zero-copy reuse depends on this.)
     fn norm(pattern: &str, replacement: String) -> (String, Vec<Option<String>>) {
-        match pattern.strip_suffix("/*") {
-            Some(prefix) => (
-                format!("{prefix}/"),
-                vec![Some(replacement.trim_end_matches('*').to_string())],
-            ),
-            None => (pattern.to_string(), vec![Some(replacement)]),
-        }
+        (pattern.to_string(), vec![Some(replacement)])
     }
 
     // User aliases first: the first matching key wins, so a user `@/*` entry
