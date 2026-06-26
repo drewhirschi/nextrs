@@ -630,20 +630,40 @@ impl SvgComponentPlugin {
         args: &rolldown_plugin::HookLoadArgs<'_>,
     ) -> rolldown_plugin::HookLoadReturn {
         let clean = args.id.split(['?', '#']).next().unwrap_or(args.id);
-        if !std::path::Path::new(clean)
+        let ext = std::path::Path::new(clean)
             .extension()
-            .is_some_and(|e| e.eq_ignore_ascii_case("svg"))
-        {
-            return Ok(None);
-        }
-        let svg = tokio::fs::read_to_string(clean).await?;
-        let lit = js_string_literal(&svg);
-        let code = format!(
-            "import {{ jsx }} from \"react/jsx-runtime\";\n\
-             const __HTML = {lit};\n\
-             export default function SvgAsset(props) {{\n  \
-             return jsx(\"span\", {{ ...props, dangerouslySetInnerHTML: {{ __html: __HTML }} }});\n}}\n"
-        );
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase());
+        let code = match ext.as_deref() {
+            Some("svg") => {
+                // SVGR-style component: inline the markup via dangerouslySetInnerHTML.
+                let svg = tokio::fs::read_to_string(clean).await?;
+                let lit = js_string_literal(&svg);
+                format!(
+                    "import {{ jsx }} from \"react/jsx-runtime\";\n\
+                     const __HTML = {lit};\n\
+                     export default function SvgAsset(props) {{\n  \
+                     return jsx(\"span\", {{ ...props, dangerouslySetInnerHTML: {{ __html: __HTML }} }});\n}}\n"
+                )
+            }
+            Some("css") => {
+                // rolldown dropped CSS bundling, so a `import \"x.css\"` side-effect
+                // import would hard-fail. Emit a JS module that injects the stylesheet
+                // at runtime — styles apply, build succeeds.
+                let css = tokio::fs::read_to_string(clean).await?;
+                let lit = js_string_literal(&css);
+                format!(
+                    "const __CSS = {lit};\n\
+                     if (typeof document !== \"undefined\") {{\n  \
+                     const s = document.createElement(\"style\");\n  \
+                     s.setAttribute(\"data-nextrs-css\", \"1\");\n  \
+                     s.textContent = __CSS;\n  \
+                     document.head.appendChild(s);\n}}\n\
+                     export default {{}};\n"
+                )
+            }
+            _ => return Ok(None),
+        };
         Ok(Some(rolldown_plugin::HookLoadOutput {
             code: code.into(),
             module_type: Some(rolldown_common::ModuleType::Js),
@@ -654,7 +674,7 @@ impl SvgComponentPlugin {
 
 impl rolldown_plugin::Plugin for SvgComponentPlugin {
     fn name(&self) -> std::borrow::Cow<'static, str> {
-        std::borrow::Cow::Borrowed("nextrs:svg-component")
+        std::borrow::Cow::Borrowed("nextrs:asset-loader")
     }
 
     fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
