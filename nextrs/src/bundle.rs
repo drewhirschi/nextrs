@@ -678,7 +678,7 @@ impl rolldown_plugin::Plugin for SvgComponentPlugin {
     }
 
     fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
-        rolldown_plugin::HookUsage::Load
+        rolldown_plugin::HookUsage::Load | rolldown_plugin::HookUsage::Transform
     }
 
     fn load_meta(&self) -> Option<rolldown_plugin::PluginHookMeta> {
@@ -695,6 +695,87 @@ impl rolldown_plugin::Plugin for SvgComponentPlugin {
     ) -> impl std::future::Future<Output = rolldown_plugin::HookLoadReturn> + Send {
         self.load_impl(args)
     }
+
+    fn transform(
+        &self,
+        _ctx: rolldown_plugin::SharedTransformPluginContext,
+        args: &rolldown_plugin::HookTransformArgs<'_>,
+    ) -> impl std::future::Future<Output = rolldown_plugin::HookTransformReturn> + Send {
+        // A `"use server"` module (Next.js server action) would otherwise pull the
+        // whole server stack (auth/prisma/node) into the browser bundle. Next swaps
+        // these for network stubs; we emit client stubs so the page bundles + renders.
+        let out = server_action_stub(args.code);
+        async move {
+            Ok(out.map(|code| rolldown_plugin::HookTransformOutput {
+                code: Some(code),
+                module_type: Some(rolldown_common::ModuleType::Js),
+                ..Default::default()
+            }))
+        }
+    }
+}
+
+/// If `code` is a `"use server"` module, return a stub module that re-exports the
+/// same names as no-op client functions (each returns a next-safe-action-shaped
+/// `{ serverError }`), so the server import chain never reaches the browser.
+fn server_action_stub(code: &str) -> Option<String> {
+    let head = code.trim_start();
+    let is_server = head.starts_with("\"use server\"") || head.starts_with("'use server'");
+    if !is_server {
+        return None;
+    }
+    let mut names: Vec<String> = Vec::new();
+    let mut has_default = false;
+    let ident: fn(&str) -> String = |s| {
+        s.chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+            .collect()
+    };
+    for line in code.lines() {
+        let l = line.trim_start();
+        if l.starts_with("export default") {
+            has_default = true;
+        } else if let Some(rest) = l
+            .strip_prefix("export const ")
+            .or_else(|| l.strip_prefix("export let "))
+            .or_else(|| l.strip_prefix("export var "))
+        {
+            let n = ident(rest);
+            if !n.is_empty() {
+                names.push(n);
+            }
+        } else if let Some(rest) = l
+            .strip_prefix("export async function ")
+            .or_else(|| l.strip_prefix("export function "))
+        {
+            let n = ident(rest);
+            if !n.is_empty() {
+                names.push(n);
+            }
+        } else if let Some(rest) = l.strip_prefix("export {") {
+            let inner = rest.split('}').next().unwrap_or("");
+            for part in inner.split(',') {
+                let p = part.trim();
+                let n = p.rsplit(" as ").next().unwrap_or(p).trim();
+                if !n.is_empty() && n != "default" {
+                    names.push(n.to_string());
+                }
+            }
+        }
+    }
+    let mut out = String::new();
+    out.push_str(
+        "// nextrs: \"use server\" module stubbed for the browser bundle (no action runtime).\n\
+         const __action = (name) => async () => ({ data: undefined, serverError: \
+         \"Server action \" + name + \" is not available in the nextrs port.\" });\n",
+    );
+    for n in &names {
+        out.push_str(&format!("export const {n} = __action(\"{n}\");\n"));
+    }
+    if has_default {
+        out.push_str("export default __action(\"default\");\n");
+    }
+    Some(out)
 }
 
 /// Minimal JS double-quoted string literal for arbitrary text (the SVG markup).
