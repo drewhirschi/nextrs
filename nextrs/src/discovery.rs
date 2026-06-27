@@ -106,7 +106,13 @@ fn scan_dir(app_root: &Path, current: &Path, routes: &mut BTreeMap<String, Disco
     };
     let middleware = optional_path(current, "middleware.rs");
     let route = optional_path(current, "route.rs");
-    let props = optional_path(current, "props.rs");
+    // Server data for a `page.tsx`. Two interchangeable conventions: the original
+    // `props.rs` (exports `fn props`) and the preferred `prefetch.rs` (exports
+    // `fn prefetch`) — the name reflects what it does (seed/prefetch the query
+    // cache, not pass React props). Both are supported; the entry fn is chosen by
+    // filename in build.rs codegen. `props.rs` wins if both somehow coexist.
+    let props =
+        optional_path(current, "props.rs").or_else(|| optional_path(current, "prefetch.rs"));
 
     if page.exists()
         || layout.exists()

@@ -130,15 +130,26 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<()> {
     std::fs::create_dir_all(&entries_dir)?;
 
     let client_helper = client_dir.join("src/nextrs-client.ts");
-    let mut inputs = Vec::with_capacity(tsx_pages.len() + tsx_loadings.len());
+    let mut inputs = Vec::with_capacity(tsx_pages.len() + tsx_loadings.len() + 1);
+
+    // The ONE app-shell entry: a TanStack Router built from every discovered
+    // route, mounted once. Every page.tsx document boots /dist/__app_shell__.js
+    // (see build::tsx_page_shell), so shared layout.tsx chrome stays mounted
+    // across soft navigation and only the changed leaf swaps.
+    let shell_path = entries_dir.join("__app_shell__.tsx");
+    write_if_changed(&shell_path, app_shell_entry(&routes, &client_helper).as_bytes())?;
+    inputs.push(rolldown::InputItem {
+        name: Some("__app_shell__".to_string()),
+        import: shell_path.display().to_string(),
+    });
+    // Each page.tsx is ALSO a named entry (the RAW page, no createRoot wrapper) so
+    // it gets a stable /dist/<slug>.js that the app-shell's lazy
+    // `import("<abs page.tsx>")` dedups to (preserve_entry_signatures=False keeps
+    // it from emitting an extra facade chunk).
     for page in &tsx_pages {
-        let slug = &page.slug;
-        let entry_path = entries_dir.join(format!("{}.tsx", slug));
-        let entry_src = entry_wrapper(&page.page_path, &page.layout_paths, &client_helper);
-        write_if_changed(&entry_path, entry_src.as_bytes())?;
         inputs.push(rolldown::InputItem {
-            name: Some(slug.clone()),
-            import: entry_path.display().to_string(),
+            name: Some(page.slug.clone()),
+            import: page.page_path.display().to_string(),
         });
     }
     for (slug, loading_path) in &tsx_loadings {
@@ -167,34 +178,17 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<()> {
 struct PageBundle {
     slug: String,
     page_path: PathBuf,
-    layout_paths: Vec<PathBuf>,
 }
 
 fn page_bundles(routes: &[DiscoveredRoute]) -> Vec<PageBundle> {
     routes
         .iter()
         .filter_map(|route| {
-            let page_path = route.page.tsx.clone()?;
             Some(PageBundle {
                 slug: page_slug(&route.url_path),
-                page_path,
-                layout_paths: collect_layouts_for_path(routes, &route.url_path),
+                page_path: route.page.tsx.clone()?,
             })
         })
-        .collect()
-}
-
-fn collect_layouts_for_path(routes: &[DiscoveredRoute], target_path: &str) -> Vec<PathBuf> {
-    let mut layouts: Vec<&DiscoveredRoute> = routes
-        .iter()
-        .filter(|route| {
-            route.layout.tsx.is_some() && entry_applies_to_path(&route.url_path, target_path)
-        })
-        .collect();
-    layouts.sort_by_key(|route| route_depth(&route.url_path));
-    layouts
-        .into_iter()
-        .filter_map(|route| route.layout.tsx.clone())
         .collect()
 }
 
@@ -214,51 +208,207 @@ fn entry_applies_to_path(entry_path: &str, target_path: &str) -> bool {
             .is_some_and(|suffix| suffix.starts_with('/'))
 }
 
-fn layout_tree(layout_count: usize) -> String {
-    let mut tree = String::new();
-    for i in 0..layout_count {
-        tree.push_str(&format!("<Layout{i}>"));
-    }
-    tree.push_str("<Page />");
-    for i in (0..layout_count).rev() {
-        tree.push_str(&format!("</Layout{i}>"));
-    }
-    tree
+/// url_path → `layout_<i>` ident for a route that owns a `layout.tsx`.
+fn layout_ident_of(layouts: &[&DiscoveredRoute], url: &str) -> Option<String> {
+    layouts
+        .iter()
+        .position(|l| l.url_path == url)
+        .map(|i| format!("layout_{i}"))
 }
 
-fn entry_wrapper(page_path: &Path, layout_paths: &[PathBuf], client_helper: &Path) -> String {
-    let layout_imports = layout_paths
+/// Parent ident for `target`: the deepest layout route that applies to it. When
+/// resolving a layout's OWN parent (`is_layout`), require a strictly shallower
+/// layout so it can't parent itself. Defaults to `rootRoute`.
+fn parent_ident_of(layouts: &[&DiscoveredRoute], target: &str, is_layout: bool) -> String {
+    let mut best: Option<&DiscoveredRoute> = None;
+    for &l in layouts {
+        if is_layout && l.url_path == target {
+            continue;
+        }
+        if !entry_applies_to_path(&l.url_path, target) {
+            continue;
+        }
+        if is_layout && route_depth(&l.url_path) >= route_depth(target) {
+            continue;
+        }
+        let better = match best {
+            None => true,
+            Some(b) => route_depth(&l.url_path) > route_depth(&b.url_path),
+        };
+        if better {
+            best = Some(l);
+        }
+    }
+    best.and_then(|l| layout_ident_of(layouts, &l.url_path))
+        .unwrap_or_else(|| "rootRoute".to_string())
+}
+
+/// Map a discovery url_path (`{param}`, `{*param}`, `(group)`) to a TanStack
+/// Router path: `{slug}`→`$slug`, `{*all}`→`$` (splat), `(group)` dropped.
+fn tanstack_path(url_path: &str) -> String {
+    if url_path == "/" {
+        return "/".to_string();
+    }
+    let segs: Vec<String> = url_path
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .filter_map(|seg| {
+            if seg.starts_with('(') && seg.ends_with(')') {
+                None
+            } else if seg.starts_with("{*") && seg.ends_with('}') {
+                Some("$".to_string())
+            } else if let Some(p) = seg.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+                Some(format!("${p}"))
+            } else {
+                Some(seg.to_string())
+            }
+        })
+        .collect();
+    format!("/{}", segs.join("/"))
+}
+
+/// Deepest `loading.tsx` that applies to `target` (its route pendingComponent).
+fn nearest_tsx_loading_route<'a>(
+    routes: &'a [DiscoveredRoute],
+    target: &str,
+) -> Option<&'a DiscoveredRoute> {
+    routes
         .iter()
-        .enumerate()
-        .map(|(i, path)| format!("import Layout{i} from \"{}\";\n", path.display()))
-        .collect::<String>();
-    let tree = layout_tree(layout_paths.len());
-    format!(
-        r#"// @generated by nextrs::bundle. Do not edit by hand.
-import {{ createRoot }} from "react-dom/client";
-import {{ QueryClient, QueryClientProvider }} from "@tanstack/react-query";
-import {{ seedQueryClient }} from "{helper}";
-import Page from "{page}";
-{layout_imports}
+        .filter(|r| r.loading.tsx.is_some() && entry_applies_to_path(&r.url_path, target))
+        .max_by_key(|r| route_depth(&r.url_path))
+}
 
-// staleTime > 0 so server-seeded entries (see props.rs) render without an
-// immediate background refetch; with no seeds this is just a sane default.
-const qc = new QueryClient({{
-  defaultOptions: {{ queries: {{ staleTime: 30_000 }} }},
-}});
-seedQueryClient(qc);
+/// Recursively emit `name.addChildren([..])` for nodes with children, else just
+/// `name`. Deterministic — children are insertion-ordered Vecs.
+fn emit_route_node(
+    name: &str,
+    children: &std::collections::HashMap<String, Vec<String>>,
+) -> String {
+    match children.get(name) {
+        Some(kids) if !kids.is_empty() => {
+            let inner = kids
+                .iter()
+                .map(|k| emit_route_node(k, children))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{name}.addChildren([{inner}])")
+        }
+        _ => name.to_string(),
+    }
+}
 
-createRoot(document.getElementById("__nx_root__")!).render(
-  <QueryClientProvider client={{qc}}>
-    {tree}
-  </QueryClientProvider>,
-);
-"#,
-        helper = client_helper.display(),
-        page = page_path.display(),
-        layout_imports = layout_imports,
-        tree = tree,
-    )
+/// The single app-shell entry: a TanStack Router built from every discovered
+/// route, mounted ONCE into `#__nx_root__`. Each `layout.tsx` becomes a pathless
+/// layout route rendering the layout around an `<Outlet/>` (so it stays mounted
+/// across soft navigation); each `page.tsx` becomes a lazily-loaded leaf at its
+/// full path. Replaces the per-page `entry_wrapper`.
+fn app_shell_entry(routes: &[DiscoveredRoute], client_helper: &Path) -> String {
+    use std::collections::HashMap;
+    use std::fmt::Write as _;
+
+    let mut layouts: Vec<&DiscoveredRoute> =
+        routes.iter().filter(|r| r.layout.tsx.is_some()).collect();
+    layouts.sort_by(|a, b| {
+        route_depth(&a.url_path)
+            .cmp(&route_depth(&b.url_path))
+            .then_with(|| a.url_path.cmp(&b.url_path))
+    });
+    let mut pages: Vec<&DiscoveredRoute> =
+        routes.iter().filter(|r| r.page.tsx.is_some()).collect();
+    pages.sort_by(|a, b| a.url_path.cmp(&b.url_path));
+
+    let mut out = String::new();
+    out.push_str(
+        "// @generated by nextrs::bundle. Do not edit by hand.\n\
+         // The ONE app-shell: a TanStack Router over every discovered route,\n\
+         // mounted once so layout.tsx chrome stays mounted across soft navigation.\n",
+    );
+    out.push_str("import { createRoot } from \"react-dom/client\";\n");
+    out.push_str("import { QueryClient, QueryClientProvider } from \"@tanstack/react-query\";\n");
+    out.push_str(
+        "import { createRootRoute, createRoute, createRouter, lazyRouteComponent, Outlet, RouterProvider } from \"@tanstack/react-router\";\n",
+    );
+    let _ = writeln!(
+        out,
+        "import {{ seedQueryClient }} from {:?};",
+        client_helper.display().to_string()
+    );
+    for (i, l) in layouts.iter().enumerate() {
+        let p = l.layout.tsx.as_ref().unwrap().display().to_string();
+        let _ = writeln!(out, "import Layout{i} from {p:?};");
+    }
+    out.push('\n');
+
+    // Outer QueryClient + seed hydration — identical to the retired entry_wrapper.
+    out.push_str(
+        "const qc = new QueryClient({ defaultOptions: { queries: { staleTime: 30_000 } } });\n\
+         seedQueryClient(qc);\n\n",
+    );
+    out.push_str(
+        "const rootRoute = createRootRoute({\n  component: () => (<QueryClientProvider client={qc}><Outlet /></QueryClientProvider>),\n});\n\n",
+    );
+
+    // Pathless layout routes (id, not path) — supply mounted chrome only.
+    for (i, l) in layouts.iter().enumerate() {
+        let parent = parent_ident_of(&layouts, &l.url_path, true);
+        let id = page_slug(&l.url_path);
+        let _ = writeln!(
+            out,
+            "const layout_{i} = createRoute({{ getParentRoute: () => {parent}, id: {id:?}, component: () => (<Layout{i}><Outlet /></Layout{i}>) }});"
+        );
+    }
+    out.push('\n');
+
+    // Leaf routes — one per page.tsx at its full path, lazily loaded.
+    for (i, pg) in pages.iter().enumerate() {
+        let parent = parent_ident_of(&layouts, &pg.url_path, false);
+        let path = tanstack_path(&pg.url_path);
+        let page_path = pg.page.tsx.as_ref().unwrap().display().to_string();
+        let _ = write!(
+            out,
+            "const route_{i} = createRoute({{ getParentRoute: () => {parent}, path: {path:?}, component: lazyRouteComponent(() => import({page_path:?}))"
+        );
+        if let Some(loading) =
+            nearest_tsx_loading_route(routes, &pg.url_path).and_then(|r| r.loading.tsx.as_ref())
+        {
+            let lp = loading.display().to_string();
+            let _ = write!(
+                out,
+                ", pendingComponent: lazyRouteComponent(() => import({lp:?}))"
+            );
+        }
+        out.push_str(" });\n");
+    }
+    out.push('\n');
+
+    // Assemble: parent ident -> ordered child idents, then emit recursively.
+    let mut children: HashMap<String, Vec<String>> = HashMap::new();
+    for (i, l) in layouts.iter().enumerate() {
+        children
+            .entry(parent_ident_of(&layouts, &l.url_path, true))
+            .or_default()
+            .push(format!("layout_{i}"));
+    }
+    for (i, pg) in pages.iter().enumerate() {
+        children
+            .entry(parent_ident_of(&layouts, &pg.url_path, false))
+            .or_default()
+            .push(format!("route_{i}"));
+    }
+    let _ = writeln!(out, "const routeTree = {};\n", emit_route_node("rootRoute", &children));
+
+    out.push_str(
+        "const router = createRouter({\n  routeTree,\n  defaultPreload: \"intent\",\n  defaultPendingMs: 150,\n  // A path absent from this tree (also absent from the axum page routes — same\n  // discovery source) hard-loads so the server (real route / static / strangler)\n  // handles it. No reload loop.\n  defaultNotFoundComponent: () => {\n    if (typeof window !== \"undefined\") window.location.assign(window.location.href);\n    return null;\n  },\n});\n\n",
+    );
+    out.push_str("Object.assign(window, { __nx_router__: router });\n\n");
+    out.push_str(
+        "createRoot(document.getElementById(\"__nx_root__\")!).render(<RouterProvider router={router} />);\n",
+    );
+    // Note: the real "load the next page's React ahead of time" is TanStack's
+    // defaultPreload:"intent" above (preloads the target route's chunk on hover).
+    // The server's document-level speculation rules (now Prefetch, not Prerender)
+    // are a light bonus for hard loads and are left in place.
+    out
 }
 
 fn loading_entry_wrapper(loading_path: &Path) -> String {
@@ -323,7 +473,10 @@ fn run_bundler(
     client_alias: &str,
     user_aliases: &[(&str, &str)],
 ) -> std::io::Result<()> {
-    use rolldown::{BundlerOptions, OutputFormat, Platform, RawMinifyOptions};
+    use rolldown::{
+        BundlerOptions, CodeSplittingMode, OutputFormat, Platform, PreserveEntrySignatures,
+        RawMinifyOptions,
+    };
 
     let release = std::env::var("PROFILE").is_ok_and(|p| p == "release");
 
@@ -341,6 +494,12 @@ fn run_bundler(
         platform: Some(Platform::Browser),
         entry_filenames: Some("[name].js".to_string().into()),
         chunk_filenames: Some("chunks/[name].js".to_string().into()),
+        // Each page.tsx is both a named entry and a dynamic import() target from
+        // the app-shell; split so each leaf is its own loadable chunk, and don't
+        // preserve entry signatures (avoids a per-page facade chunk = extra
+        // request — the dynamic import targets the entry chunk directly).
+        code_splitting: Some(CodeSplittingMode::Bool(true)),
+        preserve_entry_signatures: Some(PreserveEntrySignatures::False),
         minify: Some(RawMinifyOptions::Bool(release)),
         // The concrete map type (FxIndexMap) isn't re-exported by rolldown;
         // let FromIterator name it for us.
@@ -566,27 +725,36 @@ mod tests {
     }
 
     #[test]
-    fn entry_wrapper_mentions_mount_and_provider() {
-        let s = entry_wrapper(Path::new("/abs/page.tsx"), &[], Path::new("/abs/helper.ts"));
+    fn app_shell_entry_mounts_router_and_provider() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("page.tsx"), "").unwrap();
+        let routes = discover_routes(tmp.path());
+        let s = app_shell_entry(&routes, Path::new("/abs/helper.ts"));
         assert!(s.contains("__nx_root__"));
+        assert!(s.contains("createRootRoute"));
+        assert!(s.contains("createRouter"));
+        assert!(s.contains("RouterProvider"));
         assert!(s.contains("QueryClientProvider"));
         assert!(s.contains("seedQueryClient"));
-        assert!(s.contains("/abs/page.tsx"));
+        assert!(s.contains("__nx_router__"));
+        assert!(s.contains("import { seedQueryClient } from \"/abs/helper.ts\";"));
     }
 
     #[test]
-    fn entry_wrapper_composes_layouts_root_to_leaf() {
-        let s = entry_wrapper(
-            Path::new("/abs/app/dashboard/page.tsx"),
-            &[
-                PathBuf::from("/abs/app/layout.tsx"),
-                PathBuf::from("/abs/app/dashboard/layout.tsx"),
-            ],
-            Path::new("/abs/client.ts"),
-        );
-        assert!(s.contains("import Layout0 from \"/abs/app/layout.tsx\";"));
-        assert!(s.contains("import Layout1 from \"/abs/app/dashboard/layout.tsx\";"));
-        assert!(s.contains("<Layout0><Layout1><Page /></Layout1></Layout0>"));
+    fn app_shell_entry_nests_pages_under_layout_and_maps_dynamic_segments() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("orgs/[slug]/billing")).unwrap();
+        std::fs::write(tmp.path().join("orgs/[slug]/layout.tsx"), "").unwrap();
+        std::fs::write(tmp.path().join("orgs/[slug]/billing/page.tsx"), "").unwrap();
+        let routes = discover_routes(tmp.path());
+        let s = app_shell_entry(&routes, Path::new("/abs/helper.ts"));
+        // pathless layout route (id, not path), parented to root
+        assert!(s.contains("const layout_0 = createRoute({ getParentRoute: () => rootRoute, id:"));
+        // leaf at its full path with [slug] -> $slug, parented to the layout route
+        assert!(s.contains("path: \"/orgs/$slug/billing\""));
+        assert!(s.contains("getParentRoute: () => layout_0"));
+        // tree assembly nests the layout's children
+        assert!(s.contains("layout_0.addChildren("));
     }
 
     #[test]
@@ -597,20 +765,16 @@ mod tests {
     }
 
     #[test]
-    fn page_bundles_include_applicable_layouts() {
+    fn page_bundles_emit_slug_and_path() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join("dashboard/settings")).unwrap();
-        std::fs::write(tmp.path().join("layout.tsx"), "").unwrap();
-        std::fs::write(tmp.path().join("dashboard/layout.tsx"), "").unwrap();
         std::fs::write(tmp.path().join("dashboard/settings/page.tsx"), "").unwrap();
 
         let routes = discover_routes(tmp.path());
         let pages = page_bundles(&routes);
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].slug, "dashboard-settings");
-        assert_eq!(pages[0].layout_paths.len(), 2);
-        assert!(pages[0].layout_paths[0].ends_with("layout.tsx"));
-        assert!(pages[0].layout_paths[1].ends_with("dashboard/layout.tsx"));
+        assert!(pages[0].page_path.ends_with("dashboard/settings/page.tsx"));
     }
 }
 
