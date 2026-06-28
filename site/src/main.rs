@@ -35,12 +35,40 @@ async fn main() {
     #[cfg(debug_assertions)]
     let app = app.layer(tower_livereload::LiveReloadLayer::new());
 
-    let addr = format!(
-        "0.0.0.0:{}",
-        std::env::var("PORT").unwrap_or_else(|_| "3000".into())
-    );
-    tracing::info!("Listening on {}", addr);
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(3000);
+    let listener = bind_with_fallback(port).await;
+    let local = listener.local_addr().expect("listener has a local addr");
+    tracing::info!("Listening on http://{local}");
 
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app).await.unwrap();
+}
+
+/// Bind `0.0.0.0:start`, or the next free port up to `start + 20` if it's taken.
+/// Beats panicking with a raw `AddrInUse` when something already holds the port.
+async fn bind_with_fallback(start: u16) -> tokio::net::TcpListener {
+    for port in start..start.saturating_add(20) {
+        match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
+            Ok(listener) => {
+                if port != start {
+                    tracing::warn!(
+                        "Port {start} is in use; bound {port} instead (set PORT to choose)."
+                    );
+                }
+                return listener;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => continue,
+            Err(e) => {
+                eprintln!("Failed to bind 0.0.0.0:{port}: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    eprintln!(
+        "No free port in {start}..{}. Stop the process using it, or set PORT.",
+        start.saturating_add(20)
+    );
+    std::process::exit(1);
 }

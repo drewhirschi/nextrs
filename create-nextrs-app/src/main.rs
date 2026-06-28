@@ -121,13 +121,15 @@ fn scaffold(target: &Path, nextrs_path: Option<&Path>) -> io::Result<()> {
 
     println!("Created {}", target.display());
     println!();
-    println!("Next steps:");
+    println!("Next steps (run in order):");
     if !is_current_dir(target) {
         println!("  cd {}", display_cd_path(target));
     }
-    println!("  {}", dep.dev_tool_install_command());
-    println!("  cd client && npm install && npm run gen && cd ..");
-    println!("  cargo dev");
+    println!("  {}   # required: installs the `cargo dev` runner", dep.dev_tool_install_command());
+    println!("  cd client && npm install && npm run gen && cd ..   # generate the typed client");
+    println!("  cargo dev   # build + run with live reload");
+    println!();
+    println!("Tip: if `cargo dev` errors with \"no such command: nextrs-dev\", run the install line above.");
     println!();
     println!("Routes:");
     println!("  /          React page");
@@ -374,17 +376,39 @@ async fn main() {
     #[cfg(debug_assertions)]
     let app = app.layer(tower_livereload::LiveReloadLayer::new());
 
-    let addr = format!(
-        "0.0.0.0:{}",
-        std::env::var("PORT").unwrap_or_else(|_| "3000".to_string())
-    );
-    println!("listening on http://{addr}");
+    let port: u16 = std::env::var("PORT")
+        .ok()
+        .and_then(|p| p.parse().ok())
+        .unwrap_or(3000);
+    let listener = bind_with_fallback(port).await;
+    let local = listener.local_addr().expect("listener has a local addr");
+    println!("listening on http://{local}");
 
-    let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
         .await
         .unwrap();
+}
+
+/// Bind `0.0.0.0:start`, or the next free port up to `start + 20` if it's taken.
+async fn bind_with_fallback(start: u16) -> tokio::net::TcpListener {
+    for port in start..start.saturating_add(20) {
+        match tokio::net::TcpListener::bind(("0.0.0.0", port)).await {
+            Ok(listener) => {
+                if port != start {
+                    eprintln!("Port {start} is in use; bound {port} instead (set PORT to choose).");
+                }
+                return listener;
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AddrInUse => continue,
+            Err(e) => {
+                eprintln!("Failed to bind 0.0.0.0:{port}: {e}");
+                std::process::exit(1);
+            }
+        }
+    }
+    eprintln!("No free port in {start}..{}. Stop the process using it, or set PORT.", start.saturating_add(20));
+    std::process::exit(1);
 }
 
 async fn shutdown_signal() {
