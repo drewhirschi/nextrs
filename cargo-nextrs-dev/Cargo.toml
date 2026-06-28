@@ -6,7 +6,6 @@ rust-version = "1.85"
 license = "Apache-2.0"
 description = "Cargo subcommand for running nextrs apps in development."
 repository = "https://github.com/drewhirschi/nextrs"
-publish = false
 
 [[bin]]
 name = "cargo-nextrs-dev"
