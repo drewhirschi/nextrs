@@ -25,7 +25,7 @@
 
 use std::path::{Path, PathBuf};
 
-pub use crate::build::{loading_slug, page_slug};
+pub use crate::build::{loading_slug, not_found_slug, page_slug};
 use crate::discovery::{DiscoveredRoute, discover_routes};
 
 /// Configuration for [`bundle_pages`]. Directory paths are interpreted
@@ -170,16 +170,27 @@ struct PageBundle {
     layout_paths: Vec<PathBuf>,
 }
 
+/// Browser bundles for every client-rendered entry: each `page.tsx` and each
+/// `not-found.tsx`. Both compose the segment's `.tsx` layouts client-side and
+/// mount into `__nx_root__`, so they share [`entry_wrapper`]; they only differ
+/// in slug ([`page_slug`] vs [`not_found_slug`]), which keeps a segment's page
+/// and not-found bundles from colliding.
 fn page_bundles(routes: &[DiscoveredRoute]) -> Vec<PageBundle> {
     routes
         .iter()
-        .filter_map(|route| {
-            let page_path = route.page.tsx.clone()?;
-            Some(PageBundle {
+        .flat_map(|route| {
+            let layout_paths = collect_layouts_for_path(routes, &route.url_path);
+            let page = route.page.tsx.clone().map(|page_path| PageBundle {
                 slug: page_slug(&route.url_path),
                 page_path,
-                layout_paths: collect_layouts_for_path(routes, &route.url_path),
-            })
+                layout_paths: layout_paths.clone(),
+            });
+            let not_found = route.not_found.tsx.clone().map(|page_path| PageBundle {
+                slug: not_found_slug(&route.url_path),
+                page_path,
+                layout_paths: layout_paths.clone(),
+            });
+            page.into_iter().chain(not_found)
         })
         .collect()
 }
@@ -590,5 +601,36 @@ mod tests {
         assert_eq!(pages[0].layout_paths.len(), 2);
         assert!(pages[0].layout_paths[0].ends_with("layout.tsx"));
         assert!(pages[0].layout_paths[1].ends_with("dashboard/layout.tsx"));
+    }
+
+    #[test]
+    fn not_found_tsx_produces_bundle_under_not_found_slug() {
+        // A segment can carry both a page.tsx and a not-found.tsx; each gets its
+        // own bundle, under page_slug / not_found_slug respectively, and both
+        // pick up the segment's tsx layouts.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("admin")).unwrap();
+        std::fs::write(tmp.path().join("layout.tsx"), "").unwrap();
+        std::fs::write(tmp.path().join("admin/page.tsx"), "").unwrap();
+        std::fs::write(tmp.path().join("admin/not-found.tsx"), "").unwrap();
+
+        let routes = discover_routes(tmp.path());
+        let bundles = page_bundles(&routes);
+
+        let page = bundles
+            .iter()
+            .find(|b| b.slug == "admin")
+            .expect("page.tsx bundle");
+        assert!(page.page_path.ends_with("admin/page.tsx"));
+        assert_eq!(page.layout_paths.len(), 1);
+
+        let nf = bundles
+            .iter()
+            .find(|b| b.slug == "admin-not-found")
+            .expect("not-found.tsx bundle");
+        assert!(nf.page_path.ends_with("admin/not-found.tsx"));
+        // not-found is wrapped in the same segment layouts as the page.
+        assert_eq!(nf.layout_paths.len(), 1);
+        assert!(nf.layout_paths[0].ends_with("layout.tsx"));
     }
 }
