@@ -73,20 +73,46 @@ pub struct RouteEntry {
     pub methods: Vec<(http::Method, RouteFn)>,
 }
 
+/// A `not-found.{rs,html,tsx}` surface, keyed by the URL path of the segment
+/// that declared it. When no route matches a request, the router renders the
+/// entry whose `path` is the *deepest* ancestor of the requested path, wrapped
+/// in that segment's layouts, with a `404` status. Mirrors Next.js's
+/// `not-found.tsx`, which is scoped to its segment subtree.
+pub struct NotFoundEntry {
+    /// URL path of the declaring segment, e.g. "/" or "/admin".
+    pub path: String,
+    /// Renders the 404 body (without layouts — the router applies those). Same
+    /// [`PageFn`] shape as a page, so the three variants reuse the page helpers:
+    /// `not-found.rs` calls its `render(req)`, `not-found.html` is wrapped with
+    /// [`static_page`], and `not-found.tsx` becomes a client-rendered shell.
+    pub render: PageFn,
+}
+
 /// A collection of route entries that gets turned into an Axum router
 pub struct RouteRegistry {
     pub entries: Vec<RouteEntry>,
+    /// Subtree-scoped 404 surfaces, installed as the router's fallback.
+    pub not_found: Vec<NotFoundEntry>,
 }
 
 impl RouteRegistry {
     pub fn new() -> Self {
         Self {
             entries: Vec::new(),
+            not_found: Vec::new(),
         }
     }
 
     pub fn add(&mut self, entry: RouteEntry) {
         self.entries.push(entry);
+    }
+
+    /// Register a `not-found` surface for the subtree rooted at `path`.
+    pub fn add_not_found(&mut self, path: impl Into<String>, render: PageFn) {
+        self.not_found.push(NotFoundEntry {
+            path: path.into(),
+            render,
+        });
     }
 }
 
@@ -193,6 +219,23 @@ mod tests {
     fn test_static_loading_returns_html_verbatim() {
         let l = static_loading("<div>Loading...</div>");
         assert_eq!(l(), "<div>Loading...</div>");
+    }
+
+    #[tokio::test]
+    async fn test_add_not_found_records_entry_and_render() {
+        let mut registry = RouteRegistry::new();
+        assert!(registry.not_found.is_empty());
+
+        registry.add_not_found("/admin", static_page("<h1>404</h1>"));
+
+        assert_eq!(registry.not_found.len(), 1);
+        let entry = &registry.not_found[0];
+        assert_eq!(entry.path, "/admin");
+
+        let req = http::Request::builder()
+            .body(axum::body::Body::empty())
+            .unwrap();
+        assert_eq!((entry.render)(req).await, "<h1>404</h1>");
     }
 
     #[tokio::test]
