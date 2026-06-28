@@ -1,3 +1,9 @@
 [alias]
 dev = "run -p xtask -- dev"
 dev-once = "run -p xtask -- dev-once"
+
+# Empty, but required for Vercel: the vercel-rust builder reads
+# `config.build.target` and crashes ("Cannot read properties of undefined
+# (reading 'target')") if a .cargo/config.toml exists without a [build] table.
+# Empty = build for the host target.
+[build]
