@@ -5,11 +5,13 @@ section = "Guides"
 order = 3
 +++
 
-Streaming is the framework's central UX feature. When a route has a `loading.{rs,html}` slot, the server sends the loading shell to the browser **before** the page handler has finished computing — then sends the page content as a second chunk on the same response, swapping the shell out with a tiny inline script. One HTTP request, no client-side framework, no htmx.
+nextrs has two rendering models. **React `.tsx` pages** mount in the browser and seed their TanStack React Query cache from a `props.rs` sibling; **Rust/HTML pages** (`page.{rs,html}`) render on the server and stream. Streaming is the central UX feature of that second path.
+
+When a Rust/HTML route has a `loading.{rs,html}` slot, the server sends the loading shell to the browser **before** the page handler has finished computing — then sends the page content as a second chunk on the same response, swapping the shell out with a tiny inline script. One HTTP request, and on this path no client-side framework and no htmx — React Query only runs on the `.tsx` path.
 
 ## The model
 
-A request to a route with a `loading` slot produces a chunked response shaped like this:
+A request to a Rust/HTML route with a `loading` slot produces a chunked response shaped like this:
 
 ```
 [layout-open]

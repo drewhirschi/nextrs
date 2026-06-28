@@ -1,15 +1,15 @@
 +++
-title = "React Pages & Server Props (Preview)"
-description = "Roadmap preview: page.tsx in the app tree, with the React Query cache warmed by the server before your bundle runs"
-section = "Roadmap"
-order = 30
+title = "React Pages & Server Props"
+description = "page.tsx in the app tree, with the React Query cache warmed by the server before your bundle runs"
+section = "Guides"
+order = 5
 +++
 
 > **Status: implemented, pre-release.** Everything on this page runs in the nextrs repo today — the runnable [`examples/react-todos`](https://github.com/drewhirschi/nextrs/tree/main/examples/react-todos) crate is exactly this code. APIs may still shift before a release. The typed-client pipeline it builds on is documented at [Typesafe Client Generation](/docs/typesafe-client).
 
 ## The idea
 
-nextrs will let you drop `page.tsx` files into the `app/` tree next to `page.rs` and `page.html`:
+nextrs lets you drop `page.tsx` files into the `app/` tree next to `page.rs` and `page.html`:
 
 ```
 app/
@@ -19,7 +19,7 @@ app/
     └── props.rs        # optional: Rust warms your React Query cache
 ```
 
-`.tsx` pages are **client-rendered by default**. The server streams the layout shell and a script tag; your component renders in the browser and talks to the backend through the generated typed hooks. One Rust binary serves the APIs, the Rust pages, and the React pages. There is no Node server and no JS runtime inside the binary — that's a permanent constraint, not a phase. If a page needs request-time server rendering, that's what `page.rs` is for.
+`.tsx` pages are **client-rendered by default**. The server streams the layout shell and a script tag; your component renders in the browser and talks to the backend through the generated typed hooks. One Rust binary serves the APIs, the Rust pages, and the React pages. There is no Node server and no JS runtime inside the binary — that's a permanent constraint, not a temporary limitation. If a page needs request-time server rendering, that's what `page.rs` is for.
 
 The interesting part is what replaces server-side rendering's data story.
 
@@ -114,10 +114,12 @@ Server data that *isn't* endpoint-shaped — session user, feature flags, a prec
 
 The same property the typed client has, extended to seeds and props: the Rust structs derive `ToSchema`, the schema flows into the OpenAPI document, and orval generates the TypeScript. Rename a field in Rust and the `.tsx` stops compiling.
 
-## Where this is headed
+## What ships today
 
-1. **Phase 1** — client-rendered `page.tsx`: discovery, routing, and bundling (Rust toolchain via swc) wired into `cargo build`; a dev watcher that rebuilds bundles in milliseconds without restarting the server.
-2. **Phase 2** — `props.rs` as shown above: typed initial props, then React Query cache seeding.
-3. **Phase 3** — build-time prerendering: `loading.tsx` skeletons and static `.tsx` pages rendered to HTML during the build (Node at build time only) and hydrated in the browser.
+- **Client-rendered `page.tsx`** — discovery, routing, and bundling all run in `cargo build`. The bundler is an embedded rolldown, built into the framework and gated behind the `tsx` cargo feature — no external Node build step. A dev watcher rebuilds bundles in milliseconds without restarting the server.
+- **`props.rs` React Query cache seeding** — exactly as shown above: the server streams seed entries into the HTML and the client loads them into the cache before mount.
+- **`loading.tsx` skeletons** — a loading component mounts immediately while the page bundle loads.
+
+Still on the roadmap: build-time prerendering — static `.tsx` pages rendered to HTML during the build (Node at build time only) and hydrated in the browser.
 
 Follow along or argue with us: [github.com/drewhirschi/nextrs](https://github.com/drewhirschi/nextrs).

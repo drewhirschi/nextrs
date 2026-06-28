@@ -169,10 +169,10 @@ name = "index"          # Vercel serverless entry
 path = "api/index.rs"
 
 [build-dependencies]
-nextrs = { version = "0.2", features = ["build", "tsx"] }
+nextrs = { version = "0.3", features = ["build", "tsx"] }
 
 [dependencies]
-nextrs = { version = "0.2", features = ["vercel"] }
+nextrs = { version = "0.3", features = ["vercel"] }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"

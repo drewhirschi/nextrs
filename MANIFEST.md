@@ -2,9 +2,11 @@
 
 ## Purpose
 
-A **Next.js-like file-based routing framework for Rust**: folder-based routes, `page` / `layout` / `loading` / `middleware` conventions, and HTTP-level streaming that lets a route render its loading shell immediately and stream the real page when it's ready — without htmx, React, or any client-side framework. Deploys to Vercel as a single Rust serverless function with streaming preserved through Fluid compute.
+**nextrs** is a Rust web framework for building React apps. You get the Next.js developer experience — file-based routing, `page` / `layout` / `loading` conventions, one-command Vercel deploys with zero infra — but the server is Rust. The client borrows the best of the TanStack ecosystem: **Query** for data (server-prefetched into the cache) and **Router** for instant navigation.
 
-The framework is built on Axum and Askama. Each segment under an `app/` directory is a route; convention files (`page.{rs,html}`, `layout.{rs,html}`, `loading.{rs,html}`, `middleware.rs`, `route.rs`) compose the response. `.rs` files hold logic; `.html` files are static fallbacks. Middleware runs before page rendering, loading-shell streaming, and `route.rs` handlers. When a loading slot exists, the framework streams the layout's "before children" half, the loading shell in a slot div, then (after awaiting the page) a `<template>` plus a ~200-byte inline `<script>` that swaps the slot, then the layout's "after children" half.
+**Engineered for agents.** Software gets built differently now: AI agents add features faster than a Next.js/Node codebase can absorb — build times balloon, the runtime slows, things get fragile, and a lot of effort goes into just keeping it from falling apart. Rust is orders of magnitude faster by design, so that headroom means agent-generated code stays fast and doesn't rot. Built for app-style products — dashboards, internal tools, anything behind auth.
+
+> The "Layout / Conventions / Streaming" sections below predate the React-first rewrite (they describe the original HTML/Askama streaming design) and need a code-verified update.
 
 ## Layout
 
@@ -12,7 +14,7 @@ Cargo workspace at the repo root. The root is also a package (the Vercel deploym
 
 | Member | Purpose |
 |---|---|
-| `nextrs/` | The framework crate (library). Source at `nextrs/src/{lib,conventions,discovery,router,vercel,build}.rs`. The `vercel` and `build` modules are feature-gated. |
+| `nextrs/` | The framework crate (library). Source at `nextrs/src/{lib,conventions,discovery,router,seed,prefetch,openapi,vercel,build,docs,bundle}.rs`. `vercel`, `build` and `docs` (both gated by the `build` feature), and `bundle` (gated by the `tsx` feature) are feature-gated. |
 | `site/` | The consumer crate — currently the framework's own demo / docs site. Run with `cargo dev` → http://localhost:3000. |
 | (root package) | `nextrs-deploy` — single binary at `api/index.rs` that wraps the framework's axum router for `vercel_runtime::run`. |
 | `xtask/` | Repo-local dev watcher. Starts `cargo run -p site`, watches framework and demo app source paths, and restarts the child process on changes. |
@@ -25,9 +27,10 @@ Each folder under `app/` is a route segment. The framework looks for these files
 
 | File | Purpose | Variants |
 |---|---|---|
-| `page.{rs,html}` | The main content for the route | `.rs` (async handler) preferred; `.html` (static) fallback |
-| `layout.{rs,html}` | Wraps this segment's page and any nested segments | same precedence |
-| `loading.{rs,html}` | Shown while the page resolves (triggers streaming) | same precedence |
+| `page.{rs,html,tsx}` | The main content for the route | `.rs` (async handler) / `.html` (static Askama) / `.tsx` (React, bundled to `/dist/<slug>.js` and mounted into `<div id="__nx_root__">`; requires the `tsx` feature) |
+| `layout.{rs,html,tsx}` | Wraps this segment's page and any nested segments | same `.rs`/`.html`/`.tsx` variants |
+| `loading.{rs,html,tsx}` | Shown while the page resolves (triggers streaming) | same `.rs`/`.html`/`.tsx` variants |
+| `props.rs` | Server data for a sibling `page.tsx` — exports `pub async fn props(req) -> nextrs::QuerySeed`; streamed as a JSON `<script id="__nx_seeds__">` and loaded into the React Query cache before mount | `.rs` only |
 | `middleware.rs` | Request guard that may continue or return a response before rendering/streaming | `.rs` only |
 | `route.rs` | API method handlers (POST/PUT/etc.) — `.rs` only |
 
@@ -51,9 +54,14 @@ Middleware files export `pub async fn handle(req) -> nextrs::conventions::Middle
 
 | Area | File |
 |---|---|
-| Slot/file discovery | `nextrs/src/discovery.rs` — scans `app/` and produces `DiscoveredRoute { page, layout, loading, middleware, route }` where page/layout/loading track both `.rs` and `.html` paths |
+| Slot/file discovery | `nextrs/src/discovery.rs` — scans `app/` and produces `DiscoveredRoute { page, layout, loading, middleware, route, props }` where page/layout/loading are each a `Slot { rs, html, tsx }` (every variant optional) and `props` is the `props.rs` path |
 | Route handler types | `nextrs/src/conventions.rs` — `PageFn`, `LayoutFn`, `LoadingFn`, `MiddlewareFn`, `RouteFn`; static helpers `static_page`, `static_layout`, `static_loading` |
-| Routing + streaming | `nextrs/src/router.rs` — `build_router(registry) -> axum::Router`. Runs middleware, composes layouts around a content marker, splits on the marker, streams loading-then-page when a loading slot is present |
+| Routing + streaming | `nextrs/src/router.rs` — `build_router(registry) -> axum::Router` (and `build_router_with_prefetch` / `build_router_with_public`). Runs middleware, composes layouts around a content marker, splits on the marker, streams loading-then-page when a loading slot is present |
+| React bundling | `nextrs/src/bundle.rs` (feature `tsx`) — `bundle_pages(BundleConfig)`. For each `page.tsx` / `loading.tsx` emits an entry wrapper (layout composition + `QueryClientProvider` + seed hydration + `createRoot` mount) and runs the embedded rolldown bundler to produce `/dist/<slug>.js` |
+| Server data seeding | `nextrs/src/seed.rs` — `QuerySeed`, `SeedEntry`, `seed_key`; the value a `props.rs` returns, serialized into a `<script id="__nx_seeds__">` tag and loaded into the React Query cache before mount |
+| Navigation prefetch | `nextrs/src/prefetch.rs` — `PrefetchConfig`, `SpeculationMode`, `Eagerness`; injects a `<script type="speculationrules">` for browser-native prefetch/prerender (no client router) |
+| OpenAPI serving | `nextrs/src/openapi.rs` — `spec_router(generated_openapi())` serves the codegen-built OpenAPI document at `/openapi.json` (consumed by the typed client) |
+| Docs pipeline | `nextrs/src/docs.rs` (feature `build`) — `emit_docs(DocsConfig)` renders markdown once into both the docs-UI slices and the `llms.txt` / `llms-full.txt` files |
 | Vercel adapter | `nextrs/src/vercel.rs` — `StreamingVercelLayer` (feature-gated by `vercel`). Drop-in replacement for `vercel_runtime::axum::VercelLayer` that doesn't buffer text/html |
 | Progressive demo | `site/app/{simple, with-loading, with-layout}/` — three routes that progressively add `loading.{rs,html}` and `layout.{rs,html}`. The home page (`site/app/page.html`) is an overview with links and a per-route file listing |
 | Codegen | `nextrs/src/build.rs` (feature `build`) — `emit_registry(app_dir, _, out_name)` walks `discover_routes` output and emits Rust source: `#[path]` mods for `.rs` slots, `static_*(include_str!(...))` for `.html` slots, and a `generated_registry()` function. Both paths emitted as absolute (necessary because `#[path]` inside an `include!`-d file resolves relative to the included file's location, not the includer). |
@@ -65,7 +73,7 @@ Middleware files export `pub async fn handle(req) -> nextrs::conventions::Middle
 
 ## Tests
 
-`cargo test --workspace --all-features` (51 tests):
+`cargo test --workspace --all-features` (~121 tests across `nextrs` + `nextrs-macros`):
 
 - Discovery: `.rs` + `.html` pairing, html-only segments, mixed nested, dynamic segments, API routes, middleware-only routes, empty-dir handling
 - Conventions: static helpers (`static_page`, `static_layout` with both `{{children}}` and `{{ children }}` forms, `static_loading`), middleware result helpers
@@ -75,7 +83,8 @@ Middleware files export `pub async fn handle(req) -> nextrs::conventions::Middle
 
 ## Non-goals
 
-- **No client-side framework.** No htmx, no React, no JS bundle. The loading→page swap is a single inline script the framework emits; nothing else runs in the browser.
+- **No JS server runtime.** The deployed binary is Rust/axum — there is no Node server in production. React `.tsx` pages are bundled to static JS *at build time* by the embedded rolldown bundler (feature `tsx`) and served as plain files; the server never executes JS.
+- **No required client JS for `.rs`/`.html` pages.** Askama pages render to HTML on the server; the loading→page swap is a single inline script the framework emits, and navigation prefetch is browser-native Speculation Rules — so non-React routes ship no client framework or bundle.
 - **Not pinning a public API.** Types and helpers may move as conventions harden.
 
 ## Roadmap

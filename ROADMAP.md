@@ -31,46 +31,46 @@ development.
 
 ### App Builder / Scaffolder Command
 
-Status: on the roadmap; document the desired shape before implementing.
+Status: shipped as the `create-nextrs-app` workspace crate.
 
-Nextrs should eventually have a first-class starter command, similar in spirit
-to `create-next-app` or the old `create-react-app`. The exact distribution is
-still open; likely candidates are a `nextrs` CLI, a `cargo-nextrs` subcommand,
-or a template generator invoked from `cargo`.
+Nextrs has a first-class starter command, similar in spirit to `create-next-app`
+or the old `create-react-app`. `create-nextrs-app` generates a React-first
+starter, and the local dev workflow runs through `cargo-nextrs-dev` (installed
+with `cargo install cargo-nextrs-dev`), which the scaffold wires up as a
+`cargo dev` alias.
 
-The initial scaffold should be intentionally small but cover the important
-framework seams:
+The scaffold is intentionally small but covers the important framework seams:
 
 - A pure React route: `app/page.tsx`.
-- A React route backed by Rust server code: a `page.tsx` that calls a typed
-  client hook generated from a `route.rs` API handler.
-- The standard local workflow: `cargo dev` for watch/restart/full-page reload
-  and `cargo dev-once` for a single foreground run, matching the template in
-  `docs/local-dev-workflow.md`.
-- The Vercel bundling escape hatch documented clearly:
-  `NEXTRS_SKIP_BUNDLE=1` for deploy/codegen situations, `NEXTRS_SKIP_BUNDLE=0`
-  for local dev.
+- A React route backed by Rust server code: `app/slow/` pairs a `page.tsx` with
+  a `props.rs` that returns a `nextrs::QuerySeed` (seeding the React Query cache)
+  and a `loading.tsx` streaming fallback.
+- A Rust API route at `app/api/ping/route.rs` using `#[nextrs::api]`, plus a
+  typed React Query client generated into `client/` by orval.
+- The local workflow: `cargo dev` (alias for `nextrs-dev --bin <crate>`) for
+  watch/restart.
+- The Vercel bundling escape hatch: `NEXTRS_SKIP_BUNDLE=1` for deploy/codegen
+  situations, `NEXTRS_SKIP_BUNDLE=0` (the default) for local dev.
 
-Example starter shape:
+Generated starter shape:
 
 ```text
 my-app/
 ├── app/
+│   ├── layout.tsx                  # React root layout
 │   ├── page.tsx                    # pure client-rendered React page
-│   └── todos/
-│       └── page.tsx                # calls the generated typed API hook
-├── app/api/todos/
-│   └── route.rs                    # Rust GET/POST handlers with #[nextrs::api]
-├── client/                         # generated TypeScript/React Query client
+│   ├── slow/
+│   │   ├── page.tsx                # React page seeded from Rust props
+│   │   ├── props.rs                # async props() -> nextrs::QuerySeed
+│   │   └── loading.tsx             # streaming loading fallback
+│   └── api/ping/
+│       └── route.rs                # Rust GET handler with #[nextrs::api]
+├── client/                         # orval-generated typed React Query client
 ├── src/main.rs                     # local Axum server
+├── src/bin/dump-openapi.rs         # OpenAPI dump used for client codegen
 ├── build.rs                        # emit_registry + bundle_pages
-├── xtask/                          # local dev helper
-└── .cargo/config.toml              # cargo dev / cargo dev-once aliases
+└── .cargo/config.toml              # `dev` alias -> cargo-nextrs-dev
 ```
-
-Layouts are deliberately not locked into this first scaffold. We expect to
-revisit layout ergonomics as TSX usage grows, including whether JavaScript-first
-layouts should become more central than static HTML wrappers.
 
 ## Framework Surface
 
