@@ -5,7 +5,7 @@ section = "Guides"
 order = 1
 +++
 
-nextrs is a Next.js-style routing framework for Rust. You write convention files (`page.rs`, `layout.rs`, `loading.html`, `middleware.rs`, `route.rs`) in an `app/` directory; a build step discovers them and wires the router. No client-side framework — pages are server-rendered HTML, streamed when a route has a loading state.
+nextrs is a Next.js-style routing framework for Rust. You write convention files (`page.tsx`, `page.rs`, `layout.rs`, `loading.html`, `middleware.rs`, `props.rs`, `route.rs`) in an `app/` directory; a build step discovers them and wires the router. Two rendering models coexist: Rust/HTML pages rendered with Askama (streamed when a route has a loading state), and React `.tsx` pages bundled to the client with their server data seeded from a `props.rs` sibling.
 
 ## The pieces
 
@@ -30,13 +30,13 @@ mysite/
 
 ```toml
 [dependencies]
-nextrs = "0.1"
+nextrs = "0.3"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 askama = "0.15"
 
 [build-dependencies]
-nextrs = { version = "0.1", features = ["build"] }
+nextrs = { version = "0.3", features = ["build"] }
 ```
 
 `build.rs`:
@@ -100,15 +100,61 @@ cargo run
 # Listening on 0.0.0.0:3000
 ```
 
+## React pages
+
+A route can render a React component instead. A `page.tsx` (plus optional `layout.tsx` / `loading.tsx`) is bundled to `public/dist/<slug>.js` at build time by an embedded [rolldown](https://rolldown.rs) bundler — there is no separate Node build step — gated behind the `tsx` cargo feature on the build-dependency:
+
+```toml
+[build-dependencies]
+nextrs = { version = "0.3", features = ["build", "tsx"] }
+```
+
+`build.rs` adds a bundle step alongside `emit_registry`:
+
+```rust
+nextrs::bundle::bundle_pages(&nextrs::bundle::BundleConfig {
+    app_dir: "app",
+    client_dir: "client",
+    client_alias: "@mysite/client",
+    public_dist: "public/dist",
+    ..Default::default()
+})
+.expect("nextrs::bundle::bundle_pages failed");
+```
+
+Each page mounts into `<div id="__nx_root__">` under a TanStack `<QueryClientProvider>`. A sibling `client/` package holds the typed React Query client — generated from the app's OpenAPI spec with [orval](https://orval.dev) and imported through an alias like `@mysite/client`, so calling a Rust `route.rs` handler is a typed `useGet…` hook.
+
+### Server data with `props.rs`
+
+To warm the React Query cache on the server, drop a `props.rs` next to a `page.tsx`. It exports `pub async fn props(req) -> nextrs::QuerySeed`:
+
+```rust
+pub async fn props(_req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
+    nextrs::QuerySeed::new()
+        .seed(async {
+            nextrs::SeedEntry {
+                key: nextrs::seed_key("/slow/message", None),
+                data: nextrs::serde_json::json!({ "message": "Loaded from Rust." }),
+            }
+        })
+        .await
+}
+```
+
+The framework streams the entries as a JSON `<script id="__nx_seeds__">` tag and the client loads them into the React Query cache before mount, so the page renders with the data already in place. Keys built with `seed_key` match the generated client's query keys exactly, so a seeded entry behaves like a fetched one (mutations and `invalidateQueries` reach it the same way).
+
+`create-nextrs-app` scaffolds this whole track for you — `app/page.tsx`, a `/slow` route with `props.rs` + `loading.tsx`, an `/api/ping` handler, and the `client/` orval package — so it's the fastest way to start a React-first app.
+
 ## The dev loop
 
-The repo ships a file watcher that restarts the server when anything relevant changes (source, templates, content, assets):
+Generated apps use `cargo-nextrs-dev`, a file watcher that rebuilds and restarts the server when anything relevant changes (source, templates, `app/` files, assets, `.env`). Install it once, then run `cargo dev` — the generated `.cargo/config.toml` aliases `dev` to `nextrs-dev --bin <crate>`:
 
 ```bash
+cargo install cargo-nextrs-dev
 cargo dev
 ```
 
-It polls for changes, debounces, SIGTERMs the server cleanly, and restarts. It also watches the env file the server loads (`.env` by default, or `NEXTRS_ENV_FILE` when set) and runs the child with `NEXTRS_SKIP_BUNDLE=0` so local page bundles are regenerated. Combined with `tower-livereload`, the browser refreshes itself after the rebuild. This is full-page live reload, not React HMR. For a single foreground run, use `cargo dev-once`.
+It debounces changes, SIGTERMs the running server cleanly, rebuilds with `cargo build --bin <crate>`, and restarts — without interrupting an in-progress Cargo build. Combined with `tower-livereload`, the browser refreshes itself after the rebuild. This is full-page live reload, not React HMR.
 
 ## Where to go next
 

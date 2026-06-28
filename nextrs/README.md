@@ -21,13 +21,13 @@ Each directory is a URL segment; each filename is a convention slot. `.rs` wins 
 
 ```toml
 [dependencies]
-nextrs = "0.2"
+nextrs = "0.3"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 askama = "0.15"
 
 [build-dependencies]
-nextrs = { version = "0.2", features = ["build"] }
+nextrs = { version = "0.3", features = ["build"] }
 ```
 
 ```rust,ignore
