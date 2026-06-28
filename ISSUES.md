@@ -21,7 +21,7 @@ Status key: ✅ fixed · 🔧 partial · 🔒 needs a decision or a release (not
 - ✅ **VRC-4 (high)** — `deploy-vercel.md` rewritten to require the runtime block, toolchain pin, `[build]` table + a "Deploying a React app" section.
 - ☐ **VRC-5 (medium)** — root `public/` is gitignored + build-generated; a Git-connected deploy may 404 static assets (`/style.css`). **Options:** commit built `public/`, serve from `site/public/`, or emit into Vercel output. Verify `x-vercel-cache: HIT` post-deploy.
 - ✅ **VRC-6 (info)** — ruled out: JSX/bundler commits don't affect the docs build (no `.tsx`).
-- ⏳ **Verification:** `vercel build` (local, no deploy) pending — config matches the proven `examples/react-todos` setup.
+- ✅ **Verification:** local `vercel build` got *past* all three config fixes (runtime recognized; no `[build]`/`target` crash) and `nextrs-deploy` compiles natively. It then failed only on a local-only missing `cargo-zigbuild` (present on Vercel's real builder), so the cross-compile + cloud toolchain pin are the same as the proven `react-todos` deploy. Final proof is an actual deploy (not done — no live push).
 
 ## `cargo dev`
 - ✅ **DEV-1 (high)** — site (`site/src/main.rs`) + scaffold template now bind with a clean fallback (auto-increment to next free port, log it, exit with a message instead of a raw `AddrInUse` panic).
