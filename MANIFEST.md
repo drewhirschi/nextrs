@@ -2,9 +2,11 @@
 
 ## Purpose
 
-A **Next.js-like file-based routing framework for Rust**: folder-based routes, `page` / `layout` / `loading` / `middleware` conventions, and HTTP-level streaming that lets a route render its loading shell immediately and stream the real page when it's ready — without htmx, React, or any client-side framework. Deploys to Vercel as a single Rust serverless function with streaming preserved through Fluid compute.
+**nextrs** is a Rust web framework for building React apps. You get the Next.js developer experience — file-based routing, `page` / `layout` / `loading` conventions, one-command Vercel deploys with zero infra — but the server is Rust. The client borrows the best of the TanStack ecosystem: **Query** for data (server-prefetched into the cache) and **Router** for instant navigation.
 
-The framework is built on Axum and Askama. Each segment under an `app/` directory is a route; convention files (`page.{rs,html}`, `layout.{rs,html}`, `loading.{rs,html}`, `middleware.rs`, `route.rs`) compose the response. `.rs` files hold logic; `.html` files are static fallbacks. Middleware runs before page rendering, loading-shell streaming, and `route.rs` handlers. When a loading slot exists, the framework streams the layout's "before children" half, the loading shell in a slot div, then (after awaiting the page) a `<template>` plus a ~200-byte inline `<script>` that swaps the slot, then the layout's "after children" half.
+**Engineered for agents.** Software gets built differently now: AI agents add features faster than a Next.js/Node codebase can absorb — build times balloon, the runtime slows, things get fragile, and a lot of effort goes into just keeping it from falling apart. Rust is orders of magnitude faster by design, so that headroom means agent-generated code stays fast and doesn't rot. Built for app-style products — dashboards, internal tools, anything behind auth.
+
+> The "Layout / Conventions / Streaming" sections below predate the React-first rewrite (they describe the original HTML/Askama streaming design) and need a code-verified update.
 
 ## Layout
 

@@ -1,8 +1,10 @@
 # nextrs
 
-A Next.js-style routing framework for Rust. File-based routes, `page` / `layout` / `loading` / `middleware` conventions, HTTP-level streaming for the loading shell — no client-side framework, no htmx, no React.
+**nextrs** is a Rust web framework for building React apps. You get the Next.js developer experience — file-based routing, `page` / `layout` / `loading` conventions, one-command Vercel deploys with zero infra — but the server is Rust. The client borrows the best of the TanStack ecosystem: **Query** for data (server-prefetched into the cache) and **Router** for instant navigation.
 
-Built on Axum and Askama. Deploys to Vercel as a single Rust function with the loading→page swap streamed over chunked transfer encoding.
+**Engineered for agents.** Software gets built differently now: AI agents add features faster than a Next.js/Node codebase can absorb — build times balloon, the runtime slows, things get fragile, and a lot of effort goes into just keeping it from falling apart. Rust is orders of magnitude faster by design, so that headroom means agent-generated code stays fast and doesn't rot. Built for app-style products — dashboards, internal tools, anything behind auth.
+
+> Note: the sections below still describe an earlier HTML/streaming-first version of nextrs and are being rewritten React-first.
 
 ## Quick look
 
