@@ -77,6 +77,11 @@ my-app/
 - `error.{rs,html}` segment convention.
 - Per-route Vercel binaries for very large apps where the current single binary
   becomes too broad.
+- Make the idiomatic Rust `src/main.rs` usable as the Vercel function entry too.
+  Today Vercel's builder rejects `functions` patterns outside `api/` for custom
+  runtimes, so nextrs keeps a tiny `api/index.rs` adapter. Desired end state:
+  Vercel allows an explicit `functions["src/main.rs"]` entry, letting generated
+  apps avoid the extra deploy-only file.
 - Richer `route.rs` diagnostics and request extraction conventions.
 - Nested streaming/Suspense-style boundaries beyond the current single loading
   slot per route.
