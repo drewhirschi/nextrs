@@ -5,15 +5,20 @@
   "description": "Typesafe React Query client generated from the nextrs app's OpenAPI document.",
   "type": "module",
   "scripts": {
-    "dump": "cargo run -p site --bin dump-openapi",
+    "postinstall": "ln -sfn client/node_modules ../node_modules",
+    "dump": "NEXTRS_SKIP_BUNDLE=1 cargo run -p site --bin dump-openapi",
     "orval": "orval --config ./orval.config.ts",
     "gen": "npm run dump && npm run orval",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@tanstack/react-query": "^5.62.0"
+    "@tanstack/react-query": "^5.62.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   },
   "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
     "orval": "^7.3.0",
     "typescript": "^5.7.0"
   }

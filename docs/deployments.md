@@ -7,7 +7,7 @@ source lives. All projects are under the **`ashirsc`** Vercel team.
 
 | Vercel project | Live URL | What it is | Stack | Source | Git target |
 |---|---|---|---|---|---|
-| **`nextrs-docs`** | [nextrs-docs.vercel.app](https://nextrs-docs.vercel.app) | The docs site (this repo's `site/`) | nextrs | `drewhirschi/nextrs` · root `.` (`api/index.rs` + `site/`) | `nextrs` @ `main`, root `.` — **connected** ✅ |
+| **`nextrs-docs`** | [nextrs-docs.vercel.app](https://nextrs-docs.vercel.app) | The docs site (this repo's `site/`) | nextrs | `drewhirschi/nextrs` · root `site/` (self-contained: `api/index.rs` + `vercel.json`) | `nextrs` @ `main`, **Root Directory `site`** (+ "Include files outside root" for workspace path deps) — **connected** ✅ |
 | **`nextrs-react-todos`** | [nextrs-react-todos.vercel.app](https://nextrs-react-todos.vercel.app) | Small demo: nextrs todos. The **nextrs side of the small benchmark**. | nextrs | `examples/react-todos/` | `nextrs` @ `main`, root `examples/react-todos` |
 | **`bench-nextjs-todos`** | [bench-nextjs-todos.vercel.app](https://bench-nextjs-todos.vercel.app) | Small benchmark: Next.js todos. The **Next.js side of the small benchmark**. | Next.js 15 | `benchmarks/apps/nextjs/` | `nextrs` @ `main`, root `benchmarks/apps/nextjs` |
 | **`hhh-nextrs`** | [hhh-nextrs.vercel.app](https://hhh-nextrs.vercel.app) | Real-app demo: a production app converted to nextrs. The **nextrs side of the real-app benchmark**. | nextrs | `drewhirschi/hhh-next`, branch `nextrs`, root `.` | `hhh-next` @ `nextrs`, root `.` |

@@ -7,17 +7,36 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 
+[[bin]]
+name = "site"
+path = "src/main.rs"
+
+[[bin]]
+name = "dump-openapi"
+path = "src/bin/dump-openapi.rs"
+
+# Vercel deployment entry (serverless function). See vercel.json.
+[[bin]]
+name = "index"
+path = "api/index.rs"
+
+# `tsx` pulls in rolldown to bundle app/page.tsx (the React landing). `build`
+# is the registry + docs codegen.
 [build-dependencies]
-nextrs = { path = "../nextrs", features = ["build"] }
+nextrs = { path = "../crates/nextrs", features = ["build", "tsx"] }
 
 [dependencies]
-nextrs = { path = "../nextrs" }
+# `vercel` enables StreamingVercelLayer for the deploy entry (api/index.rs);
+# harmless for the local dev binary.
+nextrs = { path = "../crates/nextrs", features = ["vercel"] }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
+tower = "0.5"
 tower-livereload = "0.9"
+vercel_runtime = { version = "2", features = ["axum"] }
 askama = "0.15"
 tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 dotenvy = "0.15"
 http = "1"
 serde = { version = "1", features = ["derive"] }

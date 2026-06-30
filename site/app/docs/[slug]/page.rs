@@ -19,7 +19,7 @@ pub async fn render(req: http::Request<axum::body::Body>) -> String {
 
     format!(
         concat!(
-            "<article class=\"prose max-w-3xl\">",
+            "<article class=\"prose\">",
             "<h1>{title}</h1>",
             "<p class=\"lead\">{description}</p>",
             "{html}",

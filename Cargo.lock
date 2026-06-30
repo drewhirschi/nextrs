@@ -1471,23 +1471,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "nextrs-deploy"
-version = "0.1.0"
-dependencies = [
- "askama",
- "axum",
- "http",
- "nextrs",
- "serde",
- "tokio",
- "tower",
- "tracing",
- "tracing-subscriber",
- "utoipa",
- "vercel_runtime",
-]
-
-[[package]]
 name = "nextrs-macros"
 version = "0.1.2"
 dependencies = [
@@ -3167,10 +3150,12 @@ dependencies = [
  "nextrs",
  "serde",
  "tokio",
+ "tower",
  "tower-livereload",
  "tracing",
  "tracing-subscriber",
  "utoipa",
+ "vercel_runtime",
 ]
 
 [[package]]
@@ -4304,10 +4289,6 @@ name = "writeable"
 version = "0.6.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ffae5123b2d3fc086436f8834ae3ab053a283cfac8fe0a0b8eaae044768a4c4"
-
-[[package]]
-name = "xtask"
-version = "0.1.0"
 
 [[package]]
 name = "xxhash-rust"

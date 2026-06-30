@@ -1,30 +1,55 @@
-<div class="mx-auto w-full max-w-6xl px-4 py-8 flex gap-8 items-start">
-  <aside class="hidden md:block w-56 shrink-0 sticky top-4">
-    <ul class="menu bg-base-200 rounded-box w-full">
-      {% for section in sections %}
-      <li class="menu-title">{{ section.name }}</li>
+<div class="docs">
+  <aside class="docs-sidebar">
+    {% for section in sections %}
+    <div class="group">
+      <div class="group-label">{{ section.name }}</div>
       {% for doc in section.items %}
-      <li><a href="/docs/{{ doc.slug }}">{{ doc.title }}</a></li>
+      <a href="/docs/{{ doc.slug }}">{{ doc.title }}</a>
       {% endfor %}
-      {% endfor %}
-      <li class="menu-title">For LLMs</li>
-      <li><a href="/llms.txt">llms.txt</a></li>
-      <li><a href="/llms-full.txt">llms-full.txt</a></li>
-    </ul>
+    </div>
+    {% endfor %}
+    <div class="group">
+      <div class="group-label">For LLMs</div>
+      <a href="/llms.txt">llms.txt</a>
+      <a href="/llms-full.txt">llms-full.txt</a>
+    </div>
   </aside>
 
-  <div class="min-w-0 flex-1">
+  <div class="docs-main">
     {{ children|safe }}
   </div>
+
+  <nav class="docs-toc" aria-label="On this page">
+    <div class="group-label">On this page</div>
+    <div id="toc-list"></div>
+  </nav>
 </div>
 
 <script>
-  // Highlight the sidebar link for the current page. Layouts only receive
-  // child HTML, so the active state is resolved client-side.
+  // Layouts only receive child HTML, so active state + the "On this page" TOC
+  // are resolved client-side from the rendered content.
   (function () {
     var path = location.pathname.replace(/\/+$/, "");
-    document.querySelectorAll("aside .menu a").forEach(function (a) {
-      if (a.getAttribute("href") === path) a.classList.add("menu-active");
+    document.querySelectorAll(".docs-sidebar a").forEach(function (a) {
+      if (a.getAttribute("href") === path) a.classList.add("active");
     });
+
+    var prose = document.querySelector(".docs-main .prose");
+    var toc = document.getElementById("toc-list");
+    var tocWrap = document.querySelector(".docs-toc");
+    if (!prose || !toc) { if (tocWrap) tocWrap.style.display = "none"; return; }
+
+    var heads = prose.querySelectorAll("h2, h3");
+    heads.forEach(function (h) {
+      if (!h.id) {
+        h.id = h.textContent.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+      }
+      var a = document.createElement("a");
+      a.href = "#" + h.id;
+      a.textContent = h.textContent;
+      if (h.tagName === "H3") a.style.paddingLeft = "12px";
+      toc.appendChild(a);
+    });
+    if (!toc.childElementCount && tocWrap) tocWrap.style.display = "none";
   })();
 </script>

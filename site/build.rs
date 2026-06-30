@@ -13,4 +13,16 @@ fn main() {
         site_description: "A Next.js-style routing framework for Rust built on Axum and Askama.",
     })
     .expect("nextrs::docs::emit_docs failed");
+
+    // Bundle React convention files (page.tsx) into public/dist/ with rolldown.
+    // The docs site is a hybrid: the landing is React (app/page.tsx), the docs
+    // pages stay server-rendered. No-op when there are no .tsx pages.
+    nextrs::bundle::bundle_pages(&nextrs::bundle::BundleConfig {
+        app_dir: "app",
+        client_dir: "client",
+        client_alias: "@site/client",
+        public_dist: "public/dist",
+        ..Default::default()
+    })
+    .expect("nextrs::bundle::bundle_pages failed");
 }

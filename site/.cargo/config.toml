@@ -1,0 +1,16 @@
+# `cd site && cargo dev` runs the shipped watcher (cargo-nextrs-dev) against
+# this app. Install it once with `cargo install --path ../crates/cargo-nextrs-dev`
+# (or `cargo install cargo-nextrs-dev`); if `cargo dev` errors with "no such
+# command: nextrs-dev", that install is missing.
+#
+# Note: NEXTRS_SKIP_BUNDLE is intentionally NOT set here, so `cd site` dev
+# builds bundle the page.tsx landing normally. The Vercel build skips bundling
+# via `build.env` in vercel.json instead (Vercel runs no `npm install`).
+[alias]
+dev = "nextrs-dev --bin site"
+
+# Empty, but required: the vercel-rust builder runs cargo with this dir as CWD,
+# reads `config.build.target`, and crashes ("Cannot read properties of undefined
+# (reading 'target')") if a .cargo/config.toml exists without a [build] table.
+# Empty = host target.
+[build]

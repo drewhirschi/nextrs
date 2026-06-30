@@ -2,5 +2,4 @@ target/
 node_modules/
 .git/
 .vercel/
-public/
-style/tailwindcss
+site/style/tailwindcss

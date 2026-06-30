@@ -10,9 +10,9 @@ builds the full app just to start the helper. The runner builds the app once
 with `cargo build --bin <crate>`, runs the produced binary directly, and
 restarts it after relevant file changes.
 
-(This repo itself predates `cargo-nextrs-dev` and still drives dev through a
-small `xtask` workspace member; see [Distribution](#distribution). New projects
-should use `cargo-nextrs-dev`.)
+(This repo's own `site/` app uses exactly this runner — `cd site && cargo dev`
+expands to `nextrs-dev --bin site` — so the framework dogfoods the tool it ships.
+Install it from the workspace with `cargo install --path crates/cargo-nextrs-dev`.)
 
 ## Commands
 
@@ -140,17 +140,16 @@ New projects get this exact shape from `create-nextrs-app`: it scaffolds the
 `tower-livereload` debug layer, and prints `cargo install cargo-nextrs-dev` so
 `cargo dev` works out of the box.
 
-This repo itself is the legacy exception. It predates `cargo-nextrs-dev` and
-still drives dev through a small `xtask` workspace member:
+This repo's `site/` app uses the same shape — `site/.cargo/config.toml` carries
+the alias and `cd site && cargo dev` runs the watcher, identical to a scaffolded
+app:
 
 ```toml
 [alias]
-dev = "run -p xtask -- dev"
-dev-once = "run -p xtask -- dev-once"
+dev = "nextrs-dev --bin site"
 ```
 
-The `xtask` helper wraps `cargo run`, watches the same kinds of inputs plus the
-env file (honoring `NEXTRS_ENV_FILE`), and sets `NEXTRS_SKIP_BUNDLE=0` for the
-child so local TSX bundles regenerate even if deploy config sets
-`NEXTRS_SKIP_BUNDLE=1`. New projects do not need any of this; use
-`cargo-nextrs-dev`.
+(Historically this repo drove dev through a bespoke `xtask` workspace member
+because the old repo-root layout wasn't a standard single-app layout. The reorg
+that made `site/` self-contained removed `xtask` — `cargo-nextrs-dev` watches it
+directly now.)

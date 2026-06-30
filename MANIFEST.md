@@ -10,14 +10,15 @@
 
 ## Layout
 
-Cargo workspace at the repo root. The root is also a package (the Vercel deployment target).
+Cargo workspace at the repo root — a pure virtual manifest (no root package). The framework and tooling crates live under `crates/`; `site/` is a self-contained deployable app.
 
 | Member | Purpose |
 |---|---|
-| `nextrs/` | The framework crate (library). Source at `nextrs/src/{lib,conventions,discovery,router,seed,prefetch,openapi,vercel,build,docs,bundle}.rs`. `vercel`, `build` and `docs` (both gated by the `build` feature), and `bundle` (gated by the `tsx` feature) are feature-gated. |
-| `site/` | The consumer crate — currently the framework's own demo / docs site. Run with `cargo dev` → http://localhost:3000. |
-| (root package) | `nextrs-deploy` — single binary at `api/index.rs` that wraps the framework's axum router for `vercel_runtime::run`. |
-| `xtask/` | Repo-local dev watcher. Starts `cargo run -p site`, watches framework and demo app source paths, and restarts the child process on changes. |
+| `crates/nextrs/` | The framework crate (library). Source at `crates/nextrs/src/{lib,conventions,discovery,router,seed,prefetch,openapi,vercel,build,docs,bundle}.rs`. `vercel`, `build` and `docs` (both gated by the `build` feature), and `bundle` (gated by the `tsx` feature) are feature-gated. |
+| `crates/nextrs-macros/` | Proc-macro crate paired with `nextrs`. |
+| `crates/cargo-nextrs-dev/` | The `cargo nextrs-dev` watcher shipped to apps (and used by `site`). |
+| `crates/create-nextrs-app/` | The `create-nextrs-app` React-first scaffolder. |
+| `site/` | Self-contained docs/demo app: dev binary (`src/main.rs`), Vercel entry (`api/index.rs`, the `index` bin), `build.rs`, `vercel.json`, `style/`, `public/`. `cd site && cargo dev` → http://localhost:3000. The Vercel deploy target (project Root Directory = `site`). |
 
 The framework is a normal Rust library. The user writes only convention files (`app/.../{page,layout,loading}.{rs,html}`); `nextrs::build` (gated by the `build` feature, depended on from `[build-dependencies]`) runs at compile time via a tiny `build.rs` and emits the registry into `$OUT_DIR/nextrs_routes.rs`. The user's `main.rs` (or `api/index.rs`) does `include!(concat!(env!("OUT_DIR"), "/nextrs_routes.rs"))` and calls `generated_registry()`. No `#[path]` mod declarations or `RouteEntry` constructors by hand.
 
@@ -42,13 +43,13 @@ Middleware files export `pub async fn handle(req) -> nextrs::conventions::Middle
 
 ## Static assets
 
-`site/public/` (colocated with `site/app/`) holds files served at root URL paths. The workspace-root `build.rs` mirrors them into `public/` at the workspace root via `nextrs::build::sync_public_dir`, so Vercel's CDN picks them up (verified `x-vercel-cache: HIT`, ~145ms warm TTFB). The workspace-root mirror is gitignored — generated artifact. Locally, `nextrs::router::build_router_with_public(registry, dir)` wires `tower-http::services::ServeDir` as a router fallback so the same paths resolve the same way.
+`site/public/` (colocated with `site/app/`) holds files served at root URL paths, plus the prebuilt `public/dist/` React bundle. Because Vercel's Root Directory is `site/`, its CDN serves `site/public/` directly — no mirror step (verified `x-vercel-cache: HIT`, ~145ms warm TTFB). Locally, `nextrs::router::build_router_with_public(registry, dir)` wires `tower-http::services::ServeDir` as a router fallback so the same paths resolve the same way.
 
 ## Vercel deployment
 
-`nextrs::vercel::StreamingVercelLayer` (feature-gated, opt in with `nextrs = { features = ["vercel"] }`) is a drop-in replacement for `vercel_runtime::axum::VercelLayer`. The upstream layer only treats responses as streaming when content-type is `text/event-stream` or `application/json`; ours unconditionally streams the response body so HTML works. See `nextrs/src/vercel.rs` and `docs/streaming.md` for the full story.
+`nextrs::vercel::StreamingVercelLayer` (feature-gated, opt in with `nextrs = { features = ["vercel"] }`) is a drop-in replacement for `vercel_runtime::axum::VercelLayer`. The upstream layer only treats responses as streaming when content-type is `text/event-stream` or `application/json`; ours unconditionally streams the response body so HTML works. See `crates/nextrs/src/vercel.rs` and `docs/streaming.md` for the full story.
 
-`api/index.rs` is the deployed binary; `vercel.json` has a single catch-all rewrite to `/api/index`. Static files in `public/` take precedence over the rewrite (Vercel matches static files first).
+`site/api/index.rs` is the deployed binary (the `index` bin of the `site` package); `site/vercel.json` has a single catch-all rewrite to `/api/index`. Static files in `site/public/` take precedence over the rewrite (Vercel matches static files first).
 
 ## Where to look
 
@@ -62,12 +63,11 @@ Middleware files export `pub async fn handle(req) -> nextrs::conventions::Middle
 | Navigation prefetch | `nextrs/src/prefetch.rs` — `PrefetchConfig`, `SpeculationMode`, `Eagerness`; injects a `<script type="speculationrules">` for browser-native prefetch/prerender (no client router) |
 | OpenAPI serving | `nextrs/src/openapi.rs` — `spec_router(generated_openapi())` serves the codegen-built OpenAPI document at `/openapi.json` (consumed by the typed client) |
 | Docs pipeline | `nextrs/src/docs.rs` (feature `build`) — `emit_docs(DocsConfig)` renders markdown once into both the docs-UI slices and the `llms.txt` / `llms-full.txt` files |
-| Vercel adapter | `nextrs/src/vercel.rs` — `StreamingVercelLayer` (feature-gated by `vercel`). Drop-in replacement for `vercel_runtime::axum::VercelLayer` that doesn't buffer text/html |
+| Vercel adapter | `crates/nextrs/src/vercel.rs` — `StreamingVercelLayer` (feature-gated by `vercel`). Drop-in replacement for `vercel_runtime::axum::VercelLayer` that doesn't buffer text/html |
 | Progressive demo | `site/app/{simple, with-loading, with-layout}/` — three routes that progressively add `loading.{rs,html}` and `layout.{rs,html}`. The home page (`site/app/page.html`) is an overview with links and a per-route file listing |
-| Codegen | `nextrs/src/build.rs` (feature `build`) — `emit_registry(app_dir, _, out_name)` walks `discover_routes` output and emits Rust source: `#[path]` mods for `.rs` slots, `static_*(include_str!(...))` for `.html` slots, and a `generated_registry()` function. Both paths emitted as absolute (necessary because `#[path]` inside an `include!`-d file resolves relative to the included file's location, not the includer). |
-| Local site wiring | `site/src/main.rs` (33 lines) and `site/build.rs` — `include!` the generated file, call `generated_registry()` |
-| Vercel deploy wiring | `api/index.rs` (22 lines) and root `build.rs` — same generated file, wrapped with `StreamingVercelLayer` for `vercel_runtime::run` |
-| Askama configs | `site/askama.toml` (dirs = ["app"]); `askama.toml` at root (dirs = ["site/app"]) for the deploy binary |
+| Codegen | `crates/nextrs/src/build.rs` (feature `build`) — `emit_registry(app_dir, _, out_name)` walks `discover_routes` output and emits Rust source: `#[path]` mods for `.rs` slots, `static_*(include_str!(...))` for `.html` slots, and a `generated_registry()` function. Both paths emitted as absolute (necessary because `#[path]` inside an `include!`-d file resolves relative to the included file's location, not the includer). |
+| Site wiring | `site/build.rs` emits the generated file once; both `site/src/main.rs` (dev bin) and `site/api/index.rs` (Vercel `index` bin) `include!` it and call `generated_registry()`. The Vercel bin wraps it with `StreamingVercelLayer` for `vercel_runtime::run`. |
+| Askama config | `site/askama.toml` (dirs = ["app"]) — shared by both bins |
 | Streaming reference doc | `docs/streaming.md` — the model, layout-shell split, local vs Vercel, verification |
 | Vercel deploy plan & results | `docs/vercel-deploy.md` — research findings, latency measurements, the VercelLayer bug story |
 

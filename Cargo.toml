@@ -1,54 +1,20 @@
 [workspace]
 resolver = "3"
 members = [
-    "nextrs",
-    "nextrs-macros",
+    "crates/nextrs",
+    "crates/nextrs-macros",
+    "crates/cargo-nextrs-dev",
+    "crates/create-nextrs-app",
     "site",
     "examples/react-todos",
-    "xtask",
-    "create-nextrs-app",
-    "cargo-nextrs-dev",
 ]
-
-# The workspace root is also a package — it's the Vercel deployment target.
-# Its single binary (api/index.rs) wraps the framework's axum router for
-# vercel_runtime::run. The route registry is generated at build time by
-# nextrs::build (see build.rs) from a scan of site/app/.
-[package]
-name = "nextrs-deploy"
-version = "0.1.0"
-edition = "2024"
-rust-version = "1.85"
-publish = false
-
-[[bin]]
-name = "index"
-path = "api/index.rs"
-
-[build-dependencies]
-nextrs = { path = "nextrs", features = ["build"] }
-
-[dependencies]
-nextrs = { path = "nextrs", features = ["vercel"] }
-vercel_runtime = { version = "2", features = ["axum"] }
-axum = "0.8"
-tokio = { version = "1", features = ["full"] }
-tower = "0.5"
-askama = "0.15"
-http = "1"
-tracing = "0.1"
-tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-serde = { version = "1", features = ["derive"] }
-# Needed because api/index.rs compiles the same generated registry (and the
-# route.rs handlers) as the site binary — see site/Cargo.toml for why.
-utoipa = "5"
 
 # examples/react-todos depends on the *published* nextrs (so it builds and
 # deploys standalone from its own dir). Inside this workspace, redirect that to
 # the local source so framework changes are picked up without a release.
 [patch.crates-io]
-nextrs = { path = "nextrs" }
-nextrs-macros = { path = "nextrs-macros" }
+nextrs = { path = "crates/nextrs" }
+nextrs-macros = { path = "crates/nextrs-macros" }
 
 [profile.dev]
 debug = 0

@@ -1,8 +1,0 @@
-# Pin a stable toolchain for the Vercel build. The workspace is edition 2024
-# (needs rustc >= 1.85), but Vercel's vercel-rust image ships an older default
-# rustc, so the deploy fails without a pin. The docs site is pure Rust (no
-# rolldown/oxc), so it only needs edition-2024 support; 1.95.0 is the toolchain
-# this repo is developed and verified on. (examples/react-todos pins 1.96.0
-# separately because its .tsx bundler pulls oxc, which needs >= 1.94.)
-[toolchain]
-channel = "1.95.0"

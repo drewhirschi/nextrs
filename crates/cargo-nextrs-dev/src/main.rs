@@ -288,12 +288,41 @@ impl IgnoreFilter {
 }
 
 fn target_binary(root: &Path, bin_name: &str) -> PathBuf {
+    // CARGO_TARGET_DIR wins if set. Otherwise ask Cargo where the target dir is
+    // — for a workspace member (e.g. this repo's `site/`) the build output lands
+    // in the *workspace-root* target/, not `<app>/target/`, so a naive
+    // `root/target` guess points at a binary that never exists. Fall back to
+    // `root/target` only if `cargo metadata` is unavailable.
     let target_dir = env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
+        .or_else(|| metadata_target_dir(root))
         .unwrap_or_else(|| root.join("target"));
     target_dir
         .join("debug")
         .join(format!("{bin_name}{}", env::consts::EXE_SUFFIX))
+}
+
+/// Read `target_directory` from `cargo metadata` (run in `root`). Returns `None`
+/// if cargo can't be invoked or the field is missing, so the caller can fall
+/// back to a sensible default.
+fn metadata_target_dir(root: &Path) -> Option<PathBuf> {
+    let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
+    let output = Command::new(cargo)
+        .args(["metadata", "--no-deps", "--format-version", "1"])
+        .current_dir(root)
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let json = String::from_utf8(output.stdout).ok()?;
+    // Minimal extraction — avoids a JSON dependency for one stable string field.
+    let key = "\"target_directory\":\"";
+    let start = json.find(key)? + key.len();
+    let rest = &json[start..];
+    let end = rest.find('"')?;
+    Some(PathBuf::from(rest[..end].replace("\\\\", "\\")))
 }
 
 fn watch_paths(

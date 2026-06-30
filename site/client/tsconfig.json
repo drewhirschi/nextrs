@@ -9,7 +9,10 @@
     "noEmit": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true
+    "forceConsistentCasingInFileNames": true,
+    "paths": {
+      "@site/client": ["./src/index.ts"]
+    }
   },
-  "include": ["src", "orval.config.ts"]
+  "include": ["src", "orval.config.ts", "../app/**/*.tsx"]
 }

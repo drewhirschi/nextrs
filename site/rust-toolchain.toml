@@ -1,0 +1,7 @@
+# Pin a stable toolchain for the Vercel build. The site is edition 2024 (needs
+# rustc >= 1.85) and uses the `tsx` page.tsx bundler (rolldown -> oxc, which
+# needs >= 1.94), but Vercel's vercel-rust image ships an older default rustc,
+# so the deploy fails without a pin. 1.96.0 is the toolchain this app is
+# developed and verified on (matches examples/react-todos).
+[toolchain]
+channel = "1.96.0"

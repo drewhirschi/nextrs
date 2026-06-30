@@ -1,5 +1,9 @@
 # Serverful deployment of the nextrs site: one static-ish binary + public/.
-# See site/content/docs/deploy-docker.md for the guide this backs.
+# See content/docs/deploy-docker.md for the guide this backs.
+#
+# Build context is the REPO ROOT, not site/ — `site` is a workspace member and
+# its `../crates/nextrs` path deps live outside this dir. Build from the root:
+#   docker build -f site/Dockerfile -t nextrs-site .
 
 FROM rust:1-bookworm AS builder
 WORKDIR /build

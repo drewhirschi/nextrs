@@ -3,13 +3,17 @@ target/
 .env
 .env*.local
 node_modules/
-style/tailwindcss
+# `npm install` in site/client symlinks site/node_modules -> client/node_modules
+# (postinstall) so rolldown resolves bare imports from app/*.tsx; not tracked.
+site/node_modules
+site/style/tailwindcss
+# Local screenshot/verification scratch (Playwright MCP).
+.playwright-mcp/
+/landing.png
+/docs.png
 .claude/*
 !.claude/skills/
-# Generated at build time by nextrs::build::sync_public_dir — mirrors
-# site/public/ to the workspace root so Vercel's CDN picks it up.
-/public/
-# Generated at build time by nextrs::bundle::bundle_pages from page.tsx files.
-# (react-todos ships its prebuilt bundle so it can deploy without a build-time
-# bundler — see its rust-toolchain note and NEXTRS_SKIP_BUNDLE.)
-site/public/dist/
+# site/public/dist/ (the page.tsx bundle from nextrs::bundle::bundle_pages) is
+# intentionally committed: Vercel deploys the site without a build-time bundler
+# (NEXTRS_SKIP_BUNDLE=1 in site/vercel.json), so the prebuilt bundle must be in
+# git — same pattern as examples/react-todos.

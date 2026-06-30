@@ -1,10 +1,11 @@
 // Vercel deployment entry point. The route registry is generated at build
-// time by nextrs::build (see build.rs at the workspace root) from a scan of
-// site/app/. Add a file under site/app/, save, redeploy.
+// time by nextrs::build (see ../build.rs) from a scan of app/. Add a file
+// under site/app/, save, redeploy. This bin (`index`) and the dev bin (`site`,
+// src/main.rs) both `include!` the same generated registry.
 //
 // `StreamingVercelLayer` is a drop-in replacement for the upstream
 // `vercel_runtime::axum::VercelLayer` that doesn't buffer text/html
-// responses — see nextrs/src/vercel.rs for why.
+// responses — see ../../crates/nextrs/src/vercel.rs for why.
 
 use nextrs::vercel::StreamingVercelLayer;
 use tower::ServiceBuilder;

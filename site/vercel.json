@@ -1,5 +1,10 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "build": {
+    "env": {
+      "NEXTRS_SKIP_BUNDLE": "1"
+    }
+  },
   "functions": {
     "api/index.rs": { "runtime": "vercel-rust@4.0.11" }
   },

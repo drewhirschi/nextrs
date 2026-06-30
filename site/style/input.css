@@ -3,12 +3,12 @@
 /* Tell Tailwind where to scan for class usage. Paths are relative to this
    input.css. We scan the site's templates and Rust handlers, plus the api
    entry point — anywhere a Tailwind/DaisyUI class might appear. */
-@source "../site/app/**/*.html";
-@source "../site/app/**/*.rs";
+@source "../app/**/*.html";
+@source "../app/**/*.rs";
 @source "../api/**/*.rs";
 /* Docs markdown can embed raw HTML (e.g. the stat band on the performance
    page) — scan it so those classes compile. */
-@source "../site/content/**/*.md";
+@source "../content/**/*.md";
 
 /* Exclude the build tooling from being scanned. */
 @source not "./tailwindcss";
