@@ -682,7 +682,7 @@ fn tsx_loading_shell(loading_route: &DiscoveredRoute) -> String {
 }
 
 fn tsx_document_head() -> &'static str {
-    r#"<link rel="stylesheet" href="/style.css" />"#
+    r#"<link rel="stylesheet" href="/style.css?v=20260630" />"#
 }
 
 fn client_summary_text(routes: &[DiscoveredRoute]) -> Option<String> {
