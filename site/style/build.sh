@@ -27,3 +27,7 @@ fi
 
 ./tailwindcss -i input.css -o ../public/style.css --minify "$@"
 echo "wrote site/public/style.css ($(wc -c < ../public/style.css) bytes)"
+
+if [[ " $* " != *" --watch "* ]]; then
+  bash ./check.sh ../public/style.css
+fi

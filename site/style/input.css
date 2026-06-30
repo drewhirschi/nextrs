@@ -34,11 +34,13 @@
   --ink: #eef3f7;
   --muted: #a7b0bb;
   --line: rgba(255, 255, 255, 0.11);
-  --accent: #7ee787;
+  --accent: #ff5a5f;
   --accent-2: #ffb86b;
   --accent-3: #7dd3fc;
   --r-sm: 6px;
   --r-md: 8px;
+  --color-primary: var(--accent);
+  --color-primary-content: #180507;
 }
 
 html {
@@ -51,7 +53,7 @@ body {
   margin: 0;
   min-height: 100vh;
   background:
-    linear-gradient(180deg, rgba(126, 231, 135, 0.07), transparent 28rem),
+    linear-gradient(180deg, rgba(255, 90, 95, 0.08), transparent 28rem),
     var(--bg);
 }
 
@@ -342,11 +344,177 @@ pre {
   color: var(--ink);
 }
 
+.docs {
+  width: min(1280px, calc(100% - 32px));
+  margin-inline: auto;
+  display: grid;
+  grid-template-columns: 220px minmax(0, 1fr) 190px;
+  gap: clamp(24px, 4vw, 48px);
+  align-items: start;
+  padding-block: clamp(32px, 5vw, 64px);
+}
+
+.docs-sidebar,
+.docs-toc {
+  position: sticky;
+  top: 88px;
+  max-height: calc(100vh - 112px);
+  overflow-y: auto;
+}
+
+.docs-sidebar {
+  padding-right: 10px;
+}
+
+.docs-toc {
+  padding-left: 10px;
+}
+
+.group + .group {
+  margin-top: 28px;
+}
+
+.group-label {
+  margin-bottom: 10px;
+  color: var(--accent);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.docs-sidebar a,
+.docs-toc a {
+  display: block;
+  border-radius: var(--r-sm);
+  color: var(--muted);
+  font-size: 0.9rem;
+  line-height: 1.35;
+  text-decoration: none;
+}
+
+.docs-sidebar a {
+  padding: 8px 10px;
+}
+
+.docs-toc a {
+  padding: 6px 0;
+  font-size: 0.82rem;
+}
+
+.docs-sidebar a:hover,
+.docs-sidebar a.active,
+.docs-toc a:hover {
+  color: var(--ink);
+}
+
+.docs-sidebar a.active {
+  background: rgba(255, 90, 95, 0.1);
+}
+
+.docs-main {
+  min-width: 0;
+}
+
+.docs-main .prose,
+header.prose {
+  max-width: none;
+}
+
+.docs-main .prose {
+  color: var(--muted);
+}
+
+.docs-main .prose h1,
+.docs-main .prose h2,
+.docs-main .prose h3,
+.doc-index-section h2,
+header.prose h1 {
+  color: var(--ink);
+  font-family: "Cabinet Grotesk", "Geist", sans-serif;
+  letter-spacing: 0;
+}
+
+.docs-main .prose h1,
+header.prose h1 {
+  margin: 0 0 16px;
+  font-size: clamp(3rem, 7vw, 5.75rem);
+  font-weight: 800;
+  line-height: 0.92;
+}
+
+.docs-main .prose h2 {
+  margin-top: 56px;
+  font-size: clamp(1.8rem, 3vw, 2.4rem);
+  font-weight: 800;
+  line-height: 1.05;
+}
+
+.docs-main .prose h3 {
+  margin-top: 34px;
+  font-size: 1.25rem;
+  font-weight: 800;
+}
+
+.docs-main .prose a,
+header.prose a {
+  color: var(--ink);
+  text-decoration-color: rgba(255, 90, 95, 0.7);
+  text-decoration-thickness: 2px;
+  text-underline-offset: 3px;
+}
+
+.docs-main .prose pre {
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--panel);
+}
+
+.docs-main .prose code:not(pre code) {
+  border-color: var(--line);
+  background: var(--raised);
+  color: var(--ink);
+}
+
+.lead,
+.docs-main .prose .lead {
+  color: var(--muted);
+  font-size: clamp(1.05rem, 1.7vw, 1.25rem);
+  line-height: 1.65;
+}
+
+.doc-index-section {
+  margin-top: clamp(40px, 6vw, 72px);
+}
+
+.doc-index-section h2 {
+  margin: 0 0 16px;
+  font-size: clamp(1.8rem, 3vw, 2.5rem);
+  font-weight: 800;
+}
+
+.doc-index-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.doc-index-grid .card {
+  display: block;
+  min-height: 170px;
+  color: inherit;
+  text-decoration: none;
+}
+
+.doc-index-grid .card h3 {
+  margin: 0 0 10px;
+}
+
 .cta-band {
   border: 1px solid var(--line);
   border-radius: var(--r-md);
   background:
-    linear-gradient(135deg, rgba(126, 231, 135, 0.12), rgba(125, 211, 252, 0.06)),
+    linear-gradient(135deg, rgba(255, 90, 95, 0.14), rgba(125, 211, 252, 0.06)),
     var(--raised);
   padding: clamp(28px, 6vw, 56px);
 }
@@ -361,8 +529,20 @@ pre {
   }
 
   .hero-grid,
-  .cards {
+  .cards,
+  .docs,
+  .doc-index-grid {
     grid-template-columns: 1fr;
+  }
+
+  .docs-sidebar,
+  .docs-toc {
+    position: static;
+    max-height: none;
+  }
+
+  .docs-sidebar {
+    display: none;
   }
 
   .hero h1 {
