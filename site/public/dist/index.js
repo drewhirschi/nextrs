@@ -17540,12 +17540,14 @@ function Home() {
 }
 
 //#endregion
-//#region ../../target/debug/build/site-83e7113ea5434171/out/nextrs_tsx/index.tsx
+//#region ../../target/debug/build/site-51907fcfabe762db/out/nextrs_tsx/index.tsx
 const qc = new QueryClient({ defaultOptions: { queries: { staleTime: 3e4 } } });
 seedQueryClient(qc);
+const paramsEl = document.getElementById("__nx_params__");
+const params = paramsEl?.textContent ? JSON.parse(paramsEl.textContent) : {};
 (0, import_client.createRoot)(document.getElementById("__nx_root__")).render(/* @__PURE__ */ (0, import_jsx_runtime.jsx)(QueryClientProvider, {
 	client: qc,
-	children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Home, {})
+	children: /* @__PURE__ */ (0, import_jsx_runtime.jsx)(Home, { params })
 }));
 
 //#endregion
