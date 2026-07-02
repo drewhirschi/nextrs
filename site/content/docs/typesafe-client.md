@@ -107,6 +107,22 @@ export const App = () => (
 
 The generated client uses the platform `fetch` (no HTTP-library dependency) and same-origin URLs — the nextrs app serves both the pages and the API, so there's no CORS story to manage.
 
+## Or skip the hooks: plain typed clients
+
+Every endpoint also gets a framework-free typed function alongside its hook — same types, no React Query, no component context required. Reach for these in event handlers, scripts, and tests instead of raw `fetch` (which re-duplicates route strings, request shapes, and response parsing by hand):
+
+```ts
+import { getSources, updateSource } from "@site/client";
+
+// In an event handler — no hook, still fully typed end to end.
+async function archive(id: number) {
+  const source = await getSources();                       // GET, typed response
+  await updateSource(id, { status: "archived" });          // PATCH, typed body
+}
+```
+
+Both flavors come out of the same `npm run gen` pass, and the generated barrel exports them all — new endpoints are importable immediately, with no re-export list to maintain.
+
 ## Why OpenAPI
 
 Direct Rust→TS type generation (`ts-rs`, `specta`) only produces *types* — you'd still hand-write the fetch layer and hooks. Going through OpenAPI lets orval generate the entire client (hooks, types, fetchers), keeps the door open to Swagger UI and non-TypeScript consumers, and the file-convention discovery removes utoipa's usual hand-maintained path list.
