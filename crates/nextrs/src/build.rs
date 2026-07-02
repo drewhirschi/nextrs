@@ -218,9 +218,11 @@ pub fn emit_registry(
 /// (`api_todos::TodosFilter`). Crate-root paths resolve because both the
 /// registry and props.rs land as crate-root modules in every consumer.
 ///
-/// Eligibility mirrors the macro: an annotated `get` with zero args or one
-/// `Query<T>` extractor, returning `Json<...>`. Names come from the URL, not
-/// `operation_id`: `/api/todos` → `get_api_todos` / `api_todos`.
+/// Eligibility mirrors the macro: an annotated `get` returning `Json<...>`
+/// whose args are at most one `Path<...>` and one `Query<T>` extractor (in
+/// any order, including none). Names come from the URL, not `operation_id`:
+/// `/api/todos` → `get_api_todos` / `api_todos`, `/api/sources/{id}/pages` →
+/// `get_api_sources_by_id_pages`.
 pub fn emit_seeds(app_dir: impl AsRef<Path>, out_name: &str) -> std::io::Result<()> {
     let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set in build.rs"),
@@ -292,9 +294,10 @@ fn url_snake(url: &str) -> String {
 }
 
 /// Textual mirror of the macro's seed-companion eligibility: `get`'s args are
-/// empty or a single top-level `Query<...>` extractor, and it returns
-/// `Json<...>`. Kept deliberately simple — a false positive means a clear
-/// "cannot find __nextrs_seed_get" error at the `pub use`, not silent misrouting.
+/// empty, or at most one `Path<...>` and one `Query<...>` extractor, and it
+/// returns `Json<...>`. Kept deliberately simple — a false positive means a
+/// clear "cannot find __nextrs_seed_get" error at the `pub use`, not silent
+/// misrouting.
 fn get_is_seed_eligible(source: &str) -> bool {
     let Some(start) = source.find("pub async fn get") else {
         return false;
@@ -343,7 +346,17 @@ fn get_is_seed_eligible(source: &str) -> bool {
         }
         count
     };
-    args.trim().is_empty() || (args.contains("Query") && top_level_commas == 0)
+    if args.trim().is_empty() {
+        return true;
+    }
+    // Every top-level arg must be a Path or Query extractor, at most one of
+    // each — the shapes the macro's seed companion handles.
+    let extractorish = args.contains("Query") || args.contains("Path");
+    let arg_count = top_level_commas + 1;
+    extractorish
+        && arg_count <= 2
+        && (arg_count == 1
+            || (args.matches("Query").count() >= 1 && args.matches("Path").count() >= 1))
 }
 
 /// URL path → bundle entry name for `page.tsx` routes. `/` → `index`,
@@ -1967,6 +1980,21 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
         // Raw request handler: not eligible.
         assert!(!get_is_seed_eligible(
             "pub async fn get(req: Request<Body>) -> Json<X> { todo!() }"
+        ));
+        // Path extractor: eligible.
+        assert!(get_is_seed_eligible(
+            "pub async fn get(Path(id): Path<i64>) -> Json<Vec<Page>> { todo!() }"
+        ));
+        // Path + Query, either order: eligible.
+        assert!(get_is_seed_eligible(
+            "pub async fn get(Path(id): Path<i64>, Query(f): Query<F>) -> Json<X> { todo!() }"
+        ));
+        assert!(get_is_seed_eligible(
+            "pub async fn get(Query(f): Query<F>, Path(id): Path<i64>) -> Json<X> { todo!() }"
+        ));
+        // Path + non-extractor second arg: not eligible.
+        assert!(!get_is_seed_eligible(
+            "pub async fn get(Path(id): Path<i64>, headers: HeaderMap) -> Json<X> { todo!() }"
         ));
     }
 

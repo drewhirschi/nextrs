@@ -85,10 +85,12 @@ pub fn api(args: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Emit `__nextrs_seed_get` next to an eligible GET handler.
 ///
-/// Eligible: zero arguments, or exactly one `Query<T>` extractor, and a
-/// `Json<...>` return type — the shapes whose responses the generated client
-/// caches under a query key. Anything else (other extractors, other returns)
-/// gets no companion and routes normally; it just can't be seeded.
+/// Eligible: a `Json<...>` return type and at most one `Path<...>` plus one
+/// `Query<T>` extractor, in any order (including none) — the shapes whose
+/// responses the generated client caches under a query key. `Path` values
+/// substitute into the URL's `{seg}` slots so the key matches the client's
+/// substituted-URL form. Anything else (other extractors, other returns) gets
+/// no companion and routes normally; it just can't be seeded.
 ///
 /// The companion calls the real handler, so the seeded data is byte-identical
 /// to a client refetch. `_ext` is accepted-but-unused: a stable call shape for
@@ -109,48 +111,118 @@ fn seed_companion(item: proc_macro2::TokenStream, url: &str) -> Option<proc_macr
         return None;
     }
 
-    let inputs: Vec<_> = func.sig.inputs.iter().collect();
-    match inputs.as_slice() {
-        // pub async fn get() -> Json<T>
-        [] => Some(quote! {
-            #[doc(hidden)]
-            pub async fn __nextrs_seed_get(
-                _ext: &::nextrs::http::Extensions,
-            ) -> ::nextrs::SeedEntry {
-                let __resp = #fn_name().await;
-                ::nextrs::SeedEntry {
-                    key: ::nextrs::seed_key(#url, None),
-                    data: ::nextrs::serde_json::to_value(&__resp.0)
-                        .expect("nextrs seed: response body must serialize"),
+    // Collect the extractors: at most one Path and one Query, in any order.
+    // Anything else disqualifies the handler.
+    let mut path_ty: Option<&syn::Type> = None;
+    let mut query_ty: Option<&syn::Type> = None;
+    let mut call_order: Vec<&'static str> = Vec::new();
+    for arg in &func.sig.inputs {
+        let syn::FnArg::Typed(arg) = arg else {
+            return None;
+        };
+        match last_path_ident(&arg.ty)?.as_str() {
+            "Path" if path_ty.is_none() => {
+                path_ty = Some(first_generic_arg(&arg.ty)?);
+                call_order.push("path");
+            }
+            "Query" if query_ty.is_none() => {
+                query_ty = Some(first_generic_arg(&arg.ty)?);
+                call_order.push("query");
+            }
+            _ => return None,
+        }
+    }
+
+    // Companion signature: path params first, then the query struct, then the
+    // extensions slot — regardless of the handler's declared order (the call
+    // below preserves that order).
+    let mut sig_args = quote! {};
+    // How the seeded entry resolves its URL: with a Path extractor the values
+    // substitute into the `{seg}` slots, matching the generated client's key
+    // (the *substituted* URL); otherwise the literal URL.
+    let url_expr;
+    if let Some(pty) = path_ty {
+        let seg_count = url.matches('{').count();
+        let fmt = url_format_string(url);
+        let args: Vec<proc_macro2::TokenStream> = match pty {
+            syn::Type::Tuple(tuple) => {
+                if tuple.elems.len() != seg_count {
+                    return None; // shape mismatch — don't guess
                 }
+                (0..tuple.elems.len())
+                    .map(|i| {
+                        let idx = syn::Index::from(i);
+                        quote! { &path.#idx }
+                    })
+                    .collect()
             }
-        }),
-        // pub async fn get(Query(f): Query<T>) -> Json<U>
-        [syn::FnArg::Typed(arg)] => {
-            let query_ty = &arg.ty;
-            if last_path_ident(query_ty)? != "Query" {
-                return None;
+            _ => {
+                if seg_count != 1 {
+                    return None;
+                }
+                vec![quote! { &path }]
             }
-            let params_ty = first_generic_arg(query_ty)?;
-            Some(quote! {
-                #[doc(hidden)]
-                pub async fn __nextrs_seed_get(
-                    params: #params_ty,
-                    _ext: &::nextrs::http::Extensions,
-                ) -> ::nextrs::SeedEntry {
+        };
+        sig_args.extend(quote! { path: #pty, });
+        url_expr = quote! { format!(#fmt, #(#args),*) };
+    } else {
+        url_expr = quote! { #url.to_string() };
+    }
+
+    let (params_stmt, key_params) = match query_ty {
+        Some(qty) => {
+            sig_args.extend(quote! { params: #qty, });
+            (
+                quote! {
                     let __params = ::nextrs::serde_json::to_value(&params)
                         .expect("nextrs seed: params must serialize");
-                    let __resp = #fn_name(::nextrs::axum::extract::Query(params)).await;
-                    ::nextrs::SeedEntry {
-                        key: ::nextrs::seed_key(#url, Some(__params)),
-                        data: ::nextrs::serde_json::to_value(&__resp.0)
-                            .expect("nextrs seed: response body must serialize"),
-                    }
-                }
-            })
+                },
+                quote! { Some(__params) },
+            )
         }
-        _ => None,
+        None => (quote! {}, quote! { None }),
+    };
+
+    let call_args = call_order.iter().map(|which| match *which {
+        "path" => quote! { ::nextrs::axum::extract::Path(path) },
+        _ => quote! { ::nextrs::axum::extract::Query(params) },
+    });
+
+    Some(quote! {
+        #[doc(hidden)]
+        pub async fn __nextrs_seed_get(
+            #sig_args
+            _ext: &::nextrs::http::Extensions,
+        ) -> ::nextrs::SeedEntry {
+            let __url = #url_expr;
+            #params_stmt
+            let __resp = #fn_name(#(#call_args),*).await;
+            ::nextrs::SeedEntry {
+                key: ::nextrs::seed_key(&__url, #key_params),
+                data: ::nextrs::serde_json::to_value(&__resp.0)
+                    .expect("nextrs seed: response body must serialize"),
+            }
+        }
+    })
+}
+
+/// `/api/sources/{id}/pages` → `"/api/sources/{}/pages"` — the `format!`
+/// template that substitutes path values into their `{seg}` slots.
+fn url_format_string(url: &str) -> String {
+    let mut out = String::with_capacity(url.len());
+    let mut in_seg = false;
+    for c in url.chars() {
+        match c {
+            '{' => {
+                in_seg = true;
+                out.push_str("{}");
+            }
+            '}' => in_seg = false,
+            _ if in_seg => {}
+            _ => out.push(c),
+        }
     }
+    out
 }
 
 /// Derive the utoipa `params(...)` list from the handler's extractors.
@@ -479,6 +551,64 @@ mod tests {
         let c = seed_companion(item, "/api/ping").unwrap().to_string();
         assert!(c.contains("__nextrs_seed_get"), "{}", c);
         assert!(c.contains("None"), "{}", c);
+    }
+
+    #[test]
+    fn seed_companion_for_scalar_path_get() {
+        let item: proc_macro2::TokenStream =
+            "pub async fn get(Path(id): Path<i64>) -> Json<Vec<Page>> { todo!() }"
+                .parse()
+                .unwrap();
+        let c = seed_companion(item, "/api/sources/{id}/pages")
+            .unwrap()
+            .to_string();
+        assert!(c.contains("__nextrs_seed_get"), "{}", c);
+        assert!(c.contains("path : i64"), "{}", c);
+        // Key uses the substituted URL, like the generated client.
+        assert!(c.contains(r#""/api/sources/{}/pages""#), "{}", c);
+        assert!(c.contains("None"), "{}", c);
+    }
+
+    #[test]
+    fn seed_companion_for_tuple_path_get() {
+        let item: proc_macro2::TokenStream =
+            "pub async fn get(Path((a, b)): Path<(i64, i64)>) -> Json<X> { todo!() }"
+                .parse()
+                .unwrap();
+        let c = seed_companion(item, "/api/sources/{id}/regions/{rid}")
+            .unwrap()
+            .to_string();
+        assert!(c.contains(r#""/api/sources/{}/regions/{}""#), "{}", c);
+        assert!(c.contains("path . 0"), "{}", c);
+        assert!(c.contains("path . 1"), "{}", c);
+    }
+
+    #[test]
+    fn seed_companion_for_path_and_query_get() {
+        let item: proc_macro2::TokenStream =
+            "pub async fn get(Path(id): Path<i64>, Query(f): Query<F>) -> Json<X> { todo!() }"
+                .parse()
+                .unwrap();
+        let c = seed_companion(item, "/api/sources/{id}/pages")
+            .unwrap()
+            .to_string();
+        assert!(c.contains("path : i64"), "{}", c);
+        assert!(c.contains("params : F"), "{}", c);
+        assert!(c.contains("Some (__params)"), "{}", c);
+        // The handler call preserves the declared extractor order.
+        let path_call = c.find("Path (path)").unwrap();
+        let query_call = c.find("Query (params)").unwrap();
+        assert!(path_call < query_call, "{}", c);
+    }
+
+    #[test]
+    fn seed_companion_path_shape_mismatch_is_ineligible() {
+        // One scalar Path arg, two URL segments.
+        let item: proc_macro2::TokenStream =
+            "pub async fn get(Path(id): Path<i64>) -> Json<X> { todo!() }"
+                .parse()
+                .unwrap();
+        assert!(seed_companion(item, "/a/{x}/b/{y}").is_none());
     }
 
     #[test]
