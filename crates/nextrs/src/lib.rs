@@ -1,6 +1,7 @@
 pub mod conventions;
 pub mod discovery;
 pub mod openapi;
+pub mod params;
 pub mod prefetch;
 pub mod router;
 pub mod seed;
@@ -13,6 +14,7 @@ pub use utoipa;
 
 // Re-exported for the seed companions `#[nextrs::api]` expands (they
 // reference `::nextrs::serde_json` so consumer crates don't need the dep).
+pub use params::Params;
 pub use seed::{QuerySeed, SeedEntry, seed_key};
 pub use serde_json;
 

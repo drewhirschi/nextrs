@@ -230,7 +230,7 @@ fn layout_tree(layout_count: usize) -> String {
     for i in 0..layout_count {
         tree.push_str(&format!("<Layout{i}>"));
     }
-    tree.push_str("<Page />");
+    tree.push_str("<Page params={params} />");
     for i in (0..layout_count).rev() {
         tree.push_str(&format!("</Layout{i}>"));
     }
@@ -258,6 +258,11 @@ const qc = new QueryClient({{
   defaultOptions: {{ queries: {{ staleTime: 30_000 }} }},
 }});
 seedQueryClient(qc);
+
+// Matched route params ([seg] segments), streamed by the server as a JSON
+// tag. Empty object on static routes.
+const paramsEl = document.getElementById("__nx_params__");
+const params = paramsEl?.textContent ? JSON.parse(paramsEl.textContent) : {{}};
 
 createRoot(document.getElementById("__nx_root__")!).render(
   <QueryClientProvider client={{qc}}>
@@ -576,7 +581,14 @@ mod tests {
         );
         assert!(s.contains("import Layout0 from \"/abs/app/layout.tsx\";"));
         assert!(s.contains("import Layout1 from \"/abs/app/dashboard/layout.tsx\";"));
-        assert!(s.contains("<Layout0><Layout1><Page /></Layout1></Layout0>"));
+        assert!(s.contains("<Layout0><Layout1><Page params={params} /></Layout1></Layout0>"));
+    }
+
+    #[test]
+    fn entry_wrapper_reads_route_params() {
+        let s = entry_wrapper(Path::new("/abs/page.tsx"), &[], Path::new("/abs/helper.ts"));
+        assert!(s.contains("__nx_params__"));
+        assert!(s.contains("<Page params={params} />"));
     }
 
     #[test]

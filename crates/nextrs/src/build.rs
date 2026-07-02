@@ -995,22 +995,51 @@ fn emit_page_slot(out: &mut String, idx: usize, route: &DiscoveredRoute) {
     }
 
     let shell = tsx_page_shell(&page_slug(&route.url_path));
-    if route.props.is_some() {
-        let props_mod = mod_name(idx, "props");
-        let _ = writeln!(
-            out,
-            "        page: Some(Box::new(|req| Box::pin(async move {{\n            \
-             let seeds = {}::props(req).await;\n            \
-             format!(\"{{}}{{}}\", seeds.to_script_tag(), {:?})\n        \
-             }}))),",
-            props_mod, shell
-        );
-    } else {
-        let _ = writeln!(
-            out,
-            "        page: Some(::nextrs::conventions::static_page({:?})),",
-            shell
-        );
+    // Dynamic segments (`[id]` → `{id}`) mean the request carries matched
+    // params: stream them as a JSON tag ahead of the mount div, and hand them
+    // to `props.rs` (which takes `props(req, params)` on dynamic routes).
+    let is_dynamic = route.url_path.contains('{');
+    match (route.props.is_some(), is_dynamic) {
+        (true, true) => {
+            let props_mod = mod_name(idx, "props");
+            let _ = writeln!(
+                out,
+                "        page: Some(Box::new(|req| Box::pin(async move {{\n            \
+                 let (params, req) = ::nextrs::params::extract_params(req).await;\n            \
+                 let seeds = {}::props(req, params.clone()).await;\n            \
+                 format!(\"{{}}{{}}{{}}\", params.to_script_tag(), seeds.to_script_tag(), {:?})\n        \
+                 }}))),",
+                props_mod, shell
+            );
+        }
+        (true, false) => {
+            let props_mod = mod_name(idx, "props");
+            let _ = writeln!(
+                out,
+                "        page: Some(Box::new(|req| Box::pin(async move {{\n            \
+                 let seeds = {}::props(req).await;\n            \
+                 format!(\"{{}}{{}}\", seeds.to_script_tag(), {:?})\n        \
+                 }}))),",
+                props_mod, shell
+            );
+        }
+        (false, true) => {
+            let _ = writeln!(
+                out,
+                "        page: Some(Box::new(|req| Box::pin(async move {{\n            \
+                 let (params, _req) = ::nextrs::params::extract_params(req).await;\n            \
+                 format!(\"{{}}{{}}\", params.to_script_tag(), {:?})\n        \
+                 }}))),",
+                shell
+            );
+        }
+        (false, false) => {
+            let _ = writeln!(
+                out,
+                "        page: Some(::nextrs::conventions::static_page({:?})),",
+                shell
+            );
+        }
     }
 }
 
@@ -1695,6 +1724,63 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
             handler
         );
         assert!(!code.contains("compile_error!"), "{}", code);
+    }
+
+    #[test]
+    fn dynamic_tsx_page_with_props_gets_params() {
+        let tmp = setup_app(&[("source/[id]", &["page.tsx", "props.rs"])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        assert!(
+            code.contains("::nextrs::params::extract_params(req).await"),
+            "expected params extraction:\n{}",
+            code
+        );
+        assert!(
+            code.contains("__nextrs_route_0_props::props(req, params.clone()).await"),
+            "expected props(req, params) call:\n{}",
+            code
+        );
+        // Params tag streams before seeds, which stream before the mount div.
+        let handler = code
+            .split("page: Some(")
+            .nth(1)
+            .expect("page handler emitted");
+        let params_at = handler.find("params.to_script_tag").unwrap();
+        let seeds_at = handler.find("seeds.to_script_tag").unwrap();
+        let root_at = handler.find("__nx_root__").unwrap();
+        assert!(params_at < seeds_at && seeds_at < root_at, "{}", handler);
+        assert!(!code.contains("compile_error!"), "{}", code);
+    }
+
+    #[test]
+    fn dynamic_tsx_page_without_props_still_gets_params() {
+        let tmp = setup_app(&[("source/[id]", &["page.tsx"])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        assert!(
+            code.contains("::nextrs::params::extract_params(req).await"),
+            "expected params extraction:\n{}",
+            code
+        );
+        assert!(
+            !code.contains("static_page"),
+            "dynamic tsx page can't be a static shell:\n{}",
+            code
+        );
+        assert!(!code.contains("compile_error!"), "{}", code);
+    }
+
+    #[test]
+    fn static_tsx_page_without_props_stays_static() {
+        let tmp = setup_app(&[("about", &["page.tsx"])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        assert!(code.contains("static_page"), "{}", code);
+        assert!(!code.contains("extract_params"), "{}", code);
     }
 
     #[test]

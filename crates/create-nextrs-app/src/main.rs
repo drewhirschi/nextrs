@@ -670,6 +670,18 @@ export function useSeed<T>(key: unknown[]): T | undefined {
   return useQueryClient().getQueryData<{ data: T }>(key)?.data;
 }
 
+// Matched route params ([seg] segments), streamed by the server as a JSON
+// tag. Pages get them as a `params` prop; deep components can call this.
+export function useParams<T extends Record<string, string> = Record<string, string>>(): T {
+  const tag = document.getElementById("__nx_params__");
+  if (!tag?.textContent) return {} as T;
+  try {
+    return JSON.parse(tag.textContent) as T;
+  } catch {
+    return {} as T;
+  }
+}
+
 export * from "./generated/ping/ping";
 export * from "./generated/model";
 "#
