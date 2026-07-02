@@ -681,8 +681,36 @@ fn tsx_loading_shell(loading_route: &DiscoveredRoute) -> String {
     )
 }
 
-fn tsx_document_head() -> &'static str {
-    r#"<link rel="stylesheet" href="/style.css?v=20260630" />"#
+/// The stylesheet link every tsx shell carries. When the consuming app has a
+/// `public/style.css`, its content hash becomes a cache-busting query so a
+/// restyled deploy can't serve a stale sheet (browsers cache aggressively,
+/// and dev serves without fingerprinting). No file → no query.
+fn tsx_document_head() -> String {
+    match std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(|dir| std::path::Path::new(&dir).join("public/style.css"))
+        .filter(|p| p.is_file())
+    {
+        Some(css) => {
+            println!("cargo:rerun-if-changed={}", css.display());
+            let content = std::fs::read(&css).unwrap_or_default();
+            format!(
+                r#"<link rel="stylesheet" href="/style.css?v={}" />"#,
+                content_hash(&content)
+            )
+        }
+        None => r#"<link rel="stylesheet" href="/style.css" />"#.to_string(),
+    }
+}
+
+/// A small stable content hash (FNV-1a, hex) — enough to change whenever the
+/// file changes, with no new dependency.
+fn content_hash(bytes: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in bytes {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }
 
 fn client_summary_text(routes: &[DiscoveredRoute]) -> Option<String> {
