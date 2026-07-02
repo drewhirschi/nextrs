@@ -43,6 +43,16 @@ pub fn api(args: TokenStream, item: TokenStream) -> TokenStream {
         .to_string();
 
     let mut injected = format!("path = \"{url}\"");
+    // Infer `params(...)` from the extractors when the user didn't write it —
+    // the handler signature is the single source of truth, so the OpenAPI
+    // spec (and the generated client's types) can't silently drift from it.
+    if !args_str.contains("params(") && !args_str.contains("params (") {
+        if let Ok(func) = syn::parse::<syn::ItemFn>(item.clone()) {
+            if let Some(params) = infer_params(&func, &url) {
+                injected.push_str(&format!(", params({params})"));
+            }
+        }
+    }
     if !args_str.contains("operation_id") {
         injected.push_str(&format!(
             ", operation_id = \"{}\"",
@@ -141,6 +151,104 @@ fn seed_companion(item: proc_macro2::TokenStream, url: &str) -> Option<proc_macr
         }
         _ => None,
     }
+}
+
+/// Derive the utoipa `params(...)` list from the handler's extractors.
+///
+/// - `Path<T>` args zip with the `{seg}` names from the file-derived URL:
+///   scalar `T` ↔ one segment, tuple `(A, B)` ↔ segments in order, a single
+///   named struct across several segments → the struct itself (must be
+///   `IntoParams`).
+/// - `Query<T>` contributes `T` (must be `IntoParams`).
+///
+/// Returns the inside of `params(...)`, or `None` when there is nothing to
+/// declare or the shapes can't be reconciled (then nothing is injected and
+/// utoipa/compile errors stay the user's signal, as today).
+fn infer_params(func: &syn::ItemFn, url: &str) -> Option<String> {
+    use quote::ToTokens;
+
+    // `{id}` → "id", `{*rest}` → "rest", in URL order.
+    let path_names: Vec<&str> = url
+        .split('/')
+        .filter_map(|seg| seg.strip_prefix('{').and_then(|s| s.strip_suffix('}')))
+        .map(|name| name.trim_start_matches('*'))
+        .collect();
+
+    let mut path_types: Vec<syn::Type> = Vec::new();
+    let mut entries: Vec<String> = Vec::new();
+
+    for arg in &func.sig.inputs {
+        let syn::FnArg::Typed(arg) = arg else {
+            continue;
+        };
+        match last_path_ident(&arg.ty).as_deref() {
+            Some("Path") => {
+                let inner = first_generic_arg(&arg.ty)?;
+                match inner {
+                    syn::Type::Tuple(tuple) => path_types.extend(tuple.elems.iter().cloned()),
+                    other => {
+                        // One non-tuple, non-primitive type across several URL
+                        // segments is a params struct: declare it whole via
+                        // IntoParams. A lone primitive there is a shape
+                        // mismatch handled below.
+                        if path_names.len() > 1 && !is_primitive(other) {
+                            entries.push(other.to_token_stream().to_string());
+                            continue;
+                        }
+                        path_types.push(other.clone());
+                    }
+                }
+            }
+            Some("Query") => {
+                let inner = first_generic_arg(&arg.ty)?;
+                entries.push(inner.to_token_stream().to_string());
+            }
+            _ => {}
+        }
+    }
+
+    if !path_types.is_empty() {
+        if path_types.len() != path_names.len() {
+            return None; // shape mismatch — don't guess
+        }
+        let zipped = path_names.iter().zip(&path_types).map(|(name, ty)| {
+            format!("(\"{}\" = {}, Path)", name, ty.to_token_stream())
+        });
+        // Path params lead, matching their position in the URL.
+        entries.splice(0..0, zipped);
+    }
+
+    if entries.is_empty() {
+        None
+    } else {
+        Some(entries.join(", "))
+    }
+}
+
+/// Types that read as a single URL segment value rather than a params struct.
+fn is_primitive(ty: &syn::Type) -> bool {
+    matches!(
+        last_path_ident(ty).as_deref(),
+        Some(
+            "i8" | "i16"
+                | "i32"
+                | "i64"
+                | "i128"
+                | "isize"
+                | "u8"
+                | "u16"
+                | "u32"
+                | "u64"
+                | "u128"
+                | "usize"
+                | "f32"
+                | "f64"
+                | "bool"
+                | "char"
+                | "String"
+                | "Uuid"
+        )
+    )
 }
 
 fn last_path_ident(ty: &syn::Type) -> Option<String> {
@@ -274,6 +382,80 @@ mod tests {
         assert_eq!(default_tag("/api/ping").as_deref(), Some("ping"));
         assert_eq!(default_tag("/api/users/{id}").as_deref(), Some("users"));
         assert_eq!(default_tag("/"), None);
+    }
+
+    fn parse_fn(src: &str) -> syn::ItemFn {
+        syn::parse_str(src).unwrap()
+    }
+
+    #[test]
+    fn infer_params_scalar_path() {
+        let f = parse_fn("pub async fn get(Path(id): Path<i64>) -> Json<X> { todo!() }");
+        assert_eq!(
+            infer_params(&f, "/api/sources/{id}").as_deref(),
+            Some("(\"id\" = i64, Path)")
+        );
+    }
+
+    #[test]
+    fn infer_params_tuple_path() {
+        let f =
+            parse_fn("pub async fn get(Path((a, b)): Path<(i64, String)>) -> Json<X> { todo!() }");
+        assert_eq!(
+            infer_params(&f, "/users/{id}/posts/{postId}").as_deref(),
+            Some("(\"id\" = i64, Path), (\"postId\" = String, Path)")
+        );
+    }
+
+    #[test]
+    fn infer_params_struct_path_across_segments() {
+        let f = parse_fn("pub async fn get(Path(p): Path<PageRef>) -> Json<X> { todo!() }");
+        assert_eq!(
+            infer_params(&f, "/users/{id}/posts/{postId}").as_deref(),
+            Some("PageRef")
+        );
+    }
+
+    #[test]
+    fn infer_params_query() {
+        let f = parse_fn("pub async fn get(Query(f): Query<TodosFilter>) -> Json<X> { todo!() }");
+        assert_eq!(infer_params(&f, "/api/todos").as_deref(), Some("TodosFilter"));
+    }
+
+    #[test]
+    fn infer_params_path_and_query() {
+        let f = parse_fn(
+            "pub async fn get(Path(id): Path<i64>, Query(f): Query<F>) -> Json<X> { todo!() }",
+        );
+        assert_eq!(
+            infer_params(&f, "/api/sources/{id}/pages").as_deref(),
+            Some("(\"id\" = i64, Path), F")
+        );
+    }
+
+    #[test]
+    fn infer_params_catch_all_uses_declared_type() {
+        let f = parse_fn("pub async fn get(Path(rest): Path<String>) -> Json<X> { todo!() }");
+        assert_eq!(
+            infer_params(&f, "/files/{*rest}").as_deref(),
+            Some("(\"rest\" = String, Path)")
+        );
+    }
+
+    #[test]
+    fn infer_params_nothing_to_declare() {
+        let f = parse_fn("pub async fn get() -> Json<X> { todo!() }");
+        assert_eq!(infer_params(&f, "/api/ping"), None);
+        // Body extractors are not params.
+        let f = parse_fn("pub async fn post(Json(b): Json<Req>) -> Json<X> { todo!() }");
+        assert_eq!(infer_params(&f, "/api/ping"), None);
+    }
+
+    #[test]
+    fn infer_params_shape_mismatch_declares_nothing() {
+        // Two URL params, a lone scalar Path — don't guess.
+        let f = parse_fn("pub async fn get(Path(id): Path<i64>) -> Json<X> { todo!() }");
+        assert_eq!(infer_params(&f, "/users/{id}/posts/{postId}"), None);
     }
 
     #[test]
