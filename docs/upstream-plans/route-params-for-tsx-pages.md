@@ -2,7 +2,7 @@
 
 - **Reported-in:** onenote-extractor
 - **Date:** 2026-07-01
-- **Status:** open
+- **Status:** fixed in 6eee860
 
 ## Problem
 
