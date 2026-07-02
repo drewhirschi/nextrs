@@ -218,9 +218,11 @@ pub fn emit_registry(
 /// (`api_todos::TodosFilter`). Crate-root paths resolve because both the
 /// registry and props.rs land as crate-root modules in every consumer.
 ///
-/// Eligibility mirrors the macro: an annotated `get` with zero args or one
-/// `Query<T>` extractor, returning `Json<...>`. Names come from the URL, not
-/// `operation_id`: `/api/todos` → `get_api_todos` / `api_todos`.
+/// Eligibility mirrors the macro: an annotated `get` returning `Json<...>`
+/// whose args are at most one `Path<...>` and one `Query<T>` extractor (in
+/// any order, including none). Names come from the URL, not `operation_id`:
+/// `/api/todos` → `get_api_todos` / `api_todos`, `/api/sources/{id}/pages` →
+/// `get_api_sources_by_id_pages`.
 pub fn emit_seeds(app_dir: impl AsRef<Path>, out_name: &str) -> std::io::Result<()> {
     let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set in build.rs"),
@@ -292,9 +294,10 @@ fn url_snake(url: &str) -> String {
 }
 
 /// Textual mirror of the macro's seed-companion eligibility: `get`'s args are
-/// empty or a single top-level `Query<...>` extractor, and it returns
-/// `Json<...>`. Kept deliberately simple — a false positive means a clear
-/// "cannot find __nextrs_seed_get" error at the `pub use`, not silent misrouting.
+/// empty, or at most one `Path<...>` and one `Query<...>` extractor, and it
+/// returns `Json<...>`. Kept deliberately simple — a false positive means a
+/// clear "cannot find __nextrs_seed_get" error at the `pub use`, not silent
+/// misrouting.
 fn get_is_seed_eligible(source: &str) -> bool {
     let Some(start) = source.find("pub async fn get") else {
         return false;
@@ -343,7 +346,17 @@ fn get_is_seed_eligible(source: &str) -> bool {
         }
         count
     };
-    args.trim().is_empty() || (args.contains("Query") && top_level_commas == 0)
+    if args.trim().is_empty() {
+        return true;
+    }
+    // Every top-level arg must be a Path or Query extractor, at most one of
+    // each — the shapes the macro's seed companion handles.
+    let extractorish = args.contains("Query") || args.contains("Path");
+    let arg_count = top_level_commas + 1;
+    extractorish
+        && arg_count <= 2
+        && (arg_count == 1
+            || (args.matches("Query").count() >= 1 && args.matches("Path").count() >= 1))
 }
 
 /// URL path → bundle entry name for `page.tsx` routes. `/` → `index`,
@@ -681,8 +694,36 @@ fn tsx_loading_shell(loading_route: &DiscoveredRoute) -> String {
     )
 }
 
-fn tsx_document_head() -> &'static str {
-    r#"<link rel="stylesheet" href="/style.css?v=20260630" />"#
+/// The stylesheet link every tsx shell carries. When the consuming app has a
+/// `public/style.css`, its content hash becomes a cache-busting query so a
+/// restyled deploy can't serve a stale sheet (browsers cache aggressively,
+/// and dev serves without fingerprinting). No file → no query.
+fn tsx_document_head() -> String {
+    match std::env::var_os("CARGO_MANIFEST_DIR")
+        .map(|dir| std::path::Path::new(&dir).join("public/style.css"))
+        .filter(|p| p.is_file())
+    {
+        Some(css) => {
+            println!("cargo:rerun-if-changed={}", css.display());
+            let content = std::fs::read(&css).unwrap_or_default();
+            format!(
+                r#"<link rel="stylesheet" href="/style.css?v={}" />"#,
+                content_hash(&content)
+            )
+        }
+        None => r#"<link rel="stylesheet" href="/style.css" />"#.to_string(),
+    }
+}
+
+/// A small stable content hash (FNV-1a, hex) — enough to change whenever the
+/// file changes, with no new dependency.
+fn content_hash(bytes: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in bytes {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
 }
 
 fn client_summary_text(routes: &[DiscoveredRoute]) -> Option<String> {
@@ -967,22 +1008,51 @@ fn emit_page_slot(out: &mut String, idx: usize, route: &DiscoveredRoute) {
     }
 
     let shell = tsx_page_shell(&page_slug(&route.url_path));
-    if route.props.is_some() {
-        let props_mod = mod_name(idx, "props");
-        let _ = writeln!(
-            out,
-            "        page: Some(Box::new(|req| Box::pin(async move {{\n            \
-             let seeds = {}::props(req).await;\n            \
-             format!(\"{{}}{{}}\", seeds.to_script_tag(), {:?})\n        \
-             }}))),",
-            props_mod, shell
-        );
-    } else {
-        let _ = writeln!(
-            out,
-            "        page: Some(::nextrs::conventions::static_page({:?})),",
-            shell
-        );
+    // Dynamic segments (`[id]` → `{id}`) mean the request carries matched
+    // params: stream them as a JSON tag ahead of the mount div, and hand them
+    // to `props.rs` (which takes `props(req, params)` on dynamic routes).
+    let is_dynamic = route.url_path.contains('{');
+    match (route.props.is_some(), is_dynamic) {
+        (true, true) => {
+            let props_mod = mod_name(idx, "props");
+            let _ = writeln!(
+                out,
+                "        page: Some(Box::new(|req| Box::pin(async move {{\n            \
+                 let (params, req) = ::nextrs::params::extract_params(req).await;\n            \
+                 let seeds = {}::props(req, params.clone()).await;\n            \
+                 format!(\"{{}}{{}}{{}}\", params.to_script_tag(), seeds.to_script_tag(), {:?})\n        \
+                 }}))),",
+                props_mod, shell
+            );
+        }
+        (true, false) => {
+            let props_mod = mod_name(idx, "props");
+            let _ = writeln!(
+                out,
+                "        page: Some(Box::new(|req| Box::pin(async move {{\n            \
+                 let seeds = {}::props(req).await;\n            \
+                 format!(\"{{}}{{}}\", seeds.to_script_tag(), {:?})\n        \
+                 }}))),",
+                props_mod, shell
+            );
+        }
+        (false, true) => {
+            let _ = writeln!(
+                out,
+                "        page: Some(Box::new(|req| Box::pin(async move {{\n            \
+                 let (params, _req) = ::nextrs::params::extract_params(req).await;\n            \
+                 format!(\"{{}}{{}}\", params.to_script_tag(), {:?})\n        \
+                 }}))),",
+                shell
+            );
+        }
+        (false, false) => {
+            let _ = writeln!(
+                out,
+                "        page: Some(::nextrs::conventions::static_page({:?})),",
+                shell
+            );
+        }
     }
 }
 
@@ -1670,6 +1740,63 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
     }
 
     #[test]
+    fn dynamic_tsx_page_with_props_gets_params() {
+        let tmp = setup_app(&[("source/[id]", &["page.tsx", "props.rs"])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        assert!(
+            code.contains("::nextrs::params::extract_params(req).await"),
+            "expected params extraction:\n{}",
+            code
+        );
+        assert!(
+            code.contains("__nextrs_route_0_props::props(req, params.clone()).await"),
+            "expected props(req, params) call:\n{}",
+            code
+        );
+        // Params tag streams before seeds, which stream before the mount div.
+        let handler = code
+            .split("page: Some(")
+            .nth(1)
+            .expect("page handler emitted");
+        let params_at = handler.find("params.to_script_tag").unwrap();
+        let seeds_at = handler.find("seeds.to_script_tag").unwrap();
+        let root_at = handler.find("__nx_root__").unwrap();
+        assert!(params_at < seeds_at && seeds_at < root_at, "{}", handler);
+        assert!(!code.contains("compile_error!"), "{}", code);
+    }
+
+    #[test]
+    fn dynamic_tsx_page_without_props_still_gets_params() {
+        let tmp = setup_app(&[("source/[id]", &["page.tsx"])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        assert!(
+            code.contains("::nextrs::params::extract_params(req).await"),
+            "expected params extraction:\n{}",
+            code
+        );
+        assert!(
+            !code.contains("static_page"),
+            "dynamic tsx page can't be a static shell:\n{}",
+            code
+        );
+        assert!(!code.contains("compile_error!"), "{}", code);
+    }
+
+    #[test]
+    fn static_tsx_page_without_props_stays_static() {
+        let tmp = setup_app(&[("about", &["page.tsx"])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        assert!(code.contains("static_page"), "{}", code);
+        assert!(!code.contains("extract_params"), "{}", code);
+    }
+
+    #[test]
     fn loading_tsx_is_inherited_by_props_backed_tsx_pages() {
         let tmp = setup_app(&[
             ("", &["loading.tsx"]),
@@ -1853,6 +1980,21 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
         // Raw request handler: not eligible.
         assert!(!get_is_seed_eligible(
             "pub async fn get(req: Request<Body>) -> Json<X> { todo!() }"
+        ));
+        // Path extractor: eligible.
+        assert!(get_is_seed_eligible(
+            "pub async fn get(Path(id): Path<i64>) -> Json<Vec<Page>> { todo!() }"
+        ));
+        // Path + Query, either order: eligible.
+        assert!(get_is_seed_eligible(
+            "pub async fn get(Path(id): Path<i64>, Query(f): Query<F>) -> Json<X> { todo!() }"
+        ));
+        assert!(get_is_seed_eligible(
+            "pub async fn get(Query(f): Query<F>, Path(id): Path<i64>) -> Json<X> { todo!() }"
+        ));
+        // Path + non-extractor second arg: not eligible.
+        assert!(!get_is_seed_eligible(
+            "pub async fn get(Path(id): Path<i64>, headers: HeaderMap) -> Json<X> { todo!() }"
         ));
     }
 
