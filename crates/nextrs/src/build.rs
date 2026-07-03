@@ -329,7 +329,9 @@ fn get_is_seed_eligible(source: &str) -> bool {
         }
     }
     let Some(close) = close else { return false };
-    let args = &sig[open + 1..close];
+    // Multiline (rustfmt) signatures end the arg list with a trailing comma —
+    // strip it so it isn't counted as an argument separator.
+    let args = sig[open + 1..close].trim().trim_end_matches(',');
     let ret = &sig[close..];
 
     if !ret_is_seedable(ret) {
@@ -2138,6 +2140,10 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
         ));
         assert!(get_is_seed_eligible(
             "pub async fn get() -> Result<axum::Json<X>, E> { todo!() }"
+        ));
+        // Multiline rustfmt signatures carry a trailing comma — not an arg.
+        assert!(get_is_seed_eligible(
+            "pub async fn get(\n    Path(id): Path<u64>,\n    Query(q): Query<DetailQuery>,\n) -> Result<Json<TodoDetail>, StatusCode> { todo!() }"
         ));
         // Shapes that must NOT sneak past (the macro rejects them; an alias
         // here would be a "cannot find __nextrs_seed_get" build break).

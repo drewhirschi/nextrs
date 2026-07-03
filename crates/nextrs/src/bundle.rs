@@ -266,6 +266,12 @@ fn emit_client_barrel(client_dir: &Path) -> std::io::Result<()> {
 struct UrlHookOp {
     hook: String,
     tag: String,
+    /// Path param names, in spec order. orval emits these as LEADING
+    /// positional arguments on the hook (`useX(id, params?)`), so the wrapper
+    /// takes them as explicit arguments — path params are identity (which
+    /// thing; the page gets them from its route match), and only search
+    /// params are URL-bound view state.
+    path_keys: Vec<String>,
     query_keys: Vec<String>,
 }
 
@@ -335,18 +341,22 @@ fn url_hook_ops(spec_json: &str) -> Vec<UrlHookOp> {
         else {
             continue;
         };
-        let query_keys: Vec<String> = get
-            .get("parameters")
-            .and_then(|p| p.as_array())
-            .map(|params| {
-                params
-                    .iter()
-                    .filter(|p| p.get("in").and_then(|i| i.as_str()) == Some("query"))
-                    .filter_map(|p| p.get("name").and_then(|n| n.as_str()))
-                    .map(str::to_string)
-                    .collect()
-            })
-            .unwrap_or_default();
+        let param_names = |kind: &str| -> Vec<String> {
+            get.get("parameters")
+                .and_then(|p| p.as_array())
+                .map(|params| {
+                    params
+                        .iter()
+                        .filter(|p| p.get("in").and_then(|i| i.as_str()) == Some(kind))
+                        .filter_map(|p| p.get("name").and_then(|n| n.as_str()))
+                        .map(str::to_string)
+                        .collect()
+                })
+                .unwrap_or_default()
+        };
+        let path_keys = param_names("path");
+        let query_keys = param_names("query");
+        // No query params → nothing for the URL to bind; no wrapper.
         if query_keys.is_empty() {
             continue;
         }
@@ -359,6 +369,7 @@ fn url_hook_ops(spec_json: &str) -> Vec<UrlHookOp> {
         ops.push(UrlHookOp {
             hook,
             tag: tag.to_string(),
+            path_keys,
             query_keys,
         });
     }
@@ -419,12 +430,43 @@ function nxMerge(prev: NxSearch, patch: NxSearch): NxSearch {
             .map(|k| format!("{k:?}"))
             .collect::<Vec<_>>()
             .join(", ");
+        // orval puts path params first: useX(id, region, params?, ...). The
+        // wrapper mirrors that — path values are explicit typed arguments
+        // (positional types derived from the hook, no guessed names), and the
+        // params object sits at index path_keys.len().
+        let path_args = op
+            .path_keys
+            .iter()
+            .enumerate()
+            .map(|(i, name)| {
+                let ident = ts_ident(name);
+                format!("{ident}: Parameters<typeof {hook}>[{i}]")
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let path_call = op
+            .path_keys
+            .iter()
+            .map(|name| ts_ident(name))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let lead_args = if path_args.is_empty() {
+            String::new()
+        } else {
+            format!("{path_args}, ")
+        };
+        let lead_call = if path_call.is_empty() {
+            String::new()
+        } else {
+            format!("{path_call}, ")
+        };
+        let params_index = op.path_keys.len();
         let _ = write!(
             out,
             r#"
-type {hook}Params = NonNullable<Parameters<typeof {hook}>[0]>;
+type {hook}Params = NonNullable<Parameters<typeof {hook}>[{params_index}]>;
 
-export function {hook}FromUrl(opts?: {{
+export function {hook}FromUrl({lead_args}opts?: {{
   /** Params supplied by code, merged over the URL-derived ones. */
   fixed?: Partial<{hook}Params>;
   /** "replace" for typeahead-style updates; default pushes history. */
@@ -442,13 +484,33 @@ export function {hook}FromUrl(opts?: {{
       search: (prev: NxSearch) => nxMerge(prev, patch as NxSearch),
       replace: opts?.history === "replace",
     }});
-  const query = {hook}(params);
+  const query = {hook}({lead_call}params);
   return {{ ...query, params, setParams }};
 }}
 "#
         );
     }
     out
+}
+
+/// A spec param name as a safe TS identifier for the wrapper's argument list.
+/// Non-identifier characters become `_`; names colliding with the wrapper's
+/// own locals get a trailing `_`.
+fn ts_ident(name: &str) -> String {
+    let mut ident: String = name
+        .chars()
+        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .collect();
+    if ident.chars().next().is_some_and(|c| c.is_ascii_digit()) {
+        ident.insert(0, '_');
+    }
+    if matches!(
+        ident.as_str(),
+        "opts" | "search" | "params" | "navigate" | "setParams" | "query" | "patch" | "prev"
+    ) {
+        ident.push('_');
+    }
+    ident
 }
 
 /// The `layout.tsx` chain that applies to `target_path`, root-first.
@@ -1271,6 +1333,16 @@ mod tests {
             ]
           }
         },
+        "/api/tracks/{id}/plays": {
+          "get": {
+            "operationId": "getTrackPlays",
+            "tags": ["tracks"],
+            "parameters": [
+              { "name": "id", "in": "path", "schema": { "type": "integer" } },
+              { "name": "range", "in": "query", "schema": { "type": "string" } }
+            ]
+          }
+        },
         "/api/ping": {
           "get": { "operationId": "getApiPing", "tags": ["ping"] }
         }
@@ -1280,11 +1352,36 @@ mod tests {
     #[test]
     fn url_hook_ops_selects_gets_with_query_params() {
         let ops = url_hook_ops(URL_HOOKS_SPEC);
-        // Path-only and no-param GETs (and POSTs) get no URL-bound variant.
-        assert_eq!(ops.len(), 1);
+        // Path-only and no-param GETs (and POSTs) get no URL-bound variant;
+        // path+query routes DO (path params become explicit hook arguments).
+        assert_eq!(ops.len(), 2);
         assert_eq!(ops[0].hook, "useGetTodos");
         assert_eq!(ops[0].tag, "todos");
+        assert!(ops[0].path_keys.is_empty());
         assert_eq!(ops[0].query_keys, ["status", "page"]);
+        assert_eq!(ops[1].hook, "useGetTrackPlays");
+        assert_eq!(ops[1].path_keys, ["id"]);
+        assert_eq!(ops[1].query_keys, ["range"]);
+    }
+
+    #[test]
+    fn url_hooks_source_path_params_are_explicit_leading_args() {
+        // The bug this guards: orval's hook signature for a path+query route
+        // is useX(id, params?) — params sits at index 1, and the wrapper must
+        // pass the path value through, not spread params onto it.
+        let src = url_hooks_source(&url_hook_ops(URL_HOOKS_SPEC));
+        assert!(src.contains(
+            "export function useGetTrackPlaysFromUrl(id: Parameters<typeof useGetTrackPlays>[0], opts?: {"
+        ), "{src}");
+        assert!(src.contains(
+            "type useGetTrackPlaysParams = NonNullable<Parameters<typeof useGetTrackPlays>[1]>;"
+        ), "{src}");
+        assert!(src.contains("const query = useGetTrackPlays(id, params);"), "{src}");
+        // Query-only hooks keep the argument-0 shape.
+        assert!(src.contains(
+            "type useGetTodosParams = NonNullable<Parameters<typeof useGetTodos>[0]>;"
+        ), "{src}");
+        assert!(src.contains("const query = useGetTodos(params);"), "{src}");
     }
 
     #[test]
