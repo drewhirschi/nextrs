@@ -1,0 +1,9 @@
+# Vercel's Rust runtime defaults to an rustc BELOW the tsx bundler's MSRV
+# (observed: 1.92.0 vs oxc's required 1.94.0), so an unpinned deploy fails at
+# `cargo build` with "rustc 1.92.0 is not supported". The pin is a floor, not
+# a coupling: rustup honors it everywhere, and RUSTUP_TOOLCHAIN overrides it
+# per-environment. Keep in sync with the rolldown/oxc MSRV as nextrs bumps
+# them; drop only if Vercel's default catches up or page bundling stops
+# running inside the Rust build.
+[toolchain]
+channel = "1.96.0"

@@ -289,8 +289,21 @@ fn template_files(
         ("client/tsconfig.json", client_tsconfig_json(client_alias)),
         ("client/src/index.ts", client_index_ts()),
         ("client/src/nextrs-client.ts", nextrs_client_ts()),
+        ("rust-toolchain.toml", rust_toolchain_toml()),
         ("public/style.css", style_css()),
     ]
+}
+
+fn rust_toolchain_toml() -> String {
+    r#"# Vercel's Rust runtime defaults to an rustc BELOW the tsx bundler's MSRV
+# (observed: 1.92.0 vs oxc's required 1.94.0), so an unpinned deploy fails at
+# `cargo build` with "rustc 1.92.0 is not supported". The pin is a floor, not
+# a coupling: rustup honors it everywhere, and RUSTUP_TOOLCHAIN overrides it
+# per-environment. Keep in sync with nextrs's rolldown/oxc MSRV.
+[toolchain]
+channel = "1.96.0"
+"#
+    .into()
 }
 
 fn gitignore() -> String {
@@ -925,6 +938,16 @@ mod tests {
         assert!(!index.contains("./generated/ping/ping"));
         assert!(index.contains("useParams"));
         assert!(!files.iter().any(|(name, _)| name.contains("gen-barrel")));
+
+        // Vercel's default rustc sits below the tsx bundler's MSRV — every
+        // generated app needs the toolchain floor or its deploy fails.
+        let toolchain = files
+            .iter()
+            .find(|(name, _)| *name == "rust-toolchain.toml")
+            .unwrap()
+            .1
+            .as_str();
+        assert!(toolchain.contains("channel = \"1.96.0\""));
     }
 
     #[test]

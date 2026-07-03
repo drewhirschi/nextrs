@@ -37,3 +37,15 @@ toolchain pins from site/example/scaffold.
 - Full test suite + the react-todos browser e2e on both 1.96.0 and current
   stable.
 - A react-todos Vercel preview deploy built WITHOUT the toolchain pin.
+
+## Postscript (2026-07-03, after the pins were dropped)
+
+Dropping the toolchain pins was a regression: the E0310 rationale was obsolete,
+but a second, independent reason stands — **Vercel's Rust runtime defaults to
+rustc 1.92.0, below oxc 0.138's MSRV of 1.94.0** (observed: unpinned deploy
+failed in 17s with "rustc 1.92.0 is not supported"). The pins are restored in
+the example and the scaffold with that rationale; they stay until Vercel's
+default catches up or page bundling stops running inside the Rust build
+(the decoupling idea — a bigger change, tracked here as the long-term out).
+Everything standardizes on `1.96.0` — the version the site pin, local dev, and
+all verification already use; `RUSTUP_TOOLCHAIN` overrides per-environment.
