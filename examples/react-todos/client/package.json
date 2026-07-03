@@ -8,9 +8,8 @@
     "postinstall": "ln -sfn client/node_modules ../node_modules",
     "dump": "NEXTRS_SKIP_BUNDLE=1 cargo run -p react-todos --bin dump-openapi",
     "orval": "orval --config ./orval.config.ts",
-    "gen": "npm run dump && npm run orval && npm run barrel",
-    "typecheck": "tsc --noEmit",
-    "barrel": "node ./scripts/gen-barrel.mjs"
+    "gen": "npm run dump && npm run orval",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.0",

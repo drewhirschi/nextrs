@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "cd client && npm ci && npm run gen",
   "functions": {
     "api/index.rs": { "runtime": "vercel-rust@4.0.11" }
   },
