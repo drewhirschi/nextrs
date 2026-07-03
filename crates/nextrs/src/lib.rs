@@ -14,7 +14,7 @@ pub use utoipa;
 
 // Re-exported for the seed companions `#[nextrs::api]` expands (they
 // reference `::nextrs::serde_json` so consumer crates don't need the dep).
-pub use params::Params;
+pub use params::{Params, search_params};
 pub use seed::{QuerySeed, SeedEntry, seed_key};
 pub use serde_json;
 
