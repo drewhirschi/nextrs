@@ -18,7 +18,6 @@ client/                     orval-generated typed React Query hooks
 
 api/index.rs                Vercel serverless entry (+ x-cold instrumentation)
 vercel.json                 Rust runtime declaration + catch-all rewrite
-rust-toolchain.toml         pins rustc 1.96 (rolldown/oxc needs ≥ 1.94)
 .cargo/config.toml          NEXTRS_SKIP_BUNDLE=1 on Vercel (see Deploy below)
 public/dist/                prebuilt page.tsx bundle (committed; served on Vercel)
 ```
@@ -66,7 +65,6 @@ that make it work:
 |---|---|
 | `api/index.rs` | The serverless entry: wraps the generated router in `StreamingVercelLayer`. |
 | `vercel.json` | Declares the Rust runtime **explicitly** (`functions: { "api/index.rs": { "runtime": "vercel-rust@4.0.11" } }`) and the catch-all rewrite. Without the runtime line the build fails in setup. |
-| `rust-toolchain.toml` | Pins `rustc` 1.96. Vercel's Rust image ships an **older** compiler, but rolldown→oxc (the `tsx` bundler) needs ≥ 1.94. Without this the build errors with `rustc … is not supported by oxc`. |
 | `.cargo/config.toml` | Sets `[env] NEXTRS_SKIP_BUNDLE = "1"` so the build script **skips bundling on Vercel** (Vercel never runs `npm install` before `cargo build`, so rolldown would have no React to resolve). Also carries an empty `[build]` table — `vercel-rust` crashes (`Cannot read properties of undefined (reading 'target')`) on a `.cargo/config.toml` without one. Because cargo only reads this file when run *inside* this dir, local `cargo run` from the repo root still bundles normally. |
 | `public/dist/` (committed) | Since bundling is skipped on Vercel, the **prebuilt** bundle is shipped as a static asset. It's deliberately **not** gitignored for this example so `vercel deploy` uploads it. Rebuild it with a release build before deploying (below). |
 | `Cargo.toml` → `nextrs = { version = "0.2", … }` | Depends on the **published** crate (no path dep) so the example builds standalone from its own directory. A `[patch.crates-io]` in the repo-root `Cargo.toml` redirects to local source for development. |
