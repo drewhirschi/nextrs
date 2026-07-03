@@ -4,6 +4,7 @@ import {
   useAddTodo,
   useUpdateTodo,
   getGetTodosQueryKey,
+  getGetApiTodosByIdQueryKey,
 } from "@react-todos/client";
 import { useState } from "react";
 
@@ -38,7 +39,19 @@ export default function Todos() {
     },
   });
 
-  const updateTodo = useUpdateTodo({ mutation: { onSuccess: invalidate } });
+  // The toggled todo also lives in the detail page's cache entry (a different
+  // URL key, not a prefix of the list's) — invalidate it too, or its page
+  // shows a stale badge after soft-navigating there.
+  const updateTodo = useUpdateTodo({
+    mutation: {
+      onSuccess: (_data, variables) => {
+        invalidate();
+        queryClient.invalidateQueries({
+          queryKey: getGetApiTodosByIdQueryKey(variables.id),
+        });
+      },
+    },
+  });
 
   return (
     <section>

@@ -7,6 +7,7 @@ import {
   useUpdateTodo,
   useParams,
   getGetApiTodosByIdQueryKey,
+  getGetTodosQueryKey,
 } from "@react-todos/client";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -23,10 +24,16 @@ export default function TodoDetail({ params }: { params: { id: string } }) {
   const { data, isFetching } = useGetApiTodosById(id);
   const todo = data?.data;
 
+  // A todo's state shows on TWO surfaces: this detail entry and the list
+  // (whose key is a different URL, so it's not a prefix of this one). With
+  // soft navigation the list stays cached across pages — invalidate both, or
+  // going back shows a stale badge.
   const updateTodo = useUpdateTodo({
     mutation: {
-      onSuccess: () =>
-        queryClient.invalidateQueries({ queryKey: getGetApiTodosByIdQueryKey(id) }),
+      onSuccess: () => {
+        queryClient.invalidateQueries({ queryKey: getGetApiTodosByIdQueryKey(id) });
+        queryClient.invalidateQueries({ queryKey: getGetTodosQueryKey() });
+      },
     },
   });
 
