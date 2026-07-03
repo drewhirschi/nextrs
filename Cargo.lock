@@ -1460,6 +1460,7 @@ dependencies = [
  "rolldown_utils",
  "serde",
  "serde_json",
+ "serde_urlencoded",
  "string_wizard",
  "tempfile",
  "tokio",

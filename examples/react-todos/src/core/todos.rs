@@ -47,6 +47,14 @@ pub async fn get(id: u64) -> Option<Todo> {
     todos.iter().find(|t| t.id == id).cloned()
 }
 
+/// Mark a todo done/undone. Returns the updated todo, `None` if unknown.
+pub async fn set_done(id: u64, done: bool) -> Option<Todo> {
+    let mut todos = store().lock().unwrap();
+    let todo = todos.iter_mut().find(|t| t.id == id)?;
+    todo.done = done;
+    Some(todo.clone())
+}
+
 pub async fn add(title: String) -> Todo {
     let mut todos = store().lock().unwrap();
     let id = todos.iter().map(|t| t.id).max().unwrap_or(0) + 1;

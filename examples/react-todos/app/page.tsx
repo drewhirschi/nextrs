@@ -1,8 +1,8 @@
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  useGetTodos,
+  useGetTodosFromUrl,
   useAddTodo,
-  useDeleteTodo,
+  useUpdateTodo,
   getGetTodosQueryKey,
 } from "@react-todos/client";
 import { useState } from "react";
@@ -16,10 +16,18 @@ export default function Todos() {
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: getGetTodosQueryKey() });
 
-  // Warmed from the stream by prefetch.rs: defined on first render, no
-  // spinner, no mount fetch. Delete prefetch.rs and this just fetches on
-  // mount instead — the component can't tell.
-  const { data: todos, refetch, isFetching } = useGetTodos({ status: "open" });
+  // URL-bound: the filter lives in the page URL (?status=open), not in
+  // useState — so a shared link shows the same view, back/forward walks
+  // previous filters (from cache, instantly), and a hard load of any
+  // filtered URL is seeded by prefetch.rs from the same query string.
+  // Warmed from the stream on first render: no spinner, no mount fetch.
+  const {
+    data: todos,
+    refetch,
+    isFetching,
+    params,
+    setParams,
+  } = useGetTodosFromUrl();
 
   const addTodo = useAddTodo({
     mutation: {
@@ -30,12 +38,22 @@ export default function Todos() {
     },
   });
 
-  const deleteTodo = useDeleteTodo({ mutation: { onSuccess: invalidate } });
+  const updateTodo = useUpdateTodo({ mutation: { onSuccess: invalidate } });
 
   return (
     <section>
       <div className="row">
         <h1>Todos</h1>
+        {/* setParams soft-navigates: the URL becomes ?status=open, this hook
+            re-keys off it, and the previous filter stays warm in the cache. */}
+        <select
+          aria-label="Filter todos"
+          value={params.status ?? ""}
+          onChange={(e) => setParams({ status: e.target.value || undefined })}
+        >
+          <option value="">All</option>
+          <option value="open">Open</option>
+        </select>
         <button className="ghost" onClick={() => refetch()} disabled={isFetching}>
           {isFetching ? "Refreshing…" : "Refresh"}
         </button>
@@ -43,17 +61,22 @@ export default function Todos() {
 
       <ul className="list">
         {todos?.data.map((t) => (
-          <li key={t.id}>
+          <li key={t.id} className={t.done ? "done" : ""}>
+            <button
+              className={`check${t.done ? " checked" : ""}`}
+              aria-label={t.done ? `Reopen ${t.title}` : `Complete ${t.title}`}
+              onClick={() => updateTodo.mutate({ id: t.id, data: { done: !t.done } })}
+            >
+              {t.done ? "✓" : ""}
+            </button>
             {/* Plain anchor — the app shell intercepts it and soft-navigates
                 to the [id] route (no document load; layout stays mounted). */}
-            <a href={`/todos/${t.id}`}>{t.title}</a>
-            <button
-              className="ghost"
-              aria-label={`Delete ${t.title}`}
-              onClick={() => deleteTodo.mutate({ id: t.id })}
-            >
-              ✕
-            </button>
+            <a className="title" href={`/todos/${t.id}`}>
+              {t.title}
+            </a>
+            <span className={`badge ${t.done ? "badge-done" : "badge-open"}`}>
+              {t.done ? "Done" : "Open"}
+            </span>
           </li>
         ))}
       </ul>

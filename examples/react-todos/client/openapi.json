@@ -135,6 +135,53 @@
             "description": "No todo with that id"
           }
         }
+      },
+      "patch": {
+        "tags": [
+          "todos"
+        ],
+        "operationId": "updateTodo",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateTodoRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "The updated todo, or null if unknown",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TodoDetail"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
       }
     }
   },
@@ -193,6 +240,18 @@
           },
           "title": {
             "type": "string"
+          }
+        }
+      },
+      "UpdateTodoRequest": {
+        "type": "object",
+        "description": "Body for `PATCH /api/todos/{id}`.",
+        "required": [
+          "done"
+        ],
+        "properties": {
+          "done": {
+            "type": "boolean"
           }
         }
       }

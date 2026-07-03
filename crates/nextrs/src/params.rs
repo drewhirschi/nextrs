@@ -73,6 +73,23 @@ pub async fn extract_params(req: Request) -> (Params, Request) {
     (params, Request::from_parts(parts, body))
 }
 
+/// Parse the request's query string into a typed params struct — the same
+/// struct the handler's `Query<T>` extractor uses, so a `prefetch.rs` can
+/// seed exactly the key a URL-bound hook derives client-side:
+///
+/// ```ignore
+/// // app/todos/prefetch.rs — /todos?status=open seeds ["/api/todos", {"status":"open"}]
+/// let filter = nextrs::search_params::<TodosFilter>(&req).unwrap_or_default();
+/// nextrs::QuerySeed::new().seed(get_api_todos(filter, req.extensions())).await
+/// ```
+///
+/// `None` only on a type-level mismatch (e.g. `?page=abc` for a numeric
+/// field); an absent or empty query string deserializes into the struct's
+/// "all optionals absent" form.
+pub fn search_params<T: serde::de::DeserializeOwned, B>(req: &http::Request<B>) -> Option<T> {
+    serde_urlencoded::from_str(req.uri().query().unwrap_or("")).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -144,6 +161,43 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(captured.lock().unwrap().get("id"), Some("17"));
+    }
+
+    #[derive(serde::Deserialize, Default, Debug, PartialEq)]
+    struct Filter {
+        status: Option<String>,
+        page: Option<u32>,
+    }
+
+    fn req_with(uri: &str) -> http::Request<()> {
+        http::Request::builder().uri(uri).body(()).unwrap()
+    }
+
+    #[test]
+    fn search_params_parses_present_fields() {
+        let f: Filter = search_params(&req_with("/todos?status=open&page=2")).unwrap();
+        assert_eq!(f.status.as_deref(), Some("open"));
+        assert_eq!(f.page, Some(2));
+    }
+
+    #[test]
+    fn search_params_absent_query_is_all_optionals_absent() {
+        let f: Filter = search_params(&req_with("/todos")).unwrap();
+        assert_eq!(f, Filter::default());
+        let f: Filter = search_params(&req_with("/todos?")).unwrap();
+        assert_eq!(f, Filter::default());
+    }
+
+    #[test]
+    fn search_params_type_mismatch_is_none() {
+        assert_eq!(search_params::<Filter, _>(&req_with("/todos?page=abc")), None);
+    }
+
+    #[test]
+    fn search_params_ignores_unknown_keys() {
+        // Pages may carry extra UI state in the same URL (tabs, modals).
+        let f: Filter = search_params(&req_with("/todos?status=open&tab=details")).unwrap();
+        assert_eq!(f.status.as_deref(), Some("open"));
     }
 
     #[tokio::test]

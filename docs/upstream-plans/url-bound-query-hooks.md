@@ -2,7 +2,7 @@
 
 - **Reported-in:** design discussion (search-params/URL-state, 2026-07-03)
 - **Date:** 2026-07-03
-- **Status:** open
+- **Status:** fixed in HEAD (feat/url-bound-hooks, hash on merge)
 
 ## Problem
 

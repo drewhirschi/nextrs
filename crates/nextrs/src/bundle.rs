@@ -94,9 +94,13 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<()> {
         client_dir.join("package.json").display()
     );
 
+    // URL-bound hook variants (useXFromUrl) for every GET with query params,
+    // generated from the app's OpenAPI document — then the barrel, so both
+    // exist before resolution needs them. Written by the same build that
+    // bundles, so neither can go stale.
+    emit_url_hooks(&client_dir)?;
     // Keep the generated-client barrel fresh: every module orval emitted gets
-    // re-exported, so a hand-maintained list can never go stale. Written by
-    // the same build that bundles, before resolution needs it.
+    // re-exported, so a hand-maintained list can never go stale.
     emit_client_barrel(&client_dir)?;
 
     let routes = discover_routes(&abs_app);
@@ -223,10 +227,11 @@ fn not_found_bundles(routes: &[DiscoveredRoute]) -> Vec<NotFoundBundle> {
 }
 
 /// Write `<client_dir>/src/generated/index.ts` re-exporting every generated
-/// tag module plus `model`, mirroring orval's `tags-split` layout. No-op when
-/// the app has no generated client (dir absent). Framework-owned so apps
-/// don't carry a barrel script — the codegen output's surface is a framework
-/// concern, and this runs on every bundling build so it can't go stale.
+/// tag module plus `model` (and `url-hooks` when present), mirroring orval's
+/// `tags-split` layout. No-op when the app has no generated client (dir
+/// absent). Framework-owned so apps don't carry a barrel script — the codegen
+/// output's surface is a framework concern, and this runs on every bundling
+/// build so it can't go stale.
 fn emit_client_barrel(client_dir: &Path) -> std::io::Result<()> {
     let generated = client_dir.join("src/generated");
     if !generated.is_dir() {
@@ -249,7 +254,201 @@ fn emit_client_barrel(client_dir: &Path) -> std::io::Result<()> {
     if generated.join("model").is_dir() {
         out.push_str("export * from \"./model\";\n");
     }
+    if generated.join("url-hooks.ts").is_file() {
+        out.push_str("export * from \"./url-hooks\";\n");
+    }
     write_if_changed(&generated.join("index.ts"), out.as_bytes())
+}
+
+/// One GET operation that can carry a URL-bound hook variant: it has query
+/// params, an operationId (orval derives `use<OperationId>` from it) and a
+/// tag (orval's `tags-split` puts the hook in `./<tag>/<tag>`).
+struct UrlHookOp {
+    hook: String,
+    tag: String,
+    query_keys: Vec<String>,
+}
+
+/// Generate `<client_dir>/src/generated/url-hooks.ts`: a `useXFromUrl()`
+/// sibling for every GET with query params, implementing the "page search
+/// params are the query params of its data" convention (see
+/// docs/upstream-plans/url-bound-query-hooks.md and MANIFEST.md's data-flow
+/// section):
+///
+/// - params come from the page URL, live via the app-shell router
+///   (`useSearch`), so the React Query key derives from the URL and every
+///   visited URL state is a warm cache entry;
+/// - `setParams(patch)` is a soft navigation (`useNavigate`), so filters and
+///   pagination are shareable/back-forwardable by construction;
+/// - types derive from the orval hook itself (`Parameters<typeof useX>[0]`),
+///   so nothing here guesses type names.
+///
+/// Reads `<client_dir>/openapi.json` (the artifact the app's `npm run dump`
+/// writes). No-op when it's absent or contains no eligible operations —
+/// a stale url-hooks.ts from a previous shape is removed.
+fn emit_url_hooks(client_dir: &Path) -> std::io::Result<()> {
+    let generated = client_dir.join("src/generated");
+    let out_path = generated.join("url-hooks.ts");
+    let spec_path = client_dir.join("openapi.json");
+
+    let mut ops = if spec_path.is_file() {
+        println!("cargo:rerun-if-changed={}", spec_path.display());
+        url_hook_ops(&std::fs::read_to_string(&spec_path)?)
+    } else {
+        Vec::new()
+    };
+    // Only reference tag modules that actually exist — a torn generated dir
+    // (interrupted `npm run gen`) should degrade to fewer wrappers, not a
+    // confusing module-not-found at bundle time.
+    ops.retain(|op| generated.join(&op.tag).is_dir());
+
+    if ops.is_empty() || !generated.is_dir() {
+        if out_path.is_file() {
+            std::fs::remove_file(&out_path)?;
+        }
+        return Ok(());
+    }
+
+    write_if_changed(&out_path, url_hooks_source(&ops).as_bytes())
+}
+
+/// Extract the eligible operations from an OpenAPI document.
+fn url_hook_ops(spec_json: &str) -> Vec<UrlHookOp> {
+    let Ok(spec) = serde_json::from_str::<serde_json::Value>(spec_json) else {
+        return Vec::new();
+    };
+    let Some(paths) = spec.get("paths").and_then(|p| p.as_object()) else {
+        return Vec::new();
+    };
+
+    let mut ops = Vec::new();
+    for item in paths.values() {
+        let Some(get) = item.get("get") else { continue };
+        let Some(op_id) = get.get("operationId").and_then(|v| v.as_str()) else {
+            continue;
+        };
+        let Some(tag) = get
+            .get("tags")
+            .and_then(|t| t.as_array())
+            .and_then(|t| t.first())
+            .and_then(|t| t.as_str())
+        else {
+            continue;
+        };
+        let query_keys: Vec<String> = get
+            .get("parameters")
+            .and_then(|p| p.as_array())
+            .map(|params| {
+                params
+                    .iter()
+                    .filter(|p| p.get("in").and_then(|i| i.as_str()) == Some("query"))
+                    .filter_map(|p| p.get("name").and_then(|n| n.as_str()))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        if query_keys.is_empty() {
+            continue;
+        }
+        // orval: operationId `getTodos` → hook `useGetTodos`.
+        let mut chars = op_id.chars();
+        let hook = match chars.next() {
+            Some(first) => format!("use{}{}", first.to_uppercase(), chars.as_str()),
+            None => continue,
+        };
+        ops.push(UrlHookOp {
+            hook,
+            tag: tag.to_string(),
+            query_keys,
+        });
+    }
+    ops.sort_by(|a, b| a.hook.cmp(&b.hook));
+    ops
+}
+
+fn url_hooks_source(ops: &[UrlHookOp]) -> String {
+    use std::fmt::Write as _;
+
+    let mut out = String::from(
+        r#"// @generated by nextrs::bundle (every build). Do not edit by hand.
+//
+// URL-bound hook variants: params come from the page URL (live via the
+// app-shell's router), setParams(patch) is a soft navigation. State that
+// defines the view — filters, sorts, pagination — belongs in the URL:
+// shareable, refreshable, back/forward walks warm cache entries.
+/* eslint-disable */
+import { useNavigate, useSearch } from "@tanstack/react-router";
+"#,
+    );
+    for op in ops {
+        let _ = writeln!(
+            out,
+            "import {{ {hook} }} from \"./{tag}/{tag}\";",
+            hook = op.hook,
+            tag = op.tag
+        );
+    }
+
+    out.push_str(
+        r#"
+type NxSearch = Record<string, unknown>;
+
+function nxPick(search: NxSearch, keys: string[]): NxSearch {
+  const out: NxSearch = {};
+  for (const k of keys) if (search[k] !== undefined) out[k] = search[k];
+  return out;
+}
+
+// undefined/null in a patch deletes the key from the URL.
+function nxMerge(prev: NxSearch, patch: NxSearch): NxSearch {
+  const next: NxSearch = { ...prev };
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === undefined || v === null) delete next[k];
+    else next[k] = v;
+  }
+  return next;
+}
+"#,
+    );
+
+    for op in ops {
+        let hook = &op.hook;
+        let keys = op
+            .query_keys
+            .iter()
+            .map(|k| format!("{k:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let _ = write!(
+            out,
+            r#"
+type {hook}Params = NonNullable<Parameters<typeof {hook}>[0]>;
+
+export function {hook}FromUrl(opts?: {{
+  /** Params supplied by code, merged over the URL-derived ones. */
+  fixed?: Partial<{hook}Params>;
+  /** "replace" for typeahead-style updates; default pushes history. */
+  history?: "push" | "replace";
+}}) {{
+  const search = useSearch({{ strict: false }}) as NxSearch;
+  const params = {{
+    ...nxPick(search, [{keys}]),
+    ...opts?.fixed,
+  }} as {hook}Params;
+  const navigate = useNavigate();
+  const setParams = (patch: Partial<{hook}Params>) =>
+    navigate({{
+      to: ".",
+      search: (prev: NxSearch) => nxMerge(prev, patch as NxSearch),
+      replace: opts?.history === "replace",
+    }});
+  const query = {hook}(params);
+  return {{ ...query, params, setParams }};
+}}
+"#
+        );
+    }
+    out
 }
 
 /// The `layout.tsx` chain that applies to `target_path`, root-first.
@@ -987,6 +1186,90 @@ mod tests {
         let s = entry_wrapper(Path::new("/abs/page.tsx"), &[], Path::new("/abs/helper.ts"));
         assert!(s.contains("__nx_params__"));
         assert!(s.contains("<Page params={params} />"));
+    }
+
+    const URL_HOOKS_SPEC: &str = r#"{
+      "paths": {
+        "/api/todos": {
+          "get": {
+            "operationId": "getTodos",
+            "tags": ["todos"],
+            "parameters": [
+              { "name": "status", "in": "query", "schema": { "type": "string" } },
+              { "name": "page", "in": "query", "schema": { "type": "integer" } }
+            ]
+          },
+          "post": { "operationId": "addTodo", "tags": ["todos"] }
+        },
+        "/api/todos/{id}": {
+          "get": {
+            "operationId": "getApiTodosById",
+            "tags": ["todos"],
+            "parameters": [
+              { "name": "id", "in": "path", "schema": { "type": "integer" } }
+            ]
+          }
+        },
+        "/api/ping": {
+          "get": { "operationId": "getApiPing", "tags": ["ping"] }
+        }
+      }
+    }"#;
+
+    #[test]
+    fn url_hook_ops_selects_gets_with_query_params() {
+        let ops = url_hook_ops(URL_HOOKS_SPEC);
+        // Path-only and no-param GETs (and POSTs) get no URL-bound variant.
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].hook, "useGetTodos");
+        assert_eq!(ops[0].tag, "todos");
+        assert_eq!(ops[0].query_keys, ["status", "page"]);
+    }
+
+    #[test]
+    fn url_hooks_source_shape() {
+        let src = url_hooks_source(&url_hook_ops(URL_HOOKS_SPEC));
+        assert!(src.contains(r#"import { useGetTodos } from "./todos/todos";"#));
+        assert!(src.contains("export function useGetTodosFromUrl"));
+        // Types derive from the orval hook — no guessed type names.
+        assert!(src.contains("NonNullable<Parameters<typeof useGetTodos>[0]>"));
+        // Params read the live URL, only the declared keys.
+        assert!(src.contains(r#"nxPick(search, ["status", "page"])"#));
+        // Setter is a soft navigation.
+        assert!(src.contains("const setParams"));
+        assert!(src.contains("useNavigate"));
+    }
+
+    #[test]
+    fn emit_url_hooks_writes_and_removes() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src/generated/todos")).unwrap();
+        std::fs::write(tmp.path().join("openapi.json"), URL_HOOKS_SPEC).unwrap();
+        emit_url_hooks(tmp.path()).unwrap();
+        let hooks = tmp.path().join("src/generated/url-hooks.ts");
+        assert!(hooks.is_file());
+
+        // Barrel picks it up.
+        emit_client_barrel(tmp.path()).unwrap();
+        let barrel =
+            std::fs::read_to_string(tmp.path().join("src/generated/index.ts")).unwrap();
+        assert!(barrel.contains(r#"export * from "./url-hooks";"#));
+
+        // Spec loses its eligible ops → stale file is removed.
+        std::fs::write(tmp.path().join("openapi.json"), r#"{"paths":{}}"#).unwrap();
+        emit_url_hooks(tmp.path()).unwrap();
+        assert!(!hooks.exists());
+    }
+
+    #[test]
+    fn emit_url_hooks_skips_ops_whose_tag_module_is_missing() {
+        // A torn generated dir (interrupted npm run gen) must not produce a
+        // wrapper importing a module that isn't there.
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("src/generated/model")).unwrap();
+        std::fs::write(tmp.path().join("openapi.json"), URL_HOOKS_SPEC).unwrap();
+        emit_url_hooks(tmp.path()).unwrap();
+        assert!(!tmp.path().join("src/generated/url-hooks.ts").exists());
     }
 
     #[test]
