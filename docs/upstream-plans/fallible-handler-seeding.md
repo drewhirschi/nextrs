@@ -2,7 +2,7 @@
 
 - **Reported-in:** onenote-extractor
 - **Date:** 2026-07-03
-- **Status:** open
+- **Status:** fixed in 514dcbe (published in nextrs 0.3.4 / macros 0.1.4)
 
 ## Problem
 
