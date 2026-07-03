@@ -25,11 +25,11 @@ path = "api/index.rs"
 # standalone from its own directory. Inside this repo's workspace, a
 # `[patch.crates-io]` in the root Cargo.toml redirects it to the local source.
 # `tsx` pulls in rolldown to bundle page.tsx; `build` is the registry/seed codegen.
-nextrs = { version = "0.3.2", features = ["build", "tsx"] }
+nextrs = { version = "0.3.3", features = ["build", "tsx"] }
 
 [dependencies]
 # `vercel` enables StreamingVercelLayer for the deploy entry; harmless locally.
-nextrs = { version = "0.3.2", features = ["vercel"] }
+nextrs = { version = "0.3.3", features = ["vercel"] }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"
