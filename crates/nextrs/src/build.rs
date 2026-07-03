@@ -295,9 +295,11 @@ fn url_snake(url: &str) -> String {
 
 /// Textual mirror of the macro's seed-companion eligibility: `get`'s args are
 /// empty, or at most one `Path<...>` and one `Query<...>` extractor, and it
-/// returns `Json<...>`. Kept deliberately simple — a false positive means a
-/// clear "cannot find __nextrs_seed_get" error at the `pub use`, not silent
-/// misrouting.
+/// returns `Json<...>` or `Result<Json<...>, E>`. Kept deliberately simple —
+/// a false positive means a clear "cannot find __nextrs_seed_get" error at
+/// the `pub use`, not silent misrouting. The return check is a normalized
+/// prefix match (NOT `contains("Json")`) so `Result<T, Json<E>>` or a type
+/// named `JsonLines` can't sneak an alias past the macro.
 fn get_is_seed_eligible(source: &str) -> bool {
     let Some(start) = source.find("pub async fn get") else {
         return false;
@@ -330,7 +332,7 @@ fn get_is_seed_eligible(source: &str) -> bool {
     let args = &sig[open + 1..close];
     let ret = &sig[close..];
 
-    if !ret.contains("Json") {
+    if !ret_is_seedable(ret) {
         return false;
     }
     let top_level_commas = {
@@ -357,6 +359,36 @@ fn get_is_seed_eligible(source: &str) -> bool {
         && arg_count <= 2
         && (arg_count == 1
             || (args.matches("Query").count() >= 1 && args.matches("Path").count() >= 1))
+}
+
+/// Whether the signature's return region (from the args' closing paren on)
+/// names a companion-eligible type: `Json<...>` or `Result<Json<...>, _>`,
+/// with optional module qualifiers (`axum::Json`). Mirrors the macro's
+/// structural check so the two gatekeepers agree in both directions.
+fn ret_is_seedable(ret: &str) -> bool {
+    let normalized: String = ret.chars().filter(|c| !c.is_whitespace()).collect();
+    let Some(ty) = normalized.strip_prefix(")->") else {
+        return false; // no return type at all
+    };
+    fn strip_qualifiers(mut s: &str) -> &str {
+        s = s.trim_start_matches("::");
+        while let Some(pos) = s.find("::") {
+            if s[..pos].chars().all(|c| c.is_alphanumeric() || c == '_') {
+                s = &s[pos + 2..];
+            } else {
+                break;
+            }
+        }
+        s
+    }
+    fn is_json_head(s: &str) -> bool {
+        strip_qualifiers(s).starts_with("Json<")
+    }
+    let ty = strip_qualifiers(ty);
+    is_json_head(ty)
+        || ty
+            .strip_prefix("Result<")
+            .is_some_and(|ok_side| is_json_head(ok_side))
 }
 
 /// URL path → bundle entry name for `page.tsx` routes. `/` → `index`,
@@ -2092,6 +2124,31 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
         // Path + non-extractor second arg: not eligible.
         assert!(!get_is_seed_eligible(
             "pub async fn get(Path(id): Path<i64>, headers: HeaderMap) -> Json<X> { todo!() }"
+        ));
+        // Fallible handlers: eligible — mirrors the macro's Result widening.
+        assert!(get_is_seed_eligible(
+            "pub async fn get() -> Result<Json<Vec<Todo>>, ApiError> { todo!() }"
+        ));
+        assert!(get_is_seed_eligible(
+            "pub async fn get(Path(id): Path<u64>) -> Result<Json<TodoDetail>, StatusCode> { todo!() }"
+        ));
+        // Qualified paths still match.
+        assert!(get_is_seed_eligible(
+            "pub async fn get() -> axum::Json<X> { todo!() }"
+        ));
+        assert!(get_is_seed_eligible(
+            "pub async fn get() -> Result<axum::Json<X>, E> { todo!() }"
+        ));
+        // Shapes that must NOT sneak past (the macro rejects them; an alias
+        // here would be a "cannot find __nextrs_seed_get" build break).
+        assert!(!get_is_seed_eligible(
+            "pub async fn get() -> Result<StatusCode, Json<E>> { todo!() }"
+        ));
+        assert!(!get_is_seed_eligible(
+            "pub async fn get() -> JsonLines<X> { todo!() }"
+        ));
+        assert!(!get_is_seed_eligible(
+            "pub async fn get() -> impl IntoResponse { todo!() }"
         ));
     }
 
