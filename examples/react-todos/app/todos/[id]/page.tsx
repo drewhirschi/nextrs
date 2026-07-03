@@ -21,22 +21,11 @@ function Permalink() {
 export default function TodoDetail({ params }: { params: { id: string } }) {
   const id = Number(params.id);
   const queryClient = useQueryClient();
-  // Soft-navigating here from the list? That list is still in the cache and
-  // already contains this todo — paint it immediately as placeholder data
-  // while the detail fetch confirms, instead of flashing "Loading…".
-  const { data, isFetching } = useGetApiTodosById(id, {
-    query: {
-      placeholderData: () => {
-        for (const [, cached] of queryClient.getQueriesData<{
-          data: { id: number; title: string; done: boolean }[];
-        }>({ queryKey: getGetTodosQueryKey() })) {
-          const t = cached?.data?.find((x) => x.id === id);
-          if (t) return { data: t, status: 200, headers: new Headers() };
-        }
-        return undefined;
-      },
-    },
-  });
+  // No placeholder gymnastics needed: soft navigations are seeded by the
+  // framework — the app shell's route loader fetched /__nx/prefetch for this
+  // URL (on hover, usually) and hydrated this exact key, the same entries a
+  // hard load would stream.
+  const { data, isFetching } = useGetApiTodosById(id);
   const todo = data?.data;
 
   // A todo's state shows on TWO surfaces: this detail entry and the list
