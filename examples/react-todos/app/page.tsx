@@ -1,6 +1,6 @@
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  useGetTodos,
+  useGetTodosFromUrl,
   useAddTodo,
   useDeleteTodo,
   getGetTodosQueryKey,
@@ -16,10 +16,18 @@ export default function Todos() {
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: getGetTodosQueryKey() });
 
-  // Warmed from the stream by prefetch.rs: defined on first render, no
-  // spinner, no mount fetch. Delete prefetch.rs and this just fetches on
-  // mount instead — the component can't tell.
-  const { data: todos, refetch, isFetching } = useGetTodos({ status: "open" });
+  // URL-bound: the filter lives in the page URL (?status=open), not in
+  // useState — so a shared link shows the same view, back/forward walks
+  // previous filters (from cache, instantly), and a hard load of any
+  // filtered URL is seeded by prefetch.rs from the same query string.
+  // Warmed from the stream on first render: no spinner, no mount fetch.
+  const {
+    data: todos,
+    refetch,
+    isFetching,
+    params,
+    setParams,
+  } = useGetTodosFromUrl();
 
   const addTodo = useAddTodo({
     mutation: {
@@ -36,6 +44,16 @@ export default function Todos() {
     <section>
       <div className="row">
         <h1>Todos</h1>
+        {/* setParams soft-navigates: the URL becomes ?status=open, this hook
+            re-keys off it, and the previous filter stays warm in the cache. */}
+        <select
+          aria-label="Filter todos"
+          value={params.status ?? ""}
+          onChange={(e) => setParams({ status: e.target.value || undefined })}
+        >
+          <option value="">All</option>
+          <option value="open">Open</option>
+        </select>
         <button className="ghost" onClick={() => refetch()} disabled={isFetching}>
           {isFetching ? "Refreshing…" : "Refresh"}
         </button>
