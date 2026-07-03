@@ -2,7 +2,7 @@
 
 - **Reported-in:** react-todos Vercel deploy (self-sufficient build work)
 - **Date:** 2026-07-03
-- **Status:** open
+- **Status:** fixed in chore/rolldown-1.1.4 (single commit; restamp with the merged hash)
 
 ## Problem
 
