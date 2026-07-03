@@ -59,7 +59,7 @@ tsx = [
 ]
 
 [dependencies]
-nextrs-macros = { path = "../nextrs-macros", version = "0.1.3" }
+nextrs-macros = { path = "../nextrs-macros", version = "0.1.4" }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower-http = { version = "0.6", features = ["fs", "trace"] }

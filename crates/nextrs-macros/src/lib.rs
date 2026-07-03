@@ -85,12 +85,19 @@ pub fn api(args: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Emit `__nextrs_seed_get` next to an eligible GET handler.
 ///
-/// Eligible: a `Json<...>` return type and at most one `Path<...>` plus one
-/// `Query<T>` extractor, in any order (including none) — the shapes whose
-/// responses the generated client caches under a query key. `Path` values
-/// substitute into the URL's `{seg}` slots so the key matches the client's
-/// substituted-URL form. Anything else (other extractors, other returns) gets
-/// no companion and routes normally; it just can't be seeded.
+/// Eligible: a `Json<...>` or `Result<Json<...>, E>` return type and at most
+/// one `Path<...>` plus one `Query<T>` extractor, in any order (including
+/// none) — the shapes whose responses the generated client caches under a
+/// query key. `Path` values substitute into the URL's `{seg}` slots so the
+/// key matches the client's substituted-URL form. Anything else (other
+/// extractors — `State`/`Extension` included — opaque `impl IntoResponse`
+/// returns, type aliases over Result) gets no companion and routes normally;
+/// it just can't be seeded.
+///
+/// Fallible companions return `Option<SeedEntry>`: an `Err` from the handler
+/// seeds nothing, and the page degrades to fetch-on-mount where the hook
+/// surfaces the error as usual. Infallible ones return `SeedEntry`;
+/// `QuerySeed::seed` accepts both.
 ///
 /// The companion calls the real handler, so the seeded data is byte-identical
 /// to a client refetch. `_ext` is accepted-but-unused: a stable call shape for
@@ -103,13 +110,21 @@ fn seed_companion(item: proc_macro2::TokenStream, url: &str) -> Option<proc_macr
     let func: syn::ItemFn = syn::parse2(item).ok()?;
     let fn_name = &func.sig.ident;
 
-    // Return type must be Json<...>.
+    // Return type must be Json<...> or Result<Json<...>, E>.
     let syn::ReturnType::Type(_, ret) = &func.sig.output else {
         return None;
     };
-    if last_path_ident(ret)? != "Json" {
-        return None;
-    }
+    let fallible = match last_path_ident(ret)?.as_str() {
+        "Json" => false,
+        "Result" => {
+            let ok_ty = first_generic_arg(ret)?;
+            if last_path_ident(ok_ty)? != "Json" {
+                return None;
+            }
+            true
+        }
+        _ => return None,
+    };
 
     // Collect the extractors: at most one Path and one Query, in any order.
     // Anything else disqualifies the handler.
@@ -188,22 +203,45 @@ fn seed_companion(item: proc_macro2::TokenStream, url: &str) -> Option<proc_macr
         _ => quote! { ::nextrs::axum::extract::Query(params) },
     });
 
-    Some(quote! {
-        #[doc(hidden)]
-        pub async fn __nextrs_seed_get(
-            #sig_args
-            _ext: &::nextrs::http::Extensions,
-        ) -> ::nextrs::SeedEntry {
-            let __url = #url_expr;
-            #params_stmt
-            let __resp = #fn_name(#(#call_args),*).await;
-            ::nextrs::SeedEntry {
-                key: ::nextrs::seed_key(&__url, #key_params),
-                data: ::nextrs::serde_json::to_value(&__resp.0)
-                    .expect("nextrs seed: response body must serialize"),
+    if fallible {
+        // Err seeds nothing — the page falls back to fetch-on-mount and the
+        // hook surfaces the error client-side.
+        Some(quote! {
+            #[doc(hidden)]
+            pub async fn __nextrs_seed_get(
+                #sig_args
+                _ext: &::nextrs::http::Extensions,
+            ) -> Option<::nextrs::SeedEntry> {
+                let __url = #url_expr;
+                #params_stmt
+                match #fn_name(#(#call_args),*).await {
+                    Ok(__json) => Some(::nextrs::SeedEntry {
+                        key: ::nextrs::seed_key(&__url, #key_params),
+                        data: ::nextrs::serde_json::to_value(&__json.0)
+                            .expect("nextrs seed: response body must serialize"),
+                    }),
+                    Err(_) => None,
+                }
             }
-        }
-    })
+        })
+    } else {
+        Some(quote! {
+            #[doc(hidden)]
+            pub async fn __nextrs_seed_get(
+                #sig_args
+                _ext: &::nextrs::http::Extensions,
+            ) -> ::nextrs::SeedEntry {
+                let __url = #url_expr;
+                #params_stmt
+                let __resp = #fn_name(#(#call_args),*).await;
+                ::nextrs::SeedEntry {
+                    key: ::nextrs::seed_key(&__url, #key_params),
+                    data: ::nextrs::serde_json::to_value(&__resp.0)
+                        .expect("nextrs seed: response body must serialize"),
+                }
+            }
+        })
+    }
 }
 
 /// `/api/sources/{id}/pages` → `"/api/sources/{}/pages"` — the `format!`
@@ -609,6 +647,46 @@ mod tests {
                 .parse()
                 .unwrap();
         assert!(seed_companion(item, "/a/{x}/b/{y}").is_none());
+    }
+
+    #[test]
+    fn seed_companion_for_fallible_get() {
+        let item: proc_macro2::TokenStream =
+            "pub async fn get() -> Result<Json<Vec<Todo>>, ApiError> { todo!() }"
+                .parse()
+                .unwrap();
+        let c = seed_companion(item, "/api/todos").unwrap().to_string();
+        assert!(c.contains("Option < :: nextrs :: SeedEntry >"), "{}", c);
+        assert!(c.contains("Ok (__json)"), "{}", c);
+        assert!(c.contains("Err (_) => None"), "{}", c);
+    }
+
+    #[test]
+    fn seed_companion_for_fallible_path_and_query_get() {
+        let item: proc_macro2::TokenStream =
+            "pub async fn get(Path(id): Path<i64>, Query(f): Query<F>) -> Result<Json<X>, E> { todo!() }"
+                .parse()
+                .unwrap();
+        let c = seed_companion(item, "/api/sources/{id}/pages")
+            .unwrap()
+            .to_string();
+        assert!(c.contains("path : i64"), "{}", c);
+        assert!(c.contains("params : F"), "{}", c);
+        assert!(c.contains(r#""/api/sources/{}/pages""#), "{}", c);
+        assert!(c.contains("Err (_) => None"), "{}", c);
+    }
+
+    #[test]
+    fn no_companion_when_result_ok_is_not_json() {
+        for src in [
+            // Ok side isn't Json.
+            "pub async fn get() -> Result<String, E> { todo!() }",
+            // Json is in the Err slot only — first generic arg is the Ok side.
+            "pub async fn get() -> Result<StatusCode, Json<E>> { todo!() }",
+        ] {
+            let item: proc_macro2::TokenStream = src.parse().unwrap();
+            assert!(seed_companion(item, "/x").is_none(), "{}", src);
+        }
     }
 
     #[test]

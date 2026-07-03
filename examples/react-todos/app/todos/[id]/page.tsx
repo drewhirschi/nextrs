@@ -26,7 +26,9 @@ export default function TodoDetail({ params }: { params: { id: string } }) {
   // URL (on hover, usually) and hydrated this exact key, the same entries a
   // hard load would stream.
   const { data, isFetching } = useGetApiTodosById(id);
-  const todo = data?.data;
+  // The handler is fallible (Result<Json<TodoDetail>, 404>) — the generated
+  // response type is a status union, so narrow on it.
+  const todo = data?.status === 200 ? data.data : undefined;
 
   // A todo's state shows on TWO surfaces: this detail entry and the list
   // (whose key is a different URL, so it's not a prefix of this one). With

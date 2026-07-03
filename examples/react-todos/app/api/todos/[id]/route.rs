@@ -22,20 +22,26 @@ pub struct TodoDetail {
     pub done: bool,
 }
 
+// Fallible, like real handlers: `Result<Json<T>, E>` gets a seed companion
+// too (an Err just seeds nothing and the client fetches/handles it normally).
 #[nextrs::api(
     get,
-    responses((status = 200, description = "The todo, or null if unknown", body = Option<TodoDetail>)),
+    responses(
+        (status = 200, description = "The todo", body = TodoDetail),
+        (status = 404, description = "No todo with that id"),
+    ),
 )]
-pub async fn get(Path(id): Path<u64>) -> Json<Option<TodoDetail>> {
-    Json(
-        react_todos::core::todos::get(id)
-            .await
-            .map(|t| TodoDetail {
+pub async fn get(Path(id): Path<u64>) -> Result<Json<TodoDetail>, StatusCode> {
+    react_todos::core::todos::get(id)
+        .await
+        .map(|t| {
+            Json(TodoDetail {
                 id: t.id,
                 title: t.title,
                 done: t.done,
-            }),
-    )
+            })
+        })
+        .ok_or(StatusCode::NOT_FOUND)
 }
 
 /// Body for `PATCH /api/todos/{id}`.
