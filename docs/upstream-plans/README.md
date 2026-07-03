@@ -18,3 +18,4 @@ user docs.
 - [emit_seeds Path params](emit-seeds-path-params.md)
 - [Generated client barrel exports](generated-client-barrel-exports.md)
 - [URL-bound query hooks + prefetch search params](url-bound-query-hooks.md)
+- [rolldown vs newer stable rustc](rolldown-newer-stable-rustc.md)

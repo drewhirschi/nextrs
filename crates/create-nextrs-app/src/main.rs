@@ -289,8 +289,21 @@ fn template_files(
         ("client/tsconfig.json", client_tsconfig_json(client_alias)),
         ("client/src/index.ts", client_index_ts()),
         ("client/src/nextrs-client.ts", nextrs_client_ts()),
+        ("rust-toolchain.toml", rust_toolchain_toml()),
         ("public/style.css", style_css()),
     ]
+}
+
+fn rust_toolchain_toml() -> String {
+    r#"# Pin the toolchain nextrs is verified on. The tsx page bundler pins
+# rolldown =1.1.0, which fails to compile (E0310 in rolldown_resolver) on
+# newer stable rustc — and Vercel's build image tracks latest stable, so an
+# unpinned deploy breaks. Remove once nextrs moves to a rolldown that builds
+# on current stable.
+[toolchain]
+channel = "1.96.0"
+"#
+    .into()
 }
 
 fn gitignore() -> String {
