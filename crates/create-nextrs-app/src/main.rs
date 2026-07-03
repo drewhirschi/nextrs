@@ -605,6 +605,7 @@ fn client_package_json(crate_name: &str) -> String {
   }},
   "dependencies": {{
     "@tanstack/react-query": "^5.62.0",
+    "@tanstack/react-router": "^1.87.0",
     "react": "^19.0.0",
     "react-dom": "^19.0.0"
   }},
@@ -667,21 +668,18 @@ fn client_tsconfig_json(client_alias: &str) -> String {
 
 fn client_index_ts() -> String {
     r#"import { useQueryClient } from "@tanstack/react-query";
+import { useParams as useRouterParams } from "@tanstack/react-router";
 
 export function useSeed<T>(key: unknown[]): T | undefined {
   return useQueryClient().getQueryData<{ data: T }>(key)?.data;
 }
 
-// Matched route params ([seg] segments), streamed by the server as a JSON
-// tag. Pages get them as a `params` prop; deep components can call this.
+// Matched route params ([seg] segments). Pages get them as a `params` prop;
+// deep components can call this. Backed by the app shell's TanStack Router so
+// the values stay LIVE across soft navigation — the server's __nx_params__
+// tag is only the boot-time snapshot and goes stale after a client-side nav.
 export function useParams<T extends Record<string, string> = Record<string, string>>(): T {
-  const tag = document.getElementById("__nx_params__");
-  if (!tag?.textContent) return {} as T;
-  try {
-    return JSON.parse(tag.textContent) as T;
-  } catch {
-    return {} as T;
-  }
+  return useRouterParams({ strict: false }) as T;
 }
 
 // Everything orval generates — React Query hooks for components, plus plain
