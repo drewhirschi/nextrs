@@ -62,19 +62,21 @@ state?". The full loop:
    setting a search param soft-navigates through the app-shell's TanStack
    Router: the URL updates, layout chrome stays mounted, the changed leaf
    swaps, and the React Query cache carries across. Data hooks re-key off the
-   new URL and fetch — or hit cache instantly for any previously-visited URL
-   state (back/forward is always warm).
+   new URL — hitting cache instantly for any previously-visited URL state
+   (back/forward is always warm), and **soft navigations are seeded too**:
+   hovering an app link (or the navigation itself) fetches
+   `GET /__nx/prefetch?path=<url>` — the route's `prefetch.rs`, behind its
+   middleware — and hydrates the same keys a hard load would stream, so new
+   pages also paint without a mount fetch.
 3. **Mutations** — go through the generated typed mutation hooks and
    `invalidateQueries` on the canonical key, which refreshes seeded and
    fetched entries alike (they share keys by design).
 4. **Sharing** — because hook params derive from the URL, any URL anyone
    pastes reproduces the exact view, server-seeded on their first load.
 
-The piece that closes this loop — generated `useXFromUrl()` hook variants that
-read/set search params against the OpenAPI types, plus search params reaching
-`prefetch.rs` — is planned: see
-`docs/upstream-plans/url-bound-query-hooks.md`. Until it lands, pages wire
-search params to hook args by hand; everything else above ships today.
+Everything above ships today: `useXFromUrl()` hook variants (generated from
+the OpenAPI spec, 0.3.3), `nextrs::search_params` for `prefetch.rs`, and the
+soft-nav prefetch endpoint + shell loaders (0.3.4).
 
 ## Static assets
 

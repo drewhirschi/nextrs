@@ -488,6 +488,7 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
         emit_middleware(&mut out, i, route);
 
         emit_methods(&mut out, i, route);
+        emit_prefetch_slot(&mut out, i, route);
         out.push_str("    });\n");
     }
 
@@ -961,6 +962,44 @@ fn emit_methods(out: &mut String, idx: usize, route: &DiscoveredRoute) {
         );
     }
     out.push_str("        ],\n");
+}
+
+/// Emit the `prefetch:` slot: the route's `prefetch.rs`/`props.rs` entry fn,
+/// exposed for the soft-nav prefetch endpoint (`/__nx/prefetch?path=...`) so
+/// client-side navigations can warm the query cache with the same entries a
+/// hard load would stream. Dynamic routes extract params from the request the
+/// same way the page handler does; both conventions' fn names are honored.
+fn emit_prefetch_slot(out: &mut String, idx: usize, route: &DiscoveredRoute) {
+    let Some(props_path) = &route.props else {
+        out.push_str("        prefetch: None,\n");
+        return;
+    };
+    let props_mod = mod_name(idx, "props");
+    let entry_fn = if props_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n == "prefetch.rs")
+    {
+        "prefetch"
+    } else {
+        "props"
+    };
+    if route.url_path.contains('{') {
+        let _ = writeln!(
+            out,
+            "        prefetch: Some(Box::new(|req| Box::pin(async move {{\n            \
+             let (params, req) = ::nextrs::params::extract_params(req).await;\n            \
+             {}::{}(req, params).await\n        \
+             }}))),",
+            props_mod, entry_fn
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "        prefetch: Some(Box::new(|req| Box::pin({}::{}(req)))),",
+            props_mod, entry_fn
+        );
+    }
 }
 
 fn emit_middleware(out: &mut String, idx: usize, route: &DiscoveredRoute) {
@@ -1768,6 +1807,33 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
             handler
         );
         assert!(!code.contains("compile_error!"), "{}", code);
+    }
+
+    #[test]
+    fn prefetch_slot_emitted_for_prefetch_backed_routes() {
+        // Static route with prefetch.rs → prefetch: Some(props-mod call).
+        let tmp = setup_app(&[("todos", &["page.tsx", "prefetch.rs"])]);
+        let code = generate_code(&discover_routes(tmp.path()));
+        assert!(
+            code.contains("prefetch: Some(Box::new(|req| Box::pin(__nextrs_route_0_props::prefetch(req))))"),
+            "{code}"
+        );
+
+        // Dynamic route → params extracted inside the closure.
+        let tmp = setup_app(&[("todos/[id]", &["page.tsx", "prefetch.rs"])]);
+        let code = generate_code(&discover_routes(tmp.path()));
+        assert!(code.contains("prefetch: Some(Box::new(|req| Box::pin(async move {"), "{code}");
+        assert!(code.contains("__nextrs_route_0_props::prefetch(req, params).await"), "{code}");
+
+        // Legacy props.rs keeps its fn name.
+        let tmp = setup_app(&[("todos", &["page.tsx", "props.rs"])]);
+        let code = generate_code(&discover_routes(tmp.path()));
+        assert!(code.contains("Box::pin(__nextrs_route_0_props::props(req))"), "{code}");
+
+        // No prefetch file → None.
+        let tmp = setup_app(&[("about", &["page.tsx"])]);
+        let code = generate_code(&discover_routes(tmp.path()));
+        assert!(code.contains("prefetch: None,"), "{code}");
     }
 
     #[test]

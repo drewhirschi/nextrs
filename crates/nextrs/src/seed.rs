@@ -53,9 +53,10 @@ impl QuerySeed {
         self
     }
 
-    /// The JSON script tag the shell handler streams before the mount div.
-    pub fn to_script_tag(&self) -> String {
-        let json = serde_json::Value::Array(
+    /// The entries as a JSON array (`[{key, data}, ...]`) — the wire shape of
+    /// both the `__nx_seeds__` tag and the soft-nav prefetch endpoint.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::Value::Array(
             self.entries
                 .iter()
                 .map(|e| {
@@ -65,11 +66,15 @@ impl QuerySeed {
                     })
                 })
                 .collect(),
-        );
+        )
+    }
+
+    /// The JSON script tag the shell handler streams before the mount div.
+    pub fn to_script_tag(&self) -> String {
         // Escape `<` so payload content can never close the script tag (or
         // open a comment) and break out into markup. `<` is plain JSON,
         // invisible to JSON.parse.
-        let safe = json.to_string().replace('<', "\\u003c");
+        let safe = self.to_json().to_string().replace('<', "\\u003c");
         format!(
             r#"<script type="application/json" id="__nx_seeds__">{}</script>"#,
             safe

@@ -2,7 +2,7 @@
 
 - **Reported-in:** react-todos (live demo review — "slight flicker" on list → detail)
 - **Date:** 2026-07-03
-- **Status:** open
+- **Status:** fixed in HEAD (feat/soft-nav-prefetch; restamp on merge)
 
 ## Problem
 
