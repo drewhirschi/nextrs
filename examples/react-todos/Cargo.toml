@@ -26,6 +26,11 @@ path = "api/index.rs"
 # `[patch.crates-io]` in the root Cargo.toml redirects it to the local source.
 # `tsx` pulls in rolldown to bundle page.tsx; `build` is the registry/seed codegen.
 nextrs = { version = "0.3", features = ["build", "tsx"] }
+# TEMPORARY (until nextrs 0.3.2 is published, which carries this pin itself):
+# oxc_resolver 11.23 breaks rolldown_resolver 1.1.0 (E0310), and a standalone
+# build (no lockfile — e.g. the Vercel deploy) resolves fresh. Remove when the
+# example's nextrs resolves to >= 0.3.2.
+oxc_resolver = "=11.21.0"
 
 [dependencies]
 # `vercel` enables StreamingVercelLayer for the deploy entry; harmless locally.

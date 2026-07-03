@@ -52,6 +52,7 @@ tsx = [
     "dep:rolldown_plugin_lazy_compilation",
     "dep:rolldown_plugin_oxc_runtime",
     "dep:rolldown_resolver",
+    "dep:oxc_resolver",
     "dep:rolldown_sourcemap",
     "dep:rolldown_std_utils",
     "dep:rolldown_tracing",
@@ -98,6 +99,12 @@ rolldown_plugin_hmr = { version = "=1.1.0", optional = true }
 rolldown_plugin_lazy_compilation = { version = "=1.1.0", optional = true }
 rolldown_plugin_oxc_runtime = { version = "=1.1.0", optional = true }
 rolldown_resolver = { version = "=1.1.0", optional = true }
+# Not used directly — constrains the transitive: oxc_resolver 11.23 breaks
+# rolldown_resolver 1.1.0 (E0310 on any rustc), so a consumer's FRESH
+# resolution (new app, no lockfile — e.g. a Vercel build) fails without this.
+# Drop when the rolldown pin moves to a release that builds against current
+# oxc_resolver (docs/upstream-plans/rolldown-newer-stable-rustc.md).
+oxc_resolver = { version = "=11.21.0", optional = true }
 rolldown_sourcemap = { version = "=1.1.0", optional = true }
 rolldown_std_utils = { version = "=1.1.0", optional = true }
 rolldown_tracing = { version = "=1.1.0", optional = true }
