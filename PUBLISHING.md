@@ -1,35 +1,41 @@
 # Publishing nextrs to crates.io
 
-Status (2026-06-27): all four crates are **publish-ready** and dry-run clean. The only
-remaining step needs a crates.io **auth token**, which wasn't available in the prep
-environment. Run `cargo login <token>` first, then publish **in this order** (deps first):
+Status (2026-07-01): **all four crates are live on crates.io.**
+
+| crate | published |
+| --- | --- |
+| `nextrs` | **0.3.1** |
+| `nextrs-macros` | **0.1.3** |
+| `cargo-nextrs-dev` | **0.1.0** |
+| `create-nextrs-app` | **0.1.0** |
+
+`cargo install create-nextrs-app` + `cargo install cargo-nextrs-dev` now work, which
+unblocks the default scaffold flow (ISSUES.md CRA-1/2/3), and generated apps'
+`nextrs = "0.3"` resolves.
+
+## Publishing a new release
+
+Publish **in this order** (deps first) with a `cargo login` done once on the machine:
 
 ```bash
-cargo login <YOUR_CRATES_IO_TOKEN>
-
-cargo publish -p nextrs-macros     # 0.1.2  (dry-run ✓)
-cargo publish -p nextrs            # 0.3.0  (verifies once macros 0.1.2 is live)
-cargo publish -p cargo-nextrs-dev  # 0.1.0  (dry-run ✓)
-cargo publish -p create-nextrs-app # 0.1.0  (dry-run ✓)
+cargo publish -p nextrs-macros
+cargo publish -p nextrs            # verifies against the just-published macros
+NEXTRS_SKIP_BUNDLE=1 cargo publish -p cargo-nextrs-dev
+NEXTRS_SKIP_BUNDLE=1 cargo publish -p create-nextrs-app
 ```
 
-## What the prep changed
-- Removed `publish = false` from `cargo-nextrs-dev` and `create-nextrs-app`.
-- Bumped `nextrs-macros` `0.1.0 → 0.1.2` and pinned `nextrs`'s dep to `0.1.2`.
+- Bump `nextrs`'s pinned `nextrs-macros = { version = ... }` dep together with the
+  macros version.
+- Keep `create-nextrs-app/src/main.rs`'s emitted `nextrs = "0.x"` in lockstep with the
+  released `nextrs` version (ideally a CI check) so the scaffold never pins an
+  unpublished version.
 
-## Why macros 0.1.2 (not 0.1.0 or 0.1.1)
-crates.io already has `nextrs-macros 0.1.1` (published from the now-deleted `spicy-pocket`
-branch), but `main` was still at `0.1.0`. Re-publishing `0.1.0` is impossible (older than
-what's live) and reusing `0.1.1` is risky (its source may differ from `main`). Publishing
-`main`'s macros fresh as **0.1.2** keeps the crates.io line monotonic (0.1.1 → 0.1.2) and
-guarantees the published macros are exactly the source `nextrs 0.3.0` compiles against.
+## History / version quirks
 
-## Notes
-- This publishes the **current (seeds) API** (`QuerySeed` / `seed_key` / `props.rs`). The
-  planned **prefetch rename** lands later as `nextrs 0.4.0` (with `#[deprecated]` aliases).
-- `nextrs`'s dry-run can't fully verify offline because its `nextrs-macros = "0.1.2"` dep
-  isn't on crates.io yet — that's normal; it verifies during the real publish after step 1.
-- Once published, `cargo install create-nextrs-app` + `cargo install cargo-nextrs-dev` work,
-  which unblocks the default `create-nextrs-app` flow (ISSUES.md CRA-1/2/3).
-- Keep `create-nextrs-app/src/main.rs`'s `VERSION` const in lockstep with the released
-  `nextrs` version (ideally a CI check) so the scaffold never pins an unpublished version.
+- `nextrs-macros` jumped `0.1.0 → 0.1.2` at first publish: crates.io already had a
+  `0.1.1` published from the deleted `spicy-pocket` branch, so `main` published fresh as
+  `0.1.2` to keep the line monotonic and guarantee published source matches `main`.
+- `nextrs 0.3.0` was never published — `main` had already moved to `0.3.1` (route
+  params release, PR #24) when the first publish happened.
+- The planned **prefetch rename** lands later as `nextrs 0.4.0` (with `#[deprecated]`
+  aliases).
