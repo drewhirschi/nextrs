@@ -47,6 +47,17 @@ pub async fn get(id: u64) -> Option<Todo> {
     todos.iter().find(|t| t.id == id).cloned()
 }
 
+/// The ids adjacent to `id` in list order, for prev/next navigation.
+pub async fn neighbors(id: u64) -> (Option<u64>, Option<u64>) {
+    let todos = store().lock().unwrap();
+    let Some(pos) = todos.iter().position(|t| t.id == id) else {
+        return (None, None);
+    };
+    let prev = pos.checked_sub(1).map(|p| todos[p].id);
+    let next = todos.get(pos + 1).map(|t| t.id);
+    (prev, next)
+}
+
 /// Mark a todo done/undone. Returns the updated todo, `None` if unknown.
 pub async fn set_done(id: u64, done: bool) -> Option<Todo> {
     let mut todos = store().lock().unwrap();

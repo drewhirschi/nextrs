@@ -1,9 +1,9 @@
 // Todo detail — a dynamic route ([id]). The `params` prop comes from the
 // framework: TanStack Router's live match under soft navigation, the server's
 // __nx_params__ tag on a hard load. First paint is seeded by the sibling
-// prefetch.rs, so there's no fetch on load here either.
+// prefetch.rs (soft navigations too, via the app shell's /__nx/prefetch).
 import {
-  useGetApiTodosById,
+  useGetApiTodosByIdFromUrl,
   useUpdateTodo,
   useParams,
   getGetApiTodosByIdQueryKey,
@@ -21,11 +21,15 @@ function Permalink() {
 export default function TodoDetail({ params }: { params: { id: string } }) {
   const id = Number(params.id);
   const queryClient = useQueryClient();
-  // No placeholder gymnastics needed: soft navigations are seeded by the
-  // framework — the app shell's route loader fetched /__nx/prefetch for this
-  // URL (on hover, usually) and hydrated this exact key, the same entries a
-  // hard load would stream.
-  const { data, isFetching } = useGetApiTodosById(id);
+  // A path+query route: the id (identity — which todo) is an explicit
+  // argument, and the query options (?neighbors=) bind to the page URL, so
+  // "showing neighbors" is shareable/back-forwardable view state.
+  const {
+    data,
+    isFetching,
+    params: urlParams,
+    setParams,
+  } = useGetApiTodosByIdFromUrl(id);
   // The handler is fallible (Result<Json<TodoDetail>, 404>) — the generated
   // response type is a status union, so narrow on it.
   const todo = data?.status === 200 ? data.data : undefined;
@@ -64,11 +68,25 @@ export default function TodoDetail({ params }: { params: { id: string } }) {
       ) : (
         <p className="muted">{isFetching ? "Loading…" : "No such todo."}</p>
       )}
+
+      <p className="row">
+        <label className="muted">
+          <input
+            type="checkbox"
+            checked={urlParams.neighbors ?? false}
+            onChange={(e) => setParams({ neighbors: e.target.checked || undefined })}
+          />{" "}
+          Show neighbors (URL state: <code>?neighbors=true</code>)
+        </label>
+        {todo?.prev != null && <a href={`/todos/${todo.prev}?neighbors=true`}>← prev</a>}
+        {todo?.next != null && <a href={`/todos/${todo.next}?neighbors=true`}>next →</a>}
+      </p>
+
       <p className="muted note">
         The <code>id</code> arrives as a <code>params</code> prop — live from
         the router on soft navigation, streamed by the server on a hard load.
         The todo itself was seeded by <code>prefetch.rs</code> via the typed
-        Path-param companion for <code>GET /api/todos/&#123;id&#125;</code>.
+        companion for the fallible <code>GET /api/todos/&#123;id&#125;</code>.
       </p>
       <p>
         <a href="/">← back to the list</a>

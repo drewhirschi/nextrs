@@ -87,6 +87,18 @@
               "format": "int64",
               "minimum": 0
             }
+          },
+          {
+            "name": "neighbors",
+            "in": "query",
+            "description": "Include prev/next ids for detail-page navigation.",
+            "required": false,
+            "schema": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -232,6 +244,23 @@
           "id": {
             "type": "integer",
             "format": "int64",
+            "minimum": 0
+          },
+          "next": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "prev": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Adjacent todo ids, present when requested with `?neighbors=true`.",
             "minimum": 0
           },
           "title": {

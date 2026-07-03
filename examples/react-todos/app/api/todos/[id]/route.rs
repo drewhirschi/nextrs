@@ -8,10 +8,10 @@
 //! companion (`get_api_todos_by_id`) that `app/todos/[id]/prefetch.rs` uses.
 
 use axum::Json;
-use axum::extract::Path;
+use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
+use utoipa::{IntoParams, ToSchema};
 
 /// Wire shape of a single-todo read. (Named apart from the list DTO in
 /// `../route.rs` — OpenAPI schema names are global.)
@@ -20,6 +20,22 @@ pub struct TodoDetail {
     pub id: u64,
     pub title: String,
     pub done: bool,
+    /// Adjacent todo ids, present when requested with `?neighbors=true`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prev: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next: Option<u64>,
+}
+
+/// Options for `GET /api/todos/{id}` — a path+query route, so its generated
+/// `useGetApiTodosByIdFromUrl(id)` takes the path value as an argument and
+/// binds only these to the page URL. (`skip_serializing_if` keeps seeded
+/// query keys matching the client's, which drops absent fields.)
+#[derive(Serialize, Deserialize, IntoParams)]
+pub struct DetailQuery {
+    /// Include prev/next ids for detail-page navigation.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub neighbors: Option<bool>,
 }
 
 // Fallible, like real handlers: `Result<Json<T>, E>` gets a seed companion
@@ -31,17 +47,25 @@ pub struct TodoDetail {
         (status = 404, description = "No todo with that id"),
     ),
 )]
-pub async fn get(Path(id): Path<u64>) -> Result<Json<TodoDetail>, StatusCode> {
-    react_todos::core::todos::get(id)
+pub async fn get(
+    Path(id): Path<u64>,
+    Query(q): Query<DetailQuery>,
+) -> Result<Json<TodoDetail>, StatusCode> {
+    let todo = react_todos::core::todos::get(id)
         .await
-        .map(|t| {
-            Json(TodoDetail {
-                id: t.id,
-                title: t.title,
-                done: t.done,
-            })
-        })
-        .ok_or(StatusCode::NOT_FOUND)
+        .ok_or(StatusCode::NOT_FOUND)?;
+    let (prev, next) = if q.neighbors.unwrap_or(false) {
+        react_todos::core::todos::neighbors(id).await
+    } else {
+        (None, None)
+    };
+    Ok(Json(TodoDetail {
+        id: todo.id,
+        title: todo.title,
+        done: todo.done,
+        prev,
+        next,
+    }))
 }
 
 /// Body for `PATCH /api/todos/{id}`.
@@ -69,6 +93,8 @@ pub async fn patch(
                 id: t.id,
                 title: t.title,
                 done: t.done,
+                prev: None,
+                next: None,
             }),
     )
 }
