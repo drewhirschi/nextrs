@@ -91,21 +91,17 @@
         ],
         "responses": {
           "200": {
-            "description": "The todo, or null if unknown",
+            "description": "The todo",
             "content": {
               "application/json": {
                 "schema": {
-                  "oneOf": [
-                    {
-                      "type": "null"
-                    },
-                    {
-                      "$ref": "#/components/schemas/TodoDetail"
-                    }
-                  ]
+                  "$ref": "#/components/schemas/TodoDetail"
                 }
               }
             }
+          },
+          "404": {
+            "description": "No todo with that id"
           }
         }
       },
