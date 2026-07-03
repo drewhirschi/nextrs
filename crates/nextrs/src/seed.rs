@@ -41,21 +41,45 @@ pub struct QuerySeed {
     entries: Vec<SeedEntry>,
 }
 
+/// What a seed step yields: an entry, or nothing. Infallible companions
+/// (`-> Json<T>` handlers) produce a [`SeedEntry`]; fallible ones
+/// (`-> Result<Json<T>, E>`) produce `Option<SeedEntry>` — an `Err` seeds
+/// nothing, and the page degrades to fetch-on-mount where the hook surfaces
+/// the error exactly as it would have anyway.
+pub trait IntoSeedEntry {
+    fn into_seed_entry(self) -> Option<SeedEntry>;
+}
+
+impl IntoSeedEntry for SeedEntry {
+    fn into_seed_entry(self) -> Option<SeedEntry> {
+        Some(self)
+    }
+}
+
+impl IntoSeedEntry for Option<SeedEntry> {
+    fn into_seed_entry(self) -> Option<SeedEntry> {
+        self
+    }
+}
+
 impl QuerySeed {
     pub fn new() -> Self {
         Self::default()
     }
 
-    /// Await a seed companion and add its entry. Chains:
+    /// Await a seed companion and add its entry (if it produced one). Chains:
     /// `QuerySeed::new().seed(a).await.seed(b).await`.
-    pub async fn seed(mut self, entry: impl Future<Output = SeedEntry>) -> Self {
-        self.entries.push(entry.await);
+    pub async fn seed(mut self, entry: impl Future<Output = impl IntoSeedEntry>) -> Self {
+        if let Some(entry) = entry.await.into_seed_entry() {
+            self.entries.push(entry);
+        }
         self
     }
 
-    /// The JSON script tag the shell handler streams before the mount div.
-    pub fn to_script_tag(&self) -> String {
-        let json = serde_json::Value::Array(
+    /// The entries as a JSON array (`[{key, data}, ...]`) — the wire shape of
+    /// both the `__nx_seeds__` tag and the soft-nav prefetch endpoint.
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::Value::Array(
             self.entries
                 .iter()
                 .map(|e| {
@@ -65,11 +89,15 @@ impl QuerySeed {
                     })
                 })
                 .collect(),
-        );
+        )
+    }
+
+    /// The JSON script tag the shell handler streams before the mount div.
+    pub fn to_script_tag(&self) -> String {
         // Escape `<` so payload content can never close the script tag (or
         // open a comment) and break out into markup. `<` is plain JSON,
         // invisible to JSON.parse.
-        let safe = json.to_string().replace('<', "\\u003c");
+        let safe = self.to_json().to_string().replace('<', "\\u003c");
         format!(
             r#"<script type="application/json" id="__nx_seeds__">{}</script>"#,
             safe
@@ -126,6 +154,24 @@ mod tests {
             parsed[0]["data"]["html"],
             serde_json::json!("</script><script>alert(1)</script>")
         );
+    }
+
+    #[tokio::test]
+    async fn seed_accepts_optional_entries() {
+        // Fallible companions yield Option<SeedEntry>; None seeds nothing.
+        let seed = QuerySeed::new()
+            .seed(async {
+                Some(SeedEntry {
+                    key: seed_key("/a", None),
+                    data: serde_json::json!(1),
+                })
+            })
+            .await
+            .seed(async { None::<SeedEntry> })
+            .await;
+        let json = seed.to_json();
+        assert_eq!(json.as_array().unwrap().len(), 1);
+        assert_eq!(json[0]["key"], serde_json::json!(["/a"]));
     }
 
     #[tokio::test]

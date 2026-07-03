@@ -20,3 +20,5 @@ user docs.
 - [URL-bound query hooks + prefetch search params](url-bound-query-hooks.md)
 - [rolldown vs newer stable rustc](rolldown-newer-stable-rustc.md)
 - [Soft navigations seeded like hard loads](soft-nav-prefetch.md)
+- [Fallible handler seeding](fallible-handler-seeding.md)
+- [State-extractor seeding](state-extractor-seeding.md)

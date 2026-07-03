@@ -740,6 +740,49 @@ fn app_shell_entry(routes: &[DiscoveredRoute], client_helper: &Path) -> String {
            };\n\
          }\n\n",
     );
+    // Soft-nav data prefetch: routes with a prefetch.rs get a loader that
+    // asks the server for the same entries a hard load would stream
+    // (GET /__nx/prefetch?path=...), hydrating the query cache. With
+    // preload:"intent" this runs on hover, so by click time the leaf paints
+    // seeded. Bounded: a slow prefetch aborts at 1s and the page falls back
+    // to fetch-on-mount. The very first loader run is the document we just
+    // hard-loaded — its seeds are already in the cache, skip the request.
+    out.push_str(
+        "// The document we hard-loaded already carried its seeds — skip one\n\
+         // redundant self-prefetch for it. In-flight prefetches are shared, so\n\
+         // hover and the click-time loader await the SAME request.\n\
+         const nxInitialHref = window.location.pathname + window.location.search;\n\
+         let nxFirstLoad = true;\n\
+         const nxInflight = new Map<string, Promise<void>>();\n\
+         function nxPrefetch(href: string): Promise<void> {\n\
+           if (nxFirstLoad && href === nxInitialHref) {\n\
+             nxFirstLoad = false;\n\
+             return Promise.resolve();\n\
+           }\n\
+           let p = nxInflight.get(href);\n\
+           if (!p) {\n\
+             p = nxFetchSeeds(href).finally(() => {\n\
+               setTimeout(() => nxInflight.delete(href), 3000);\n\
+             });\n\
+             nxInflight.set(href, p);\n\
+           }\n\
+           return p;\n\
+         }\n\
+         async function nxFetchSeeds(href: string) {\n\
+           try {\n\
+             const res = await fetch(\"/__nx/prefetch?path=\" + encodeURIComponent(href), {\n\
+               signal: AbortSignal.timeout(1000),\n\
+             });\n\
+             if (!res.ok) return;\n\
+             for (const e of await res.json()) {\n\
+               const state = qc.getQueryState(e.key);\n\
+               // Don't clobber data newer than the staleTime window.\n\
+               if (state && !state.isInvalidated && Date.now() - state.dataUpdatedAt < 30_000) continue;\n\
+               qc.setQueryData(e.key, { data: e.data, status: 200, headers: new Headers() });\n\
+             }\n\
+           } catch {}\n\
+         }\n\n",
+    );
     out.push_str(
         "const rootRoute = createRootRoute({\n  component: () => (<QueryClientProvider client={qc}><Outlet /></QueryClientProvider>),\n});\n\n",
     );
@@ -764,6 +807,12 @@ fn app_shell_entry(routes: &[DiscoveredRoute], client_helper: &Path) -> String {
             out,
             "const route_{i} = createRoute({{ getParentRoute: () => {parent}, path: {path:?}, component: nxLeaf(() => import({page_path:?}))"
         );
+        if pg.props.is_some() {
+            let _ = write!(
+                out,
+                ", loader: ({{ location }}: {{ location: {{ href: string }} }}) => nxPrefetch(location.href)"
+            );
+        }
         if let Some(loading) =
             nearest_tsx_loading_route(routes, &pg.url_path).and_then(|r| r.loading.tsx.as_ref())
         {
@@ -811,18 +860,30 @@ fn app_shell_entry(routes: &[DiscoveredRoute], client_helper: &Path) -> String {
         .join(", ");
     let _ = writeln!(out, "const NX_APP_ROUTES = [{route_patterns}];");
     out.push_str(
-        "document.addEventListener(\"click\", (e) => {\n\
-           if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;\n\
+        "function nxAppUrl(e: Event): URL | null {\n\
            const a = e.target instanceof Element ? e.target.closest(\"a\") : null;\n\
-           if (!a || (a.target && a.target !== \"_self\")) return;\n\
-           if (a.hasAttribute(\"download\") || a.hasAttribute(\"data-no-soft\")) return;\n\
+           if (!a || (a.target && a.target !== \"_self\")) return null;\n\
+           if (a.hasAttribute(\"download\") || a.hasAttribute(\"data-no-soft\")) return null;\n\
            const href = a.getAttribute(\"href\");\n\
-           if (!href || href.startsWith(\"#\")) return;\n\
+           if (!href || href.startsWith(\"#\")) return null;\n\
            const url = new URL(a.href, window.location.href);\n\
-           if (url.origin !== window.location.origin) return;\n\
-           if (!NX_APP_ROUTES.some((r) => r.test(url.pathname))) return;\n\
+           if (url.origin !== window.location.origin) return null;\n\
+           if (!NX_APP_ROUTES.some((r) => r.test(url.pathname))) return null;\n\
+           return url;\n\
+         }\n\
+         document.addEventListener(\"click\", (e) => {\n\
+           if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;\n\
+           const url = nxAppUrl(e);\n\
+           if (!url) return;\n\
            e.preventDefault();\n\
            router.navigate({ href: url.pathname + url.search + url.hash });\n\
+         });\n\
+         // Hover = intent: plain anchors have no TanStack <Link> machinery, so\n\
+         // defaultPreload:\"intent\" never sees them — warm the DATA here (the\n\
+         // in-flight map in nxPrefetch dedups against the loader at click time).\n\
+         document.addEventListener(\"mouseover\", (e) => {\n\
+           const url = nxAppUrl(e);\n\
+           if (url) nxPrefetch(url.pathname + url.search);\n\
          });\n\n",
     );
 
@@ -1322,6 +1383,28 @@ mod tests {
         // Escape hatches: modified clicks, downloads, and explicit opt-out.
         assert!(s.contains("data-no-soft"));
         assert!(s.contains("e.metaKey"));
+    }
+
+    #[test]
+    fn app_shell_prefetch_loader_only_on_prefetch_backed_routes() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("todos/[id]")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("about")).unwrap();
+        std::fs::write(tmp.path().join("todos/[id]/page.tsx"), "").unwrap();
+        std::fs::write(tmp.path().join("todos/[id]/prefetch.rs"), "").unwrap();
+        std::fs::write(tmp.path().join("about/page.tsx"), "").unwrap();
+        let routes = discover_routes(tmp.path());
+        let s = app_shell_entry(&routes, Path::new("/abs/helper.ts"));
+
+        // Soft-nav prefetch: the seeded route gets a loader hitting the
+        // endpoint; the plain route doesn't.
+        assert!(s.contains("function nxPrefetch"));
+        assert!(s.contains("/__nx/prefetch?path="));
+        // Exactly one loader (the prefetch-backed leaf).
+        assert_eq!(s.matches("loader: ({ location }").count(), 1, "{s}");
+        // Hydration respects freshness and matches the seed envelope.
+        assert!(s.contains("qc.setQueryData(e.key, { data: e.data, status: 200, headers: new Headers() })"));
+        assert!(s.contains("AbortSignal.timeout(1000)"));
     }
 
     #[test]

@@ -57,7 +57,21 @@ pub type RouteFn = Box<
         + Sync,
 >;
 
+/// Data prefetch for a route's React page (from `prefetch.rs`/`props.rs`):
+/// runs the same server logic a hard load streams as `__nx_seeds__`, so the
+/// soft-nav prefetch endpoint (`/__nx/prefetch?path=...`) can warm the client
+/// cache during navigation. Params (on dynamic routes) are extracted from the
+/// request inside the generated closure, exactly like the page handler does.
+pub type PrefetchDataFn = Box<
+    dyn Fn(
+            http::Request<axum::body::Body>,
+        ) -> Pin<Box<dyn Future<Output = crate::seed::QuerySeed> + Send>>
+        + Send
+        + Sync,
+>;
+
 /// Represents a single route entry discovered from the app/ directory
+#[derive(Default)]
 pub struct RouteEntry {
     /// URL path, e.g. "/" or "/dashboard/settings"
     pub path: String,
@@ -71,6 +85,10 @@ pub struct RouteEntry {
     pub middleware: Option<MiddlewareFn>,
     /// API route handlers by method (from route.rs)
     pub methods: Vec<(http::Method, RouteFn)>,
+    /// Data prefetch (from prefetch.rs/props.rs beside a page.tsx) — served
+    /// by the soft-nav prefetch endpoint so soft navigations render seeded
+    /// like hard loads.
+    pub prefetch: Option<PrefetchDataFn>,
 }
 
 /// A `not-found.{rs,html,tsx}` surface, keyed by the URL path of the segment

@@ -295,9 +295,11 @@ fn url_snake(url: &str) -> String {
 
 /// Textual mirror of the macro's seed-companion eligibility: `get`'s args are
 /// empty, or at most one `Path<...>` and one `Query<...>` extractor, and it
-/// returns `Json<...>`. Kept deliberately simple — a false positive means a
-/// clear "cannot find __nextrs_seed_get" error at the `pub use`, not silent
-/// misrouting.
+/// returns `Json<...>` or `Result<Json<...>, E>`. Kept deliberately simple —
+/// a false positive means a clear "cannot find __nextrs_seed_get" error at
+/// the `pub use`, not silent misrouting. The return check is a normalized
+/// prefix match (NOT `contains("Json")`) so `Result<T, Json<E>>` or a type
+/// named `JsonLines` can't sneak an alias past the macro.
 fn get_is_seed_eligible(source: &str) -> bool {
     let Some(start) = source.find("pub async fn get") else {
         return false;
@@ -330,7 +332,7 @@ fn get_is_seed_eligible(source: &str) -> bool {
     let args = &sig[open + 1..close];
     let ret = &sig[close..];
 
-    if !ret.contains("Json") {
+    if !ret_is_seedable(ret) {
         return false;
     }
     let top_level_commas = {
@@ -357,6 +359,36 @@ fn get_is_seed_eligible(source: &str) -> bool {
         && arg_count <= 2
         && (arg_count == 1
             || (args.matches("Query").count() >= 1 && args.matches("Path").count() >= 1))
+}
+
+/// Whether the signature's return region (from the args' closing paren on)
+/// names a companion-eligible type: `Json<...>` or `Result<Json<...>, _>`,
+/// with optional module qualifiers (`axum::Json`). Mirrors the macro's
+/// structural check so the two gatekeepers agree in both directions.
+fn ret_is_seedable(ret: &str) -> bool {
+    let normalized: String = ret.chars().filter(|c| !c.is_whitespace()).collect();
+    let Some(ty) = normalized.strip_prefix(")->") else {
+        return false; // no return type at all
+    };
+    fn strip_qualifiers(mut s: &str) -> &str {
+        s = s.trim_start_matches("::");
+        while let Some(pos) = s.find("::") {
+            if s[..pos].chars().all(|c| c.is_alphanumeric() || c == '_') {
+                s = &s[pos + 2..];
+            } else {
+                break;
+            }
+        }
+        s
+    }
+    fn is_json_head(s: &str) -> bool {
+        strip_qualifiers(s).starts_with("Json<")
+    }
+    let ty = strip_qualifiers(ty);
+    is_json_head(ty)
+        || ty
+            .strip_prefix("Result<")
+            .is_some_and(|ok_side| is_json_head(ok_side))
 }
 
 /// URL path → bundle entry name for `page.tsx` routes. `/` → `index`,
@@ -488,6 +520,7 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
         emit_middleware(&mut out, i, route);
 
         emit_methods(&mut out, i, route);
+        emit_prefetch_slot(&mut out, i, route);
         out.push_str("    });\n");
     }
 
@@ -961,6 +994,44 @@ fn emit_methods(out: &mut String, idx: usize, route: &DiscoveredRoute) {
         );
     }
     out.push_str("        ],\n");
+}
+
+/// Emit the `prefetch:` slot: the route's `prefetch.rs`/`props.rs` entry fn,
+/// exposed for the soft-nav prefetch endpoint (`/__nx/prefetch?path=...`) so
+/// client-side navigations can warm the query cache with the same entries a
+/// hard load would stream. Dynamic routes extract params from the request the
+/// same way the page handler does; both conventions' fn names are honored.
+fn emit_prefetch_slot(out: &mut String, idx: usize, route: &DiscoveredRoute) {
+    let Some(props_path) = &route.props else {
+        out.push_str("        prefetch: None,\n");
+        return;
+    };
+    let props_mod = mod_name(idx, "props");
+    let entry_fn = if props_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n == "prefetch.rs")
+    {
+        "prefetch"
+    } else {
+        "props"
+    };
+    if route.url_path.contains('{') {
+        let _ = writeln!(
+            out,
+            "        prefetch: Some(Box::new(|req| Box::pin(async move {{\n            \
+             let (params, req) = ::nextrs::params::extract_params(req).await;\n            \
+             {}::{}(req, params).await\n        \
+             }}))),",
+            props_mod, entry_fn
+        );
+    } else {
+        let _ = writeln!(
+            out,
+            "        prefetch: Some(Box::new(|req| Box::pin({}::{}(req)))),",
+            props_mod, entry_fn
+        );
+    }
 }
 
 fn emit_middleware(out: &mut String, idx: usize, route: &DiscoveredRoute) {
@@ -1771,6 +1842,33 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
     }
 
     #[test]
+    fn prefetch_slot_emitted_for_prefetch_backed_routes() {
+        // Static route with prefetch.rs → prefetch: Some(props-mod call).
+        let tmp = setup_app(&[("todos", &["page.tsx", "prefetch.rs"])]);
+        let code = generate_code(&discover_routes(tmp.path()));
+        assert!(
+            code.contains("prefetch: Some(Box::new(|req| Box::pin(__nextrs_route_0_props::prefetch(req))))"),
+            "{code}"
+        );
+
+        // Dynamic route → params extracted inside the closure.
+        let tmp = setup_app(&[("todos/[id]", &["page.tsx", "prefetch.rs"])]);
+        let code = generate_code(&discover_routes(tmp.path()));
+        assert!(code.contains("prefetch: Some(Box::new(|req| Box::pin(async move {"), "{code}");
+        assert!(code.contains("__nextrs_route_0_props::prefetch(req, params).await"), "{code}");
+
+        // Legacy props.rs keeps its fn name.
+        let tmp = setup_app(&[("todos", &["page.tsx", "props.rs"])]);
+        let code = generate_code(&discover_routes(tmp.path()));
+        assert!(code.contains("Box::pin(__nextrs_route_0_props::props(req))"), "{code}");
+
+        // No prefetch file → None.
+        let tmp = setup_app(&[("about", &["page.tsx"])]);
+        let code = generate_code(&discover_routes(tmp.path()));
+        assert!(code.contains("prefetch: None,"), "{code}");
+    }
+
+    #[test]
     fn dynamic_tsx_page_with_props_gets_params() {
         let tmp = setup_app(&[("source/[id]", &["page.tsx", "props.rs"])]);
         let routes = discover_routes(tmp.path());
@@ -2026,6 +2124,31 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
         // Path + non-extractor second arg: not eligible.
         assert!(!get_is_seed_eligible(
             "pub async fn get(Path(id): Path<i64>, headers: HeaderMap) -> Json<X> { todo!() }"
+        ));
+        // Fallible handlers: eligible — mirrors the macro's Result widening.
+        assert!(get_is_seed_eligible(
+            "pub async fn get() -> Result<Json<Vec<Todo>>, ApiError> { todo!() }"
+        ));
+        assert!(get_is_seed_eligible(
+            "pub async fn get(Path(id): Path<u64>) -> Result<Json<TodoDetail>, StatusCode> { todo!() }"
+        ));
+        // Qualified paths still match.
+        assert!(get_is_seed_eligible(
+            "pub async fn get() -> axum::Json<X> { todo!() }"
+        ));
+        assert!(get_is_seed_eligible(
+            "pub async fn get() -> Result<axum::Json<X>, E> { todo!() }"
+        ));
+        // Shapes that must NOT sneak past (the macro rejects them; an alias
+        // here would be a "cannot find __nextrs_seed_get" build break).
+        assert!(!get_is_seed_eligible(
+            "pub async fn get() -> Result<StatusCode, Json<E>> { todo!() }"
+        ));
+        assert!(!get_is_seed_eligible(
+            "pub async fn get() -> JsonLines<X> { todo!() }"
+        ));
+        assert!(!get_is_seed_eligible(
+            "pub async fn get() -> impl IntoResponse { todo!() }"
         ));
     }
 

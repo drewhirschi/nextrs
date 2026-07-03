@@ -211,6 +211,82 @@ pub fn build_router_with_prefetch(registry: RouteRegistry, prefetch: PrefetchCon
     with_not_found_fallback(router, entries, not_found, prefetch)
 }
 
+/// Reserved path of the soft-nav data-prefetch endpoint. The generated app
+/// shell calls `GET /__nx/prefetch?path=<url>` from its route loaders (on
+/// hover via preload, and during navigation) and hydrates the React Query
+/// cache with the response — the same entries a hard load of `<url>` would
+/// stream as `__nx_seeds__`.
+pub const NX_PREFETCH_PATH: &str = "/__nx/prefetch";
+
+/// The endpoint dispatches into an internal router that mirrors every
+/// prefetch-capable route at its real pattern — reusing axum's matcher means
+/// params and wildcards resolve exactly like a page render, and the route's
+/// middleware chain runs first (a protected page's data stays protected).
+fn build_prefetch_endpoint(entries: Arc<Vec<RouteEntry>>) -> Router {
+    let mut inner = Router::new();
+    for i in 0..entries.len() {
+        if entries[i].prefetch.is_none() {
+            continue;
+        }
+        let entries_for_route = Arc::clone(&entries);
+        let path = entries[i].path.clone();
+        let idx = i;
+        let route_path = path.clone();
+        inner = inner.route(
+            &path,
+            get(move |req: Request| {
+                let entries = Arc::clone(&entries_for_route);
+                let path = route_path.clone();
+                async move {
+                    let req = match run_middlewares(&entries, &path, req).await {
+                        Ok(req) => req,
+                        Err(response) => return response,
+                    };
+                    let seeds = entries[idx].prefetch.as_ref().unwrap()(req).await;
+                    axum::Json(seeds.to_json()).into_response()
+                }
+            }),
+        );
+    }
+
+    let inner = Arc::new(inner);
+    Router::new().route(
+        NX_PREFETCH_PATH,
+        get(move |req: Request| {
+            let inner = Arc::clone(&inner);
+            async move {
+                let target = req
+                    .uri()
+                    .query()
+                    .and_then(|q| serde_urlencoded::from_str::<Vec<(String, String)>>(q).ok())
+                    .and_then(|pairs| pairs.into_iter().find(|(k, _)| k == "path"))
+                    .map(|(_, v)| v);
+                // Same-app paths only: absolute-path form, no scheme/authority.
+                let Some(target) = target.filter(|t| t.starts_with('/') && !t.starts_with("//"))
+                else {
+                    return http::StatusCode::BAD_REQUEST.into_response();
+                };
+                let Ok(uri) = target.parse::<http::Uri>() else {
+                    return http::StatusCode::BAD_REQUEST.into_response();
+                };
+                // Re-target the ORIGINAL request (headers intact — cookies and
+                // auth flow through the middleware chain unchanged).
+                let (mut parts, body) = req.into_parts();
+                parts.uri = uri;
+                use tower::util::ServiceExt;
+                match (*inner)
+                    .clone()
+                    .oneshot(Request::from_parts(parts, body))
+                    .await
+                {
+                    Ok(response) => response,
+                    Err(never) => match never {},
+                }
+            }
+        }),
+    )
+}
+
 /// Build just the route table (matched routes, no fallback) from the registry's
 /// entries, with the given prefetch config threaded into page rendering.
 fn build_route_table(entries: Arc<Vec<RouteEntry>>, prefetch: Arc<PrefetchConfig>) -> Router {
@@ -260,6 +336,12 @@ fn build_route_table(entries: Arc<Vec<RouteEntry>>, prefetch: Arc<PrefetchConfig
                 );
             }
         }
+    }
+
+    // Soft-nav data prefetch: only mounted when some route can serve it, so
+    // apps without prefetch-backed React pages don't reserve the path.
+    if entries.iter().any(|e| e.prefetch.is_some()) {
+        router = router.merge(build_prefetch_endpoint(Arc::clone(&entries)));
     }
 
     router
@@ -463,6 +545,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router_with_public(registry, tmp.path());
@@ -500,6 +583,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router_with_public(registry, "/nonexistent/path/for/test");
@@ -525,6 +609,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -547,6 +632,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -571,6 +657,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
         registry.add(RouteEntry {
             path: "/dashboard".to_string(),
@@ -579,6 +666,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -608,6 +696,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
         registry.add(RouteEntry {
             path: "/dashboard".to_string(),
@@ -616,6 +705,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
         registry.add(RouteEntry {
             path: "/dashboard/settings".to_string(),
@@ -624,6 +714,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -653,6 +744,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -683,6 +775,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
         registry.add(RouteEntry {
             path: "/about".to_string(),
@@ -691,6 +784,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -726,6 +820,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -752,6 +847,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -790,6 +886,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -814,6 +911,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -838,6 +936,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
         registry.add(RouteEntry {
             path: "/dashboard".to_string(),
@@ -846,6 +945,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -877,6 +977,7 @@ mod tests {
             loading: Some(static_loading("<p>Loading...</p>")),
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -921,6 +1022,7 @@ mod tests {
             loading: Some(static_loading("L")),
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -965,6 +1067,7 @@ mod tests {
             loading: Some(static_loading("LOADING_SHELL")),
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -1037,6 +1140,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
         registry.add(RouteEntry {
             path: "/dashboard".to_string(),
@@ -1045,6 +1149,7 @@ mod tests {
             loading: Some(static_loading("loading-shell")),
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -1084,6 +1189,7 @@ mod tests {
                 })
             })),
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -1122,6 +1228,7 @@ mod tests {
                 Box::pin(async { MiddlewareResult::next(req) })
             })),
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -1181,6 +1288,7 @@ mod tests {
                 })
             })),
             methods: vec![],
+            prefetch: None,
         });
         registry.add(RouteEntry {
             path: "/dashboard".to_string(),
@@ -1195,6 +1303,7 @@ mod tests {
                 })
             })),
             methods: vec![],
+            prefetch: None,
         });
         registry.add(RouteEntry {
             path: "/dashboard/settings".to_string(),
@@ -1209,6 +1318,7 @@ mod tests {
                 })
             })),
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -1255,6 +1365,7 @@ mod tests {
                 })
             })),
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -1283,6 +1394,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
         registry.add_not_found("/", static_page("nope"));
 
@@ -1323,6 +1435,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
         registry.add(RouteEntry {
             path: "/admin".to_string(),
@@ -1331,6 +1444,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
         registry.add_not_found("/", static_page("root-404"));
         registry.add_not_found("/admin", static_page("admin-404"));
@@ -1381,6 +1495,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -1406,6 +1521,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
         registry.add_not_found("/", static_page("missing"));
 
@@ -1433,6 +1549,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
         registry.add_not_found("/", static_page("custom-404"));
 
@@ -1483,6 +1600,7 @@ mod tests {
                     Box::pin(async { (StatusCode::CREATED, "created").into_response() })
                 }),
             )],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -1516,6 +1634,7 @@ mod tests {
                     Box::pin(async { (StatusCode::OK, "form submitted").into_response() })
                 }),
             )],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -1575,6 +1694,7 @@ mod tests {
                     })
                 }),
             )],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -1607,6 +1727,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         // Default config has prefetch ON.
@@ -1638,6 +1759,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -1662,6 +1784,7 @@ mod tests {
             loading: None,
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router_with_prefetch(registry, PrefetchConfig::OFF);
@@ -1686,6 +1809,7 @@ mod tests {
             loading: Some(static_loading("loading")),
             middleware: None,
             methods: vec![],
+            prefetch: None,
         });
 
         let app = build_router(registry);
@@ -1703,5 +1827,161 @@ mod tests {
         let script = body.find("speculationrules").expect("script present");
         let slot = body.find("__nx_slot__").expect("slot present");
         assert!(script < slot);
+    }
+
+    fn prefetch_entry(path: &str, prefetch: crate::conventions::PrefetchDataFn) -> RouteEntry {
+        RouteEntry {
+            path: path.to_string(),
+            page: Some(dyn_page("shell")),
+            prefetch: Some(prefetch),
+            ..Default::default()
+        }
+    }
+
+    fn one_seed(url: &'static str, data: serde_json::Value) -> crate::conventions::PrefetchDataFn {
+        Box::new(move |_req| {
+            let data = data.clone();
+            Box::pin(async move {
+                crate::seed::QuerySeed::new()
+                    .seed(async move {
+                        crate::seed::SeedEntry {
+                            key: crate::seed::seed_key(url, None),
+                            data,
+                        }
+                    })
+                    .await
+            })
+        })
+    }
+
+    #[tokio::test]
+    async fn prefetch_endpoint_serves_a_static_routes_seeds() {
+        let mut registry = RouteRegistry::new();
+        registry.add(prefetch_entry("/todos", one_seed("/api/todos", serde_json::json!([1, 2]))));
+        let app = build_router(registry);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/__nx/prefetch?path=%2Ftodos")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let body = body_to_string(resp.into_body()).await;
+        let parsed: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(parsed[0]["key"], serde_json::json!(["/api/todos"]));
+        assert_eq!(parsed[0]["data"], serde_json::json!([1, 2]));
+    }
+
+    #[tokio::test]
+    async fn prefetch_endpoint_extracts_dynamic_params_and_query() {
+        let mut registry = RouteRegistry::new();
+        registry.add(prefetch_entry(
+            "/todos/{id}",
+            Box::new(|req| {
+                Box::pin(async move {
+                    let (params, req) = crate::params::extract_params(req).await;
+                    let id = params.get("id").unwrap_or("?").to_string();
+                    let q = req.uri().query().unwrap_or("").to_string();
+                    crate::seed::QuerySeed::new()
+                        .seed(async move {
+                            crate::seed::SeedEntry {
+                                key: serde_json::json!([format!("/api/todos/{id}")]),
+                                data: serde_json::json!({ "query": q }),
+                            }
+                        })
+                        .await
+                })
+            }),
+        ));
+        let app = build_router(registry);
+
+        // path carries params AND a query string (prefetch.rs may read both).
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/__nx/prefetch?path=%2Ftodos%2F7%3Fstatus%3Dopen")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body_to_string(resp.into_body()).await).unwrap();
+        assert_eq!(parsed[0]["key"], serde_json::json!(["/api/todos/7"]));
+        assert_eq!(parsed[0]["data"]["query"], serde_json::json!("status=open"));
+    }
+
+    #[tokio::test]
+    async fn prefetch_endpoint_runs_the_routes_middleware() {
+        // A protected page's data must stay protected — the middleware chain
+        // short-circuits the prefetch exactly like it would the page.
+        let mut registry = RouteRegistry::new();
+        let mut entry = prefetch_entry("/admin", one_seed("/api/secrets", serde_json::json!(1)));
+        entry.middleware = Some(Box::new(|_req| {
+            Box::pin(async {
+                crate::conventions::MiddlewareResult::response(StatusCode::UNAUTHORIZED)
+            })
+        }));
+        registry.add(entry);
+        let app = build_router(registry);
+
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/__nx/prefetch?path=%2Fadmin")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn prefetch_endpoint_rejects_bad_targets() {
+        let mut registry = RouteRegistry::new();
+        registry.add(prefetch_entry("/todos", one_seed("/api/todos", serde_json::json!(1))));
+        let app = build_router(registry);
+
+        for (uri, expect) in [
+            ("/__nx/prefetch", StatusCode::BAD_REQUEST),
+            ("/__nx/prefetch?path=https%3A%2F%2Fevil.example", StatusCode::BAD_REQUEST),
+            ("/__nx/prefetch?path=%2F%2Fevil.example", StatusCode::BAD_REQUEST),
+            // A real path with no prefetch-capable route: plain 404.
+            ("/__nx/prefetch?path=%2Fnope", StatusCode::NOT_FOUND),
+        ] {
+            let resp = app
+                .clone()
+                .oneshot(Request::builder().uri(uri).body(Body::empty()).unwrap())
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), expect, "{uri}");
+        }
+    }
+
+    #[tokio::test]
+    async fn prefetch_endpoint_absent_without_prefetch_routes() {
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/".to_string(),
+            page: Some(dyn_page("home")),
+            ..Default::default()
+        });
+        let app = build_router(registry);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/__nx/prefetch?path=%2F")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     }
 }
