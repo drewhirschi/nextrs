@@ -104,6 +104,13 @@ skip-bundle dev path hides bundling breakage) and load the landing page.
 See docs/postmortems/2026-07-11-docs-site-dead-landing.md for what skipping
 this costs.
 
+**Known quirk — deploys lag publishes.** The example depends on the *published*
+nextrs (the workspace `[patch.crates-io]` hides this locally), so its Vercel
+deploy can only be verified after the framework change it exercises is on
+crates.io — publish-then-verify, sometimes before the PR merges. Tolerated for
+now (2026-07-03); if it starts to chafe, the fix is a preview-deploy path that
+vendors the workspace source instead.
+
 ## Framework vs. generated-app changes (important)
 
 A fix in `crates/nextrs` reaches existing apps on their next `cargo update`/rebuild. A fix
