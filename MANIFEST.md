@@ -31,7 +31,7 @@ Each folder under `app/` is a route segment. The framework looks for these files
 | `page.{rs,html,tsx}` | The main content for the route | `.rs` (async handler) / `.html` (static Askama) / `.tsx` (React, bundled to `/dist/<slug>.js` and mounted into `<div id="__nx_root__">`; requires the `tsx` feature) |
 | `layout.{rs,html,tsx}` | Wraps this segment's page and any nested segments | same `.rs`/`.html`/`.tsx` variants |
 | `loading.{rs,html,tsx}` | Shown while the page resolves (triggers streaming) | same `.rs`/`.html`/`.tsx` variants |
-| `props.rs` | Server data for a sibling `page.tsx` — exports `pub async fn props(req) -> nextrs::QuerySeed`; streamed as a JSON `<script id="__nx_seeds__">` and loaded into the React Query cache before mount | `.rs` only |
+| `prefetch.rs` | Server data for a sibling `page.tsx` — exports `pub async fn prefetch(req) -> nextrs::QuerySeed` (`prefetch(req, params)` on dynamic routes); streamed as a JSON `<script id="__nx_seeds__">` and loaded into the React Query cache before mount. Legacy `props.rs` exporting `fn props` still works. | `.rs` only |
 | `middleware.rs` | Request guard that may continue or return a response before rendering/streaming | `.rs` only |
 | `route.rs` | API method handlers (POST/PUT/etc.) — `.rs` only |
 
@@ -40,6 +40,37 @@ Layout templates rendered through Askama must use `{{ children|safe }}` (not `{{
 Dynamic URL segments use `[param]` directory naming (e.g. `app/users/[id]/page.rs` → `/users/{id}` in Axum's path syntax).
 
 Middleware files export `pub async fn handle(req) -> nextrs::conventions::MiddlewareResult`. Root and nested middleware compose root-to-leaf; returning `MiddlewareResult::Response` short-circuits without rendering layouts, loading, pages, or API handlers, while `MiddlewareResult::Continue(req)` passes the request onward.
+
+## The ideal data flow (the paradigm)
+
+**State lives in the URL.** Path params (`[id]` segments) and search params
+(`?status=done`) are the page's state — not `useState`. Every view is therefore
+shareable, refreshable, and back/forward-navigable by construction. The full
+loop:
+
+1. **Hard load** — axum matches the route. `prefetch.rs` runs on the server
+   with the matched params (`prefetch(req, params)`) and seeds the exact React
+   Query entries the page will read, keyed the same way the generated hooks
+   key them (`["/api/todos/3"]`, `["/api/todos", {"status":"done"}]`). The
+   document streams params + seeds + the app-shell boot; React mounts and
+   renders entirely from cache — **zero fetches on first paint**.
+2. **Interaction** — state changes are URL changes. Clicking a plain `<a>` or
+   setting a search param soft-navigates through the app-shell's TanStack
+   Router: the URL updates, layout chrome stays mounted, the changed leaf
+   swaps, and the React Query cache carries across. Data hooks re-key off the
+   new URL and fetch — or hit cache instantly for any previously-visited URL
+   state (back/forward is always warm).
+3. **Mutations** — go through the generated typed mutation hooks and
+   `invalidateQueries` on the canonical key, which refreshes seeded and
+   fetched entries alike (they share keys by design).
+4. **Sharing** — because hook params derive from the URL, any URL anyone
+   pastes reproduces the exact view, server-seeded on their first load.
+
+The piece that closes this loop — generated `useXFromUrl()` hook variants that
+read/set search params against the OpenAPI types, plus search params reaching
+`prefetch.rs` — is planned: see
+`docs/upstream-plans/url-bound-query-hooks.md`. Until it lands, pages wire
+search params to hook args by hand; everything else above ships today.
 
 ## Static assets
 

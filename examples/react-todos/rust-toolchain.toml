@@ -1,5 +1,6 @@
-# rolldown (the page.tsx bundler, build-dep behind the `tsx` feature) pulls in
-# oxc, which requires rustc >= 1.94. Vercel's Rust image ships an older rustc,
-# so pin a recent stable for the build.
+# Pin the toolchain for the Vercel build. Without it the build image picks its
+# own rustc, and the pinned rolldown =1.1.0 (tsx bundler) fails to compile on
+# newer stables (E0310 in rolldown_resolver). 1.96.0 is what the workspace is
+# developed and verified on (matches site/).
 [toolchain]
 channel = "1.96.0"

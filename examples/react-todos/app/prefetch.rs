@@ -1,6 +1,8 @@
-//! Server props for the todos page: pre-run the open-todos query and stream
-//! it into the page, so the React Query cache is warm before the bundle
-//! executes — no fetch on first paint.
+//! Server prefetch for the todos page: pre-run the open-todos query and
+//! stream it into the page, so the React Query cache is warm before the
+//! bundle executes — no fetch on first paint. (`prefetch.rs` is the current
+//! name for this convention; a legacy `props.rs` exporting `fn props` still
+//! works.)
 //!
 //! `get_api_todos` is the typed companion `#[nextrs::api]` emits for the
 //! GET handler in `app/api/todos/route.rs`; it calls the real handler (the
@@ -11,7 +13,7 @@
 
 include!(concat!(env!("OUT_DIR"), "/nextrs_seeds.rs"));
 
-pub async fn props(req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
+pub async fn prefetch(req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
     nextrs::QuerySeed::new()
         .seed(get_api_todos(
             api_todos::TodosFilter {

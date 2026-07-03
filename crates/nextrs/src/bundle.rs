@@ -94,6 +94,11 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<()> {
         client_dir.join("package.json").display()
     );
 
+    // Keep the generated-client barrel fresh: every module orval emitted gets
+    // re-exported, so a hand-maintained list can never go stale. Written by
+    // the same build that bundles, before resolution needs it.
+    emit_client_barrel(&client_dir)?;
+
     let routes = discover_routes(&abs_app);
     let tsx_pages = page_bundles(&routes);
     let tsx_loadings: Vec<(String, PathBuf)> = routes
@@ -107,8 +112,10 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<()> {
         })
         .collect();
 
+    let tsx_not_founds = not_found_bundles(&routes);
+
     let dist = manifest_dir.join(cfg.public_dist);
-    if tsx_pages.is_empty() && tsx_loadings.is_empty() {
+    if tsx_pages.is_empty() && tsx_loadings.is_empty() && tsx_not_founds.is_empty() {
         // Prune a stale dist from a previous build that had tsx pages.
         if dist.is_dir() {
             std::fs::remove_dir_all(&dist)?;
@@ -130,15 +137,26 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<()> {
     std::fs::create_dir_all(&entries_dir)?;
 
     let client_helper = client_dir.join("src/nextrs-client.ts");
-    let mut inputs = Vec::with_capacity(tsx_pages.len() + tsx_loadings.len());
+    let mut inputs = Vec::with_capacity(tsx_pages.len() + tsx_loadings.len() + 1);
+
+    // The ONE app-shell entry: a TanStack Router built from every discovered
+    // route, mounted once. Every page.tsx document boots /dist/__app_shell__.js
+    // (see build::tsx_page_shell), so shared layout.tsx chrome stays mounted
+    // across soft navigation and only the changed leaf swaps.
+    let shell_path = entries_dir.join("__app_shell__.tsx");
+    write_if_changed(&shell_path, app_shell_entry(&routes, &client_helper).as_bytes())?;
+    inputs.push(rolldown::InputItem {
+        name: Some("__app_shell__".to_string()),
+        import: shell_path.display().to_string(),
+    });
+    // Each page.tsx is ALSO a named entry (the RAW page, no createRoot wrapper) so
+    // it gets a stable /dist/<slug>.js that the app-shell's lazy
+    // `import("<abs page.tsx>")` dedups to (preserve_entry_signatures=False keeps
+    // it from emitting an extra facade chunk).
     for page in &tsx_pages {
-        let slug = &page.slug;
-        let entry_path = entries_dir.join(format!("{}.tsx", slug));
-        let entry_src = entry_wrapper(&page.page_path, &page.layout_paths, &client_helper);
-        write_if_changed(&entry_path, entry_src.as_bytes())?;
         inputs.push(rolldown::InputItem {
-            name: Some(slug.clone()),
-            import: entry_path.display().to_string(),
+            name: Some(page.slug.clone()),
+            import: page.page_path.display().to_string(),
         });
     }
     for (slug, loading_path) in &tsx_loadings {
@@ -147,6 +165,17 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<()> {
         write_if_changed(&entry_path, entry_src.as_bytes())?;
         inputs.push(rolldown::InputItem {
             name: Some(slug.clone()),
+            import: entry_path.display().to_string(),
+        });
+    }
+    // not-found.tsx mounts render outside the router (see NotFoundBundle), so
+    // they keep the self-contained entry_wrapper boot.
+    for nf in &tsx_not_founds {
+        let entry_path = entries_dir.join(format!("{}.tsx", nf.slug));
+        let entry_src = entry_wrapper(&nf.page_path, &nf.layout_paths, &client_helper);
+        write_if_changed(&entry_path, entry_src.as_bytes())?;
+        inputs.push(rolldown::InputItem {
+            name: Some(nf.slug.clone()),
             import: entry_path.display().to_string(),
         });
     }
@@ -167,34 +196,63 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<()> {
 struct PageBundle {
     slug: String,
     page_path: PathBuf,
+}
+
+/// A standalone client-rendered mount: a `not-found.tsx`. These do NOT boot
+/// the app shell — a 404's URL is never in the shell's route tree, and the
+/// shell's unknown-path fallback is a hard reload, which would loop — so each
+/// gets its own entry bundle composing the segment's layouts around it.
+#[derive(Debug, Clone)]
+struct NotFoundBundle {
+    slug: String,
+    page_path: PathBuf,
     layout_paths: Vec<PathBuf>,
 }
 
-/// Browser bundles for every client-rendered entry: each `page.tsx` and each
-/// `not-found.tsx`. Both compose the segment's `.tsx` layouts client-side and
-/// mount into `__nx_root__`, so they share [`entry_wrapper`]; they only differ
-/// in slug ([`page_slug`] vs [`not_found_slug`]), which keeps a segment's page
-/// and not-found bundles from colliding.
-fn page_bundles(routes: &[DiscoveredRoute]) -> Vec<PageBundle> {
+fn not_found_bundles(routes: &[DiscoveredRoute]) -> Vec<NotFoundBundle> {
     routes
         .iter()
-        .flat_map(|route| {
-            let layout_paths = collect_layouts_for_path(routes, &route.url_path);
-            let page = route.page.tsx.clone().map(|page_path| PageBundle {
-                slug: page_slug(&route.url_path),
-                page_path,
-                layout_paths: layout_paths.clone(),
-            });
-            let not_found = route.not_found.tsx.clone().map(|page_path| PageBundle {
+        .filter_map(|route| {
+            Some(NotFoundBundle {
                 slug: not_found_slug(&route.url_path),
-                page_path,
-                layout_paths: layout_paths.clone(),
-            });
-            page.into_iter().chain(not_found)
+                page_path: route.not_found.tsx.clone()?,
+                layout_paths: collect_layouts_for_path(routes, &route.url_path),
+            })
         })
         .collect()
 }
 
+/// Write `<client_dir>/src/generated/index.ts` re-exporting every generated
+/// tag module plus `model`, mirroring orval's `tags-split` layout. No-op when
+/// the app has no generated client (dir absent). Framework-owned so apps
+/// don't carry a barrel script — the codegen output's surface is a framework
+/// concern, and this runs on every bundling build so it can't go stale.
+fn emit_client_barrel(client_dir: &Path) -> std::io::Result<()> {
+    let generated = client_dir.join("src/generated");
+    if !generated.is_dir() {
+        return Ok(());
+    }
+    let mut tags: Vec<String> = std::fs::read_dir(&generated)?
+        .filter_map(|e| e.ok())
+        .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
+        .filter_map(|e| e.file_name().into_string().ok())
+        .filter(|name| name != "model")
+        .collect();
+    tags.sort();
+
+    let mut out = String::from(
+        "// @generated by nextrs::bundle (every build). Do not edit by hand.\n",
+    );
+    for tag in &tags {
+        out.push_str(&format!("export * from \"./{tag}/{tag}\";\n"));
+    }
+    if generated.join("model").is_dir() {
+        out.push_str("export * from \"./model\";\n");
+    }
+    write_if_changed(&generated.join("index.ts"), out.as_bytes())
+}
+
+/// The `layout.tsx` chain that applies to `target_path`, root-first.
 fn collect_layouts_for_path(routes: &[DiscoveredRoute], target_path: &str) -> Vec<PathBuf> {
     let mut layouts: Vec<&DiscoveredRoute> = routes
         .iter()
@@ -206,6 +264,21 @@ fn collect_layouts_for_path(routes: &[DiscoveredRoute], target_path: &str) -> Ve
     layouts
         .into_iter()
         .filter_map(|route| route.layout.tsx.clone())
+        .collect()
+}
+
+/// Raw browser entries for every `page.tsx`: the page module itself (no
+/// wrapper — pages render inside the app shell, which lazy-imports the same
+/// path and dedups to this stable `/dist/<slug>.js` chunk).
+fn page_bundles(routes: &[DiscoveredRoute]) -> Vec<PageBundle> {
+    routes
+        .iter()
+        .filter_map(|route| {
+            Some(PageBundle {
+                slug: page_slug(&route.url_path),
+                page_path: route.page.tsx.clone()?,
+            })
+        })
         .collect()
 }
 
@@ -237,6 +310,135 @@ fn layout_tree(layout_count: usize) -> String {
     tree
 }
 
+/// url_path -> `layout_<i>` ident for a route that owns a `layout.tsx`.
+fn layout_ident_of(layouts: &[&DiscoveredRoute], url: &str) -> Option<String> {
+    layouts
+        .iter()
+        .position(|l| l.url_path == url)
+        .map(|i| format!("layout_{i}"))
+}
+
+/// Parent ident for `target`: the deepest layout route that applies to it. When
+/// resolving a layout's OWN parent (`is_layout`), require a strictly shallower
+/// layout so it can't parent itself. Defaults to `rootRoute`.
+fn parent_ident_of(layouts: &[&DiscoveredRoute], target: &str, is_layout: bool) -> String {
+    let mut best: Option<&DiscoveredRoute> = None;
+    for &l in layouts {
+        if is_layout && l.url_path == target {
+            continue;
+        }
+        if !entry_applies_to_path(&l.url_path, target) {
+            continue;
+        }
+        if is_layout && route_depth(&l.url_path) >= route_depth(target) {
+            continue;
+        }
+        let better = match best {
+            None => true,
+            Some(b) => route_depth(&l.url_path) > route_depth(&b.url_path),
+        };
+        if better {
+            best = Some(l);
+        }
+    }
+    best.and_then(|l| layout_ident_of(layouts, &l.url_path))
+        .unwrap_or_else(|| "rootRoute".to_string())
+}
+
+/// Map a discovery url_path to a JS regex literal matching concrete pathnames:
+/// `{param}` → one segment, `{*rest}` → the remainder, literals escaped.
+/// Drives the shell's click interceptor — only URLs the router can render are
+/// soft-navigated; everything else stays a normal document load.
+fn route_regex(url_path: &str) -> String {
+    if url_path == "/" {
+        return "/^\\/$/".to_string();
+    }
+    let mut re = String::from("/^");
+    for seg in url_path.split('/').filter(|s| !s.is_empty()) {
+        if seg.starts_with('(') && seg.ends_with(')') {
+            continue;
+        }
+        re.push_str("\\/");
+        if seg.starts_with("{*") && seg.ends_with('}') {
+            re.push_str(".+");
+        } else if seg.starts_with('{') && seg.ends_with('}') {
+            re.push_str("[^\\/]+");
+        } else {
+            // Escape JS regex metacharacters in literal segments.
+            for c in seg.chars() {
+                if !c.is_ascii_alphanumeric() && c != '_' && c != '-' {
+                    re.push('\\');
+                }
+                re.push(c);
+            }
+        }
+    }
+    re.push_str("$/");
+    re
+}
+
+/// Map a discovery url_path (`{param}`, `{*param}`, `(group)`) to a TanStack
+/// Router path: `{slug}`→`$slug`, `{*all}`→`$` (splat), `(group)` dropped.
+fn tanstack_path(url_path: &str) -> String {
+    if url_path == "/" {
+        return "/".to_string();
+    }
+    let segs: Vec<String> = url_path
+        .split('/')
+        .filter(|s| !s.is_empty())
+        .filter_map(|seg| {
+            if seg.starts_with('(') && seg.ends_with(')') {
+                None
+            } else if seg.starts_with("{*") && seg.ends_with('}') {
+                Some("$".to_string())
+            } else if let Some(p) = seg.strip_prefix('{').and_then(|s| s.strip_suffix('}')) {
+                Some(format!("${p}"))
+            } else {
+                Some(seg.to_string())
+            }
+        })
+        .collect();
+    format!("/{}", segs.join("/"))
+}
+
+/// Deepest `loading.tsx` that applies to `target` (its route pendingComponent).
+fn nearest_tsx_loading_route<'a>(
+    routes: &'a [DiscoveredRoute],
+    target: &str,
+) -> Option<&'a DiscoveredRoute> {
+    routes
+        .iter()
+        .filter(|r| r.loading.tsx.is_some() && entry_applies_to_path(&r.url_path, target))
+        .max_by_key(|r| route_depth(&r.url_path))
+}
+
+/// Recursively emit `name.addChildren([..])` for nodes with children, else just
+/// `name`. Deterministic — children are insertion-ordered Vecs.
+fn emit_route_node(
+    name: &str,
+    children: &std::collections::HashMap<String, Vec<String>>,
+) -> String {
+    match children.get(name) {
+        Some(kids) if !kids.is_empty() => {
+            let inner = kids
+                .iter()
+                .map(|k| emit_route_node(k, children))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("{name}.addChildren([{inner}])")
+        }
+        _ => name.to_string(),
+    }
+}
+
+/// Entry wrapper for standalone client mounts (`not-found.tsx`): layout
+/// composition + React Query provider + seed hydration + `createRoot` mount.
+/// Pages no longer use this — they render inside the app shell — but a
+/// not-found surface renders OUTSIDE the router (its URL is never in the
+/// shell's route tree, whose unknown-path fallback hard-reloads), so it keeps
+/// the self-contained boot. Params come from the server's `__nx_params__`
+/// tag, which is always fresh here: a not-found document is only ever a hard
+/// load.
 fn entry_wrapper(page_path: &Path, layout_paths: &[PathBuf], client_helper: &Path) -> String {
     let layout_imports = layout_paths
         .iter()
@@ -277,6 +479,164 @@ createRoot(document.getElementById("__nx_root__")!).render(
     )
 }
 
+/// The single app-shell entry: a TanStack Router built from every discovered
+/// route, mounted ONCE into `#__nx_root__`. Each `layout.tsx` becomes a pathless
+/// layout route rendering the layout around an `<Outlet/>` (so it stays mounted
+/// across soft navigation); each `page.tsx` becomes a lazily-loaded leaf at its
+/// full path, receiving the router's LIVE matched params as its `params` prop —
+/// the server's `__nx_params__` tag is only the boot-time hand-off and goes
+/// stale across soft navigation. Replaces the per-page `entry_wrapper` for
+/// pages (not-found keeps it).
+fn app_shell_entry(routes: &[DiscoveredRoute], client_helper: &Path) -> String {
+    use std::collections::HashMap;
+    use std::fmt::Write as _;
+
+    let mut layouts: Vec<&DiscoveredRoute> =
+        routes.iter().filter(|r| r.layout.tsx.is_some()).collect();
+    layouts.sort_by(|a, b| {
+        route_depth(&a.url_path)
+            .cmp(&route_depth(&b.url_path))
+            .then_with(|| a.url_path.cmp(&b.url_path))
+    });
+    let mut pages: Vec<&DiscoveredRoute> =
+        routes.iter().filter(|r| r.page.tsx.is_some()).collect();
+    pages.sort_by(|a, b| a.url_path.cmp(&b.url_path));
+
+    let mut out = String::new();
+    out.push_str(
+        "// @generated by nextrs::bundle. Do not edit by hand.\n\
+         // The ONE app-shell: a TanStack Router over every discovered route,\n\
+         // mounted once so layout.tsx chrome stays mounted across soft navigation.\n",
+    );
+    out.push_str("import { createRoot } from \"react-dom/client\";\n");
+    out.push_str("import { QueryClient, QueryClientProvider } from \"@tanstack/react-query\";\n");
+    out.push_str(
+        "import { createRootRoute, createRoute, createRouter, lazyRouteComponent, Outlet, RouterProvider, useParams } from \"@tanstack/react-router\";\n",
+    );
+    let _ = writeln!(
+        out,
+        "import {{ seedQueryClient }} from {:?};",
+        client_helper.display().to_string()
+    );
+    for (i, l) in layouts.iter().enumerate() {
+        let p = l.layout.tsx.as_ref().unwrap().display().to_string();
+        let _ = writeln!(out, "import Layout{i} from {p:?};");
+    }
+    out.push('\n');
+
+    // Outer QueryClient + seed hydration — identical to the not-found entry_wrapper.
+    out.push_str(
+        "const qc = new QueryClient({ defaultOptions: { queries: { staleTime: 30_000 } } });\n\
+         seedQueryClient(qc);\n\n",
+    );
+    // Leaf factory: lazy page component fed the router's live matched params
+    // as its `params` prop — same page API as a hard load, but it updates on
+    // soft navigation (the server's __nx_params__ tag can't).
+    out.push_str(
+        "function nxLeaf(load: () => Promise<any>) {\n\
+           const Lazy = lazyRouteComponent(load);\n\
+           return function NxPage() {\n\
+             const params = useParams({ strict: false });\n\
+             return <Lazy params={params} />;\n\
+           };\n\
+         }\n\n",
+    );
+    out.push_str(
+        "const rootRoute = createRootRoute({\n  component: () => (<QueryClientProvider client={qc}><Outlet /></QueryClientProvider>),\n});\n\n",
+    );
+
+    // Pathless layout routes (id, not path) — supply mounted chrome only.
+    for (i, l) in layouts.iter().enumerate() {
+        let parent = parent_ident_of(&layouts, &l.url_path, true);
+        let id = page_slug(&l.url_path);
+        let _ = writeln!(
+            out,
+            "const layout_{i} = createRoute({{ getParentRoute: () => {parent}, id: {id:?}, component: () => (<Layout{i}><Outlet /></Layout{i}>) }});"
+        );
+    }
+    out.push('\n');
+
+    // Leaf routes — one per page.tsx at its full path, lazily loaded.
+    for (i, pg) in pages.iter().enumerate() {
+        let parent = parent_ident_of(&layouts, &pg.url_path, false);
+        let path = tanstack_path(&pg.url_path);
+        let page_path = pg.page.tsx.as_ref().unwrap().display().to_string();
+        let _ = write!(
+            out,
+            "const route_{i} = createRoute({{ getParentRoute: () => {parent}, path: {path:?}, component: nxLeaf(() => import({page_path:?}))"
+        );
+        if let Some(loading) =
+            nearest_tsx_loading_route(routes, &pg.url_path).and_then(|r| r.loading.tsx.as_ref())
+        {
+            let lp = loading.display().to_string();
+            let _ = write!(
+                out,
+                ", pendingComponent: lazyRouteComponent(() => import({lp:?}))"
+            );
+        }
+        out.push_str(" });\n");
+    }
+    out.push('\n');
+
+    // Assemble: parent ident -> ordered child idents, then emit recursively.
+    let mut children: HashMap<String, Vec<String>> = HashMap::new();
+    for (i, l) in layouts.iter().enumerate() {
+        children
+            .entry(parent_ident_of(&layouts, &l.url_path, true))
+            .or_default()
+            .push(format!("layout_{i}"));
+    }
+    for (i, pg) in pages.iter().enumerate() {
+        children
+            .entry(parent_ident_of(&layouts, &pg.url_path, false))
+            .or_default()
+            .push(format!("route_{i}"));
+    }
+    let _ = writeln!(out, "const routeTree = {};\n", emit_route_node("rootRoute", &children));
+
+    out.push_str(
+        "const router = createRouter({\n  routeTree,\n  defaultPreload: \"intent\",\n  defaultPendingMs: 150,\n  // A path absent from this tree (also absent from the axum page routes — same\n  // discovery source) hard-loads so the server (real route / static / strangler)\n  // handles it. No reload loop.\n  defaultNotFoundComponent: () => {\n    if (typeof window !== \"undefined\") window.location.assign(window.location.href);\n    return null;\n  },\n});\n\n",
+    );
+    out.push_str("Object.assign(window, { __nx_router__: router });\n\n");
+
+    // Transparent soft navigation: pages and layouts use plain <a> tags (zero
+    // app-page changes), so intercept same-origin clicks on URLs this router
+    // can render and turn them into router navigations. Anything else — other
+    // origins, downloads, modified clicks, new tabs, non-app paths (static
+    // files, API links, strangler routes) — falls through to a normal
+    // document load. `data-no-soft` opts an anchor out explicitly.
+    let route_patterns = pages
+        .iter()
+        .map(|pg| route_regex(&pg.url_path))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = writeln!(out, "const NX_APP_ROUTES = [{route_patterns}];");
+    out.push_str(
+        "document.addEventListener(\"click\", (e) => {\n\
+           if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;\n\
+           const a = e.target instanceof Element ? e.target.closest(\"a\") : null;\n\
+           if (!a || (a.target && a.target !== \"_self\")) return;\n\
+           if (a.hasAttribute(\"download\") || a.hasAttribute(\"data-no-soft\")) return;\n\
+           const href = a.getAttribute(\"href\");\n\
+           if (!href || href.startsWith(\"#\")) return;\n\
+           const url = new URL(a.href, window.location.href);\n\
+           if (url.origin !== window.location.origin) return;\n\
+           if (!NX_APP_ROUTES.some((r) => r.test(url.pathname))) return;\n\
+           e.preventDefault();\n\
+           router.navigate({ href: url.pathname + url.search + url.hash });\n\
+         });\n\n",
+    );
+
+    out.push_str(
+        "createRoot(document.getElementById(\"__nx_root__\")!).render(<RouterProvider router={router} />);\n",
+    );
+    // Note: the real "load the next page's React ahead of time" is TanStack's
+    // defaultPreload:"intent" above (preloads the target route's chunk on hover).
+    // The server's document-level speculation rules (now Prefetch, not Prerender)
+    // are a light bonus for hard loads and are left in place.
+    out
+}
+
 fn loading_entry_wrapper(loading_path: &Path) -> String {
     format!(
         r#"// @generated by nextrs::bundle. Do not edit by hand.
@@ -299,18 +659,18 @@ fn build_aliases(
     client_alias: &str,
     user_aliases: &[(&str, &str)],
 ) -> Vec<(String, Vec<Option<String>>)> {
-    // The resolver's alias keys are webpack-style PREFIX matches — `*` is not
-    // a glob. Accept the tsconfig-style `X/*` spelling in configs but
-    // normalize it to the `X/` prefix form the resolver actually substitutes
-    // (replacement loses its `*` too, becoming a directory prefix).
+    // The resolver (oxc_resolver) supports `*` wildcards natively: a key
+    // containing `*` compiles to AliasMatchKind::Wildcard and the matched
+    // segment is substituted into the `*` in the value (compile_alias +
+    // load_alias_value). So pass tsconfig-style `X/*` → `dir/*` through with
+    // `*` intact in BOTH key and value; non-wildcard patterns map straight
+    // through. (Earlier code stripped `*` and appended a trailing slash, which
+    // produced a Prefix-kind key like `X/` that never matches `X/sub` —
+    // `strip_prefix("X/")` leaves `sub`, which doesn't start with `/` — so
+    // every `@workspace/ui/*`, `@workspace/common/*`, `@/*` subpath leaked out
+    // as a bare specifier. dashboard-rs zero-copy reuse depends on this.)
     fn norm(pattern: &str, replacement: String) -> (String, Vec<Option<String>>) {
-        match pattern.strip_suffix("/*") {
-            Some(prefix) => (
-                format!("{prefix}/"),
-                vec![Some(replacement.trim_end_matches('*').to_string())],
-            ),
-            None => (pattern.to_string(), vec![Some(replacement)]),
-        }
+        (pattern.to_string(), vec![Some(replacement)])
     }
 
     // User aliases first: the first matching key wins, so a user `@/*` entry
@@ -339,7 +699,10 @@ fn run_bundler(
     client_alias: &str,
     user_aliases: &[(&str, &str)],
 ) -> std::io::Result<()> {
-    use rolldown::{Bundler, BundlerOptions, OutputFormat, Platform, RawMinifyOptions};
+    use rolldown::{
+        BundlerOptions, CodeSplittingMode, OutputFormat, Platform, PreserveEntrySignatures,
+        RawMinifyOptions,
+    };
 
     let release = std::env::var("PROFILE").is_ok_and(|p| p == "release");
 
@@ -357,6 +720,12 @@ fn run_bundler(
         platform: Some(Platform::Browser),
         entry_filenames: Some("[name].js".to_string().into()),
         chunk_filenames: Some("chunks/[name].js".to_string().into()),
+        // Each page.tsx is both a named entry and a dynamic import() target from
+        // the app-shell; split so each leaf is its own loadable chunk, and don't
+        // preserve entry signatures (avoids a per-page facade chunk = extra
+        // request — the dynamic import targets the entry chunk directly).
+        code_splitting: Some(CodeSplittingMode::Bool(true)),
+        preserve_entry_signatures: Some(PreserveEntrySignatures::False),
         minify: Some(RawMinifyOptions::Bool(release)),
         // The concrete map type (FxIndexMap) isn't re-exported by rolldown;
         // let FromIterator name it for us.
@@ -366,6 +735,21 @@ fn run_bundler(
         resolve: Some(rolldown::ResolveOptions {
             alias: Some(build_aliases(client_dir, client_alias, user_aliases)),
             modules: Some(vec![client_dir.join("node_modules").display().to_string()]),
+            // Prefix-alias substitution (`@/*`, `@workspace/x/*`) yields
+            // extension-less paths (e.g. `.../src/errors`); without explicit TS
+            // extensions the resolver can't find `errors.ts`, so the specifier
+            // leaks out as a bare import and the browser fails to resolve it.
+            // List .ts/.tsx first so zero-copy .tsx pages + workspace subpaths
+            // resolve. (dashboard-rs aliases regression, by drew's request.)
+            extensions: Some(vec![
+                ".ts".into(),
+                ".tsx".into(),
+                ".mjs".into(),
+                ".js".into(),
+                ".jsx".into(),
+                ".json".into(),
+                ".cjs".into(),
+            ]),
             ..Default::default()
         }),
         // Pin the JSX transform to the automatic runtime. Rolldown discovers
@@ -385,8 +769,14 @@ fn run_bundler(
         ..Default::default()
     };
 
-    let mut bundler =
-        Bundler::new(options).map_err(|e| std::io::Error::other(format!("rolldown: {e:?}")))?;
+    // BundlerBuilder (not Bundler::new) so we can register the SVG-component
+    // loader: SVGR-style `.svg` imports in zero-copy React pages would otherwise
+    // be parsed as JS and fail. See SvgComponentPlugin below.
+    let mut bundler = rolldown::BundlerBuilder::default()
+        .with_options(options)
+        .with_plugins(vec![std::sync::Arc::new(SvgComponentPlugin)])
+        .build()
+        .map_err(|e| std::io::Error::other(format!("rolldown: {e:?}")))?;
     let rt = tokio::runtime::Runtime::new()?;
     rt.block_on(bundler.write())
         .map_err(|e| std::io::Error::other(format!("rolldown bundling failed: {e:?}")))?;
@@ -462,13 +852,14 @@ mod tests {
                 && v[0].as_deref() == Some("/proj/client/src/index.ts")),
             "{aliases:?}"
         );
-        // Built-in shadcn-style @/* → <client>/src/*, normalized to the
-        // resolver's prefix form (`*` is not a glob to the resolver — alias
-        // keys are webpack-style prefix matches).
+        // Built-in shadcn-style @/* → <client>/src/*, with `*` kept intact in
+        // key and value — oxc_resolver supports wildcards natively and
+        // substitutes the matched segment (the old prefix normalization never
+        // matched subpaths, leaking them as bare specifiers).
         assert!(
             aliases
                 .iter()
-                .any(|(k, v)| k == "@/" && v[0].as_deref() == Some("/proj/client/src/")),
+                .any(|(k, v)| k == "@/*" && v[0].as_deref() == Some("/proj/client/src/*")),
             "{aliases:?}"
         );
     }
@@ -483,7 +874,7 @@ mod tests {
         assert!(
             aliases
                 .iter()
-                .any(|(k, v)| k == "~/" && v[0].as_deref() == Some("/proj/client/vendor/")),
+                .any(|(k, v)| k == "~/*" && v[0].as_deref() == Some("/proj/client/vendor/*")),
             "{aliases:?}"
         );
     }
@@ -495,15 +886,15 @@ mod tests {
             "@site/client",
             &[("@/*", "../src/*")],
         );
-        let at_entries: Vec<_> = aliases.iter().filter(|(k, _)| k == "@/").collect();
+        let at_entries: Vec<_> = aliases.iter().filter(|(k, _)| k == "@/*").collect();
         assert_eq!(at_entries.len(), 1, "{aliases:?}");
         assert_eq!(
             at_entries[0].1[0].as_deref(),
-            Some("/proj/client/../src/"),
+            Some("/proj/client/../src/*"),
             "{aliases:?}"
         );
         // And the user entry must come before any built-in would (first match wins).
-        assert_eq!(aliases[0].0, "@/", "{aliases:?}");
+        assert_eq!(aliases[0].0, "@/*", "{aliases:?}");
     }
 
     #[test]
@@ -561,12 +952,19 @@ mod tests {
     }
 
     #[test]
-    fn entry_wrapper_mentions_mount_and_provider() {
-        let s = entry_wrapper(Path::new("/abs/page.tsx"), &[], Path::new("/abs/helper.ts"));
+    fn app_shell_entry_mounts_router_and_provider() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("page.tsx"), "").unwrap();
+        let routes = discover_routes(tmp.path());
+        let s = app_shell_entry(&routes, Path::new("/abs/helper.ts"));
         assert!(s.contains("__nx_root__"));
+        assert!(s.contains("createRootRoute"));
+        assert!(s.contains("createRouter"));
+        assert!(s.contains("RouterProvider"));
         assert!(s.contains("QueryClientProvider"));
         assert!(s.contains("seedQueryClient"));
-        assert!(s.contains("/abs/page.tsx"));
+        assert!(s.contains("__nx_router__"));
+        assert!(s.contains("import { seedQueryClient } from \"/abs/helper.ts\";"));
     }
 
     #[test]
@@ -592,6 +990,90 @@ mod tests {
     }
 
     #[test]
+    fn client_barrel_exports_every_tag_and_model() {
+        let tmp = tempfile::tempdir().unwrap();
+        let generated = tmp.path().join("src/generated");
+        for dir in ["todos", "ping", "model"] {
+            std::fs::create_dir_all(generated.join(dir)).unwrap();
+        }
+        emit_client_barrel(tmp.path()).unwrap();
+        let barrel = std::fs::read_to_string(generated.join("index.ts")).unwrap();
+        assert!(barrel.contains(r#"export * from "./ping/ping";"#));
+        assert!(barrel.contains(r#"export * from "./todos/todos";"#));
+        assert!(barrel.contains(r#"export * from "./model";"#));
+        // model is not a tag module.
+        assert!(!barrel.contains("./model/model"));
+    }
+
+    #[test]
+    fn client_barrel_is_a_noop_without_generated_client() {
+        let tmp = tempfile::tempdir().unwrap();
+        emit_client_barrel(tmp.path()).unwrap();
+        assert!(!tmp.path().join("src/generated/index.ts").exists());
+    }
+
+    #[test]
+    fn route_regex_shapes() {
+        assert_eq!(route_regex("/"), r"/^\/$/");
+        assert_eq!(route_regex("/todos"), r"/^\/todos$/");
+        assert_eq!(route_regex("/source/{id}"), r"/^\/source\/[^\/]+$/");
+        assert_eq!(route_regex("/files/{*rest}"), r"/^\/files\/.+$/");
+        assert_eq!(route_regex("/(group)/about"), r"/^\/about$/");
+        // Literal dots escaped: /foo.bar must not match /fooxbar.
+        assert_eq!(route_regex("/foo.bar"), r"/^\/foo\.bar$/");
+    }
+
+    #[test]
+    fn app_shell_intercepts_same_origin_anchor_clicks() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("source/[id]")).unwrap();
+        std::fs::write(tmp.path().join("page.tsx"), "").unwrap();
+        std::fs::write(tmp.path().join("source/[id]/page.tsx"), "").unwrap();
+        let routes = discover_routes(tmp.path());
+        let s = app_shell_entry(&routes, Path::new("/abs/helper.ts"));
+        // Plain <a> clicks soft-navigate when the router owns the URL...
+        assert!(s.contains("document.addEventListener(\"click\""));
+        assert!(s.contains("router.navigate({ href:"));
+        // ...matching against the discovered route set, params included.
+        assert!(s.contains(r"const NX_APP_ROUTES = [/^\/$/, /^\/source\/[^\/]+$/];"));
+        // Escape hatches: modified clicks, downloads, and explicit opt-out.
+        assert!(s.contains("data-no-soft"));
+        assert!(s.contains("e.metaKey"));
+    }
+
+    #[test]
+    fn app_shell_leaves_receive_live_router_params() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("source/[id]")).unwrap();
+        std::fs::write(tmp.path().join("source/[id]/page.tsx"), "").unwrap();
+        let routes = discover_routes(tmp.path());
+        let s = app_shell_entry(&routes, Path::new("/abs/helper.ts"));
+        // Leaves render through nxLeaf, which feeds TanStack's live params in
+        // as the `params` prop (the __nx_params__ tag goes stale on soft nav).
+        assert!(s.contains("function nxLeaf"));
+        assert!(s.contains("useParams({ strict: false })"));
+        assert!(s.contains("<Lazy params={params} />"));
+        assert!(s.contains("component: nxLeaf(() => import("));
+    }
+
+    #[test]
+    fn app_shell_entry_nests_pages_under_layout_and_maps_dynamic_segments() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("orgs/[slug]/billing")).unwrap();
+        std::fs::write(tmp.path().join("orgs/[slug]/layout.tsx"), "").unwrap();
+        std::fs::write(tmp.path().join("orgs/[slug]/billing/page.tsx"), "").unwrap();
+        let routes = discover_routes(tmp.path());
+        let s = app_shell_entry(&routes, Path::new("/abs/helper.ts"));
+        // pathless layout route (id, not path), parented to root
+        assert!(s.contains("const layout_0 = createRoute({ getParentRoute: () => rootRoute, id:"));
+        // leaf at its full path with [slug] -> $slug, parented to the layout route
+        assert!(s.contains("path: \"/orgs/$slug/billing\""));
+        assert!(s.contains("getParentRoute: () => layout_0"));
+        // tree assembly nests the layout's children
+        assert!(s.contains("layout_0.addChildren("));
+    }
+
+    #[test]
     fn loading_entry_wrapper_mounts_loading_component() {
         let s = loading_entry_wrapper(Path::new("/abs/app/loading.tsx"));
         assert!(s.contains("__nx_loading_root__"));
@@ -599,27 +1081,23 @@ mod tests {
     }
 
     #[test]
-    fn page_bundles_include_applicable_layouts() {
+    fn page_bundles_emit_slug_and_path() {
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join("dashboard/settings")).unwrap();
-        std::fs::write(tmp.path().join("layout.tsx"), "").unwrap();
-        std::fs::write(tmp.path().join("dashboard/layout.tsx"), "").unwrap();
         std::fs::write(tmp.path().join("dashboard/settings/page.tsx"), "").unwrap();
 
         let routes = discover_routes(tmp.path());
         let pages = page_bundles(&routes);
         assert_eq!(pages.len(), 1);
         assert_eq!(pages[0].slug, "dashboard-settings");
-        assert_eq!(pages[0].layout_paths.len(), 2);
-        assert!(pages[0].layout_paths[0].ends_with("layout.tsx"));
-        assert!(pages[0].layout_paths[1].ends_with("dashboard/layout.tsx"));
+        assert!(pages[0].page_path.ends_with("dashboard/settings/page.tsx"));
     }
 
     #[test]
-    fn not_found_tsx_produces_bundle_under_not_found_slug() {
-        // A segment can carry both a page.tsx and a not-found.tsx; each gets its
-        // own bundle, under page_slug / not_found_slug respectively, and both
-        // pick up the segment's tsx layouts.
+    fn not_found_tsx_produces_standalone_bundle_under_not_found_slug() {
+        // A segment can carry both a page.tsx and a not-found.tsx. The page is
+        // a raw app-shell entry; the not-found is a standalone wrapped mount
+        // (it renders outside the router) carrying the segment's tsx layouts.
         let tmp = tempfile::tempdir().unwrap();
         std::fs::create_dir_all(tmp.path().join("admin")).unwrap();
         std::fs::write(tmp.path().join("layout.tsx"), "").unwrap();
@@ -627,22 +1105,202 @@ mod tests {
         std::fs::write(tmp.path().join("admin/not-found.tsx"), "").unwrap();
 
         let routes = discover_routes(tmp.path());
-        let bundles = page_bundles(&routes);
 
-        let page = bundles
-            .iter()
-            .find(|b| b.slug == "admin")
-            .expect("page.tsx bundle");
-        assert!(page.page_path.ends_with("admin/page.tsx"));
-        assert_eq!(page.layout_paths.len(), 1);
+        let pages = page_bundles(&routes);
+        assert_eq!(pages.len(), 1);
+        assert_eq!(pages[0].slug, "admin");
+        assert!(pages[0].page_path.ends_with("admin/page.tsx"));
 
-        let nf = bundles
-            .iter()
-            .find(|b| b.slug == "admin-not-found")
-            .expect("not-found.tsx bundle");
+        let not_founds = not_found_bundles(&routes);
+        assert_eq!(not_founds.len(), 1);
+        let nf = &not_founds[0];
+        assert_eq!(nf.slug, "admin-not-found");
         assert!(nf.page_path.ends_with("admin/not-found.tsx"));
         // not-found is wrapped in the same segment layouts as the page.
         assert_eq!(nf.layout_paths.len(), 1);
         assert!(nf.layout_paths[0].ends_with("layout.tsx"));
     }
+}
+
+// --- SVG-as-React-component loader ------------------------------------------
+// SVGR-style `.svg` imports compile to a default-exported React component in
+// Next apps (e.g. `import Logo from "./logo.svg"; <Logo className=.. />`).
+// Rolldown has no SVG loader, so it parses the raw `<svg>` markup as JS and
+// fails ("Unexpected JSX expression"). This `load` hook intercepts `.svg` by
+// extension and emits a tiny component that inlines the markup via
+// dangerouslySetInnerHTML, so zero-copy pages importing `.svg` bundle unchanged.
+#[derive(Debug)]
+struct SvgComponentPlugin;
+
+impl SvgComponentPlugin {
+    async fn load_impl(
+        &self,
+        args: &rolldown_plugin::HookLoadArgs<'_>,
+    ) -> rolldown_plugin::HookLoadReturn {
+        let clean = args.id.split(['?', '#']).next().unwrap_or(args.id);
+        let ext = std::path::Path::new(clean)
+            .extension()
+            .and_then(|e| e.to_str())
+            .map(|e| e.to_ascii_lowercase());
+        let code = match ext.as_deref() {
+            Some("svg") => {
+                // SVGR-style component: inline the markup via dangerouslySetInnerHTML.
+                let svg = tokio::fs::read_to_string(clean).await?;
+                let lit = js_string_literal(&svg);
+                format!(
+                    "import {{ jsx }} from \"react/jsx-runtime\";\n\
+                     const __HTML = {lit};\n\
+                     export default function SvgAsset(props) {{\n  \
+                     return jsx(\"span\", {{ ...props, dangerouslySetInnerHTML: {{ __html: __HTML }} }});\n}}\n"
+                )
+            }
+            Some("css") => {
+                // rolldown dropped CSS bundling, so a `import \"x.css\"` side-effect
+                // import would hard-fail. Emit a JS module that injects the stylesheet
+                // at runtime — styles apply, build succeeds.
+                let css = tokio::fs::read_to_string(clean).await?;
+                let lit = js_string_literal(&css);
+                format!(
+                    "const __CSS = {lit};\n\
+                     if (typeof document !== \"undefined\") {{\n  \
+                     const s = document.createElement(\"style\");\n  \
+                     s.setAttribute(\"data-nextrs-css\", \"1\");\n  \
+                     s.textContent = __CSS;\n  \
+                     document.head.appendChild(s);\n}}\n\
+                     export default {{}};\n"
+                )
+            }
+            _ => return Ok(None),
+        };
+        Ok(Some(rolldown_plugin::HookLoadOutput {
+            code: code.into(),
+            module_type: Some(rolldown_common::ModuleType::Js),
+            ..Default::default()
+        }))
+    }
+}
+
+impl rolldown_plugin::Plugin for SvgComponentPlugin {
+    fn name(&self) -> std::borrow::Cow<'static, str> {
+        std::borrow::Cow::Borrowed("nextrs:asset-loader")
+    }
+
+    fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
+        rolldown_plugin::HookUsage::Load | rolldown_plugin::HookUsage::Transform
+    }
+
+    fn load_meta(&self) -> Option<rolldown_plugin::PluginHookMeta> {
+        // Resolve `.svg` before the builtin asset/default loaders.
+        Some(rolldown_plugin::PluginHookMeta {
+            order: Some(rolldown_plugin::PluginOrder::Pre),
+        })
+    }
+
+    fn load(
+        &self,
+        _ctx: rolldown_plugin::SharedLoadPluginContext,
+        args: &rolldown_plugin::HookLoadArgs<'_>,
+    ) -> impl std::future::Future<Output = rolldown_plugin::HookLoadReturn> + Send {
+        self.load_impl(args)
+    }
+
+    fn transform(
+        &self,
+        _ctx: rolldown_plugin::SharedTransformPluginContext,
+        args: &rolldown_plugin::HookTransformArgs<'_>,
+    ) -> impl std::future::Future<Output = rolldown_plugin::HookTransformReturn> + Send {
+        // A `"use server"` module (Next.js server action) would otherwise pull the
+        // whole server stack (auth/prisma/node) into the browser bundle. Next swaps
+        // these for network stubs; we emit client stubs so the page bundles + renders.
+        let out = server_action_stub(args.code);
+        async move {
+            Ok(out.map(|code| rolldown_plugin::HookTransformOutput {
+                code: Some(code),
+                module_type: Some(rolldown_common::ModuleType::Js),
+                ..Default::default()
+            }))
+        }
+    }
+}
+
+/// If `code` is a `"use server"` module, return a stub module that re-exports the
+/// same names as no-op client functions (each returns a next-safe-action-shaped
+/// `{ serverError }`), so the server import chain never reaches the browser.
+fn server_action_stub(code: &str) -> Option<String> {
+    let head = code.trim_start();
+    let is_server = head.starts_with("\"use server\"") || head.starts_with("'use server'");
+    if !is_server {
+        return None;
+    }
+    let mut names: Vec<String> = Vec::new();
+    let mut has_default = false;
+    let ident: fn(&str) -> String = |s| {
+        s.chars()
+            .take_while(|c| c.is_alphanumeric() || *c == '_' || *c == '$')
+            .collect()
+    };
+    for line in code.lines() {
+        let l = line.trim_start();
+        if l.starts_with("export default") {
+            has_default = true;
+        } else if let Some(rest) = l
+            .strip_prefix("export const ")
+            .or_else(|| l.strip_prefix("export let "))
+            .or_else(|| l.strip_prefix("export var "))
+        {
+            let n = ident(rest);
+            if !n.is_empty() {
+                names.push(n);
+            }
+        } else if let Some(rest) = l
+            .strip_prefix("export async function ")
+            .or_else(|| l.strip_prefix("export function "))
+        {
+            let n = ident(rest);
+            if !n.is_empty() {
+                names.push(n);
+            }
+        } else if let Some(rest) = l.strip_prefix("export {") {
+            let inner = rest.split('}').next().unwrap_or("");
+            for part in inner.split(',') {
+                let p = part.trim();
+                let n = p.rsplit(" as ").next().unwrap_or(p).trim();
+                if !n.is_empty() && n != "default" {
+                    names.push(n.to_string());
+                }
+            }
+        }
+    }
+    let mut out = String::new();
+    out.push_str(
+        "// nextrs: \"use server\" module stubbed for the browser bundle (no action runtime).\n\
+         const __action = (name) => async () => ({ data: undefined, serverError: \
+         \"Server action \" + name + \" is not available in the nextrs port.\" });\n",
+    );
+    for n in &names {
+        out.push_str(&format!("export const {n} = __action(\"{n}\");\n"));
+    }
+    if has_default {
+        out.push_str("export default __action(\"default\");\n");
+    }
+    Some(out)
+}
+
+/// Minimal JS double-quoted string literal for arbitrary text (the SVG markup).
+fn js_string_literal(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    out.push('"');
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if (c as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
 }

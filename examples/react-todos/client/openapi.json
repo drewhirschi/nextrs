@@ -72,6 +72,43 @@
       }
     },
     "/api/todos/{id}": {
+      "get": {
+        "tags": [
+          "todos"
+        ],
+        "operationId": "getApiTodosById",
+        "parameters": [
+          {
+            "name": "id",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "integer",
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "The todo, or null if unknown",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "oneOf": [
+                    {
+                      "type": "null"
+                    },
+                    {
+                      "$ref": "#/components/schemas/TodoDetail"
+                    }
+                  ]
+                }
+              }
+            }
+          }
+        }
+      },
       "delete": {
         "tags": [
           "todos"
@@ -118,6 +155,28 @@
       "Todo": {
         "type": "object",
         "description": "Wire shape of a todo. Owned by this adapter; `From` maps the core type.",
+        "required": [
+          "id",
+          "title",
+          "done"
+        ],
+        "properties": {
+          "done": {
+            "type": "boolean"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string"
+          }
+        }
+      },
+      "TodoDetail": {
+        "type": "object",
+        "description": "Wire shape of a single-todo read. (Named apart from the list DTO in\n`../route.rs` — OpenAPI schema names are global.)",
         "required": [
           "id",
           "title",
