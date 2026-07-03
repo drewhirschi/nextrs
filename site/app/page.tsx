@@ -1,6 +1,7 @@
 // The docs-site landing page — a React (page.tsx) route, mounted client-side
 // into __nx_root__ by the bundle nextrs generates. This page dogfoods the
 // React track; the docs pages under /docs stay server-rendered.
+import { NextrsMark } from "@site/client";
 
 const PROPS_RS = `// app/props.rs — runs on the server, streaming
 // data into the React Query cache before mount.
@@ -43,7 +44,13 @@ export default function Home() {
       <section className="hero">
         <div className="shell hero-grid">
           <div>
-            <span className="eyebrow">Rust · React · Vercel</span>
+            <span className="eyebrow">
+              <NextrsMark
+                size="1.15em"
+                style={{ verticalAlign: "-0.2em", marginRight: "0.55em" }}
+              />
+              Rust · React · Vercel
+            </span>
             <h1>
               Engineered for <span className="em">agents</span>.
             </h1>
