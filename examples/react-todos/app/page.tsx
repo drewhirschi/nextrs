@@ -2,7 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import {
   useGetTodosFromUrl,
   useAddTodo,
-  useDeleteTodo,
+  useUpdateTodo,
   getGetTodosQueryKey,
 } from "@react-todos/client";
 import { useState } from "react";
@@ -38,7 +38,7 @@ export default function Todos() {
     },
   });
 
-  const deleteTodo = useDeleteTodo({ mutation: { onSuccess: invalidate } });
+  const updateTodo = useUpdateTodo({ mutation: { onSuccess: invalidate } });
 
   return (
     <section>
@@ -61,17 +61,22 @@ export default function Todos() {
 
       <ul className="list">
         {todos?.data.map((t) => (
-          <li key={t.id}>
+          <li key={t.id} className={t.done ? "done" : ""}>
+            <button
+              className={`check${t.done ? " checked" : ""}`}
+              aria-label={t.done ? `Reopen ${t.title}` : `Complete ${t.title}`}
+              onClick={() => updateTodo.mutate({ id: t.id, data: { done: !t.done } })}
+            >
+              {t.done ? "✓" : ""}
+            </button>
             {/* Plain anchor — the app shell intercepts it and soft-navigates
                 to the [id] route (no document load; layout stays mounted). */}
-            <a href={`/todos/${t.id}`}>{t.title}</a>
-            <button
-              className="ghost"
-              aria-label={`Delete ${t.title}`}
-              onClick={() => deleteTodo.mutate({ id: t.id })}
-            >
-              ✕
-            </button>
+            <a className="title" href={`/todos/${t.id}`}>
+              {t.title}
+            </a>
+            <span className={`badge ${t.done ? "badge-done" : "badge-open"}`}>
+              {t.done ? "Done" : "Open"}
+            </span>
           </li>
         ))}
       </ul>

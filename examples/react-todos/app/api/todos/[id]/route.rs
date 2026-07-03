@@ -38,6 +38,35 @@ pub async fn get(Path(id): Path<u64>) -> Json<Option<TodoDetail>> {
     )
 }
 
+/// Body for `PATCH /api/todos/{id}`.
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct UpdateTodoRequest {
+    pub done: bool,
+}
+
+// The `{id}` path param is inferred from the signature; the body is declared
+// like any utoipa request_body.
+#[nextrs::api(
+    patch,
+    operation_id = "updateTodo",
+    request_body = UpdateTodoRequest,
+    responses((status = 200, description = "The updated todo, or null if unknown", body = Option<TodoDetail>)),
+)]
+pub async fn patch(
+    Path(id): Path<u64>,
+    Json(req): Json<UpdateTodoRequest>,
+) -> Json<Option<TodoDetail>> {
+    Json(
+        react_todos::core::todos::set_done(id, req.done)
+            .await
+            .map(|t| TodoDetail {
+                id: t.id,
+                title: t.title,
+                done: t.done,
+            }),
+    )
+}
+
 #[nextrs::api(
     delete,
     operation_id = "deleteTodo",

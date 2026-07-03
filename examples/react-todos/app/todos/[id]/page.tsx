@@ -2,7 +2,13 @@
 // framework: TanStack Router's live match under soft navigation, the server's
 // __nx_params__ tag on a hard load. First paint is seeded by the sibling
 // prefetch.rs, so there's no fetch on load here either.
-import { useGetApiTodosById, useParams } from "@react-todos/client";
+import {
+  useGetApiTodosById,
+  useUpdateTodo,
+  useParams,
+  getGetApiTodosByIdQueryKey,
+} from "@react-todos/client";
+import { useQueryClient } from "@tanstack/react-query";
 
 // A "deep" component that needs the route param but doesn't get the `params`
 // prop threaded down — useParams() reads the app-shell router's live match.
@@ -13,8 +19,16 @@ function Permalink() {
 
 export default function TodoDetail({ params }: { params: { id: string } }) {
   const id = Number(params.id);
+  const queryClient = useQueryClient();
   const { data, isFetching } = useGetApiTodosById(id);
   const todo = data?.data;
+
+  const updateTodo = useUpdateTodo({
+    mutation: {
+      onSuccess: () =>
+        queryClient.invalidateQueries({ queryKey: getGetApiTodosByIdQueryKey(id) }),
+    },
+  });
 
   return (
     <section>
@@ -22,10 +36,18 @@ export default function TodoDetail({ params }: { params: { id: string } }) {
         Todo #{params.id} <Permalink />
       </h1>
       {todo ? (
-        <p>
-          <strong>{todo.title}</strong>{" "}
-          <span className="muted">{todo.done ? "done" : "open"}</span>
-        </p>
+        <div className="detail">
+          <span className={`badge ${todo.done ? "badge-done" : "badge-open"}`}>
+            {todo.done ? "Done" : "Open"}
+          </span>
+          <strong className={todo.done ? "struck" : ""}>{todo.title}</strong>
+          <button
+            onClick={() => updateTodo.mutate({ id, data: { done: !todo.done } })}
+            disabled={updateTodo.isPending}
+          >
+            {todo.done ? "Reopen" : "Mark done"}
+          </button>
+        </div>
       ) : (
         <p className="muted">{isFetching ? "Loading…" : "No such todo."}</p>
       )}
