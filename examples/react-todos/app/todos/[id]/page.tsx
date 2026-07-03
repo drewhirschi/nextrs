@@ -2,7 +2,14 @@
 // framework: TanStack Router's live match under soft navigation, the server's
 // __nx_params__ tag on a hard load. First paint is seeded by the sibling
 // prefetch.rs, so there's no fetch on load here either.
-import { useGetApiTodosById } from "@react-todos/client";
+import { useGetApiTodosById, useParams } from "@react-todos/client";
+
+// A "deep" component that needs the route param but doesn't get the `params`
+// prop threaded down — useParams() reads the app-shell router's live match.
+function Permalink() {
+  const { id } = useParams<{ id: string }>();
+  return <code className="muted">/todos/{id}</code>;
+}
 
 export default function TodoDetail({ params }: { params: { id: string } }) {
   const id = Number(params.id);
@@ -11,7 +18,9 @@ export default function TodoDetail({ params }: { params: { id: string } }) {
 
   return (
     <section>
-      <h1>Todo #{params.id}</h1>
+      <h1>
+        Todo #{params.id} <Permalink />
+      </h1>
       {todo ? (
         <p>
           <strong>{todo.title}</strong>{" "}

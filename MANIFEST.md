@@ -43,10 +43,14 @@ Middleware files export `pub async fn handle(req) -> nextrs::conventions::Middle
 
 ## The ideal data flow (the paradigm)
 
-**State lives in the URL.** Path params (`[id]` segments) and search params
-(`?status=done`) are the page's state — not `useState`. Every view is therefore
-shareable, refreshable, and back/forward-navigable by construction. The full
-loop:
+**Anything another person should be able to see lives in the URL.** Path
+params (`[id]` segments) and search params (`?status=done`) carry the state
+that defines the view: filters, sorts, pagination, which record is open — even
+which modal is up. Share the link and the recipient sees what you see;
+refresh and back/forward just work. Ephemeral interaction state (a hovered
+row, a half-typed input, a selected-but-unopened element) stays in component
+state — the test is "would a pasted URL be wrong without it?", not "is it
+state?". The full loop:
 
 1. **Hard load** — axum matches the route. `prefetch.rs` runs on the server
    with the matched params (`prefetch(req, params)`) and seeds the exact React
