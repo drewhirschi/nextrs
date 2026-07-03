@@ -42,6 +42,11 @@ pub async fn list(open_only: bool) -> Vec<Todo> {
         .collect()
 }
 
+pub async fn get(id: u64) -> Option<Todo> {
+    let todos = store().lock().unwrap();
+    todos.iter().find(|t| t.id == id).cloned()
+}
+
 pub async fn add(title: String) -> Todo {
     let mut todos = store().lock().unwrap();
     let id = todos.iter().map(|t| t.id).max().unwrap_or(0) + 1;

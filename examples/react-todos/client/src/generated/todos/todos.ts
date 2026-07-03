@@ -25,6 +25,7 @@ import type {
 
 import type {
   AddTodoRequest,
+  GetApiTodosById200,
   GetTodosParams,
   Todo
 } from '.././model';
@@ -235,7 +236,119 @@ const {mutation: mutationOptions, fetch: fetchOptions} = options ?
 
       return useMutation(mutationOptions, queryClient);
     }
-    export type deleteTodoResponse200 = {
+    export type getApiTodosByIdResponse200 = {
+  data: GetApiTodosById200
+  status: 200
+}
+    
+export type getApiTodosByIdResponseSuccess = (getApiTodosByIdResponse200) & {
+  headers: Headers;
+};
+;
+
+export type getApiTodosByIdResponse = (getApiTodosByIdResponseSuccess)
+
+export const getGetApiTodosByIdUrl = (id: number,) => {
+
+
+  
+
+  return `/api/todos/${id}`
+}
+
+export const getApiTodosById = async (id: number, options?: RequestInit): Promise<getApiTodosByIdResponse> => {
+  
+  const res = await fetch(getGetApiTodosByIdUrl(id),
+  {      
+    ...options,
+    method: 'GET'
+    
+    
+  }
+)
+
+  const body = [204, 205, 304].includes(res.status) ? null : await res.text();
+  
+  const data: getApiTodosByIdResponse['data'] = body ? JSON.parse(body) : {}
+  return { data, status: res.status, headers: res.headers } as getApiTodosByIdResponse
+}
+
+
+
+
+
+export const getGetApiTodosByIdQueryKey = (id?: number,) => {
+    return [
+    `/api/todos/${id}`
+    ] as const;
+    }
+
+    
+export const getGetApiTodosByIdQueryOptions = <TData = Awaited<ReturnType<typeof getApiTodosById>>, TError = unknown>(id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiTodosById>>, TError, TData>>, fetch?: RequestInit}
+) => {
+
+const {query: queryOptions, fetch: fetchOptions} = options ?? {};
+
+  const queryKey =  queryOptions?.queryKey ?? getGetApiTodosByIdQueryKey(id);
+
+  
+
+    const queryFn: QueryFunction<Awaited<ReturnType<typeof getApiTodosById>>> = ({ signal }) => getApiTodosById(id, { signal, ...fetchOptions });
+
+      
+
+      
+
+   return  { queryKey, queryFn, enabled: !!(id), ...queryOptions} as UseQueryOptions<Awaited<ReturnType<typeof getApiTodosById>>, TError, TData> & { queryKey: DataTag<QueryKey, TData, TError> }
+}
+
+export type GetApiTodosByIdQueryResult = NonNullable<Awaited<ReturnType<typeof getApiTodosById>>>
+export type GetApiTodosByIdQueryError = unknown
+
+
+export function useGetApiTodosById<TData = Awaited<ReturnType<typeof getApiTodosById>>, TError = unknown>(
+ id: number, options: { query:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiTodosById>>, TError, TData>> & Pick<
+        DefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiTodosById>>,
+          TError,
+          Awaited<ReturnType<typeof getApiTodosById>>
+        > , 'initialData'
+      >, fetch?: RequestInit}
+ , queryClient?: QueryClient
+  ):  DefinedUseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetApiTodosById<TData = Awaited<ReturnType<typeof getApiTodosById>>, TError = unknown>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiTodosById>>, TError, TData>> & Pick<
+        UndefinedInitialDataOptions<
+          Awaited<ReturnType<typeof getApiTodosById>>,
+          TError,
+          Awaited<ReturnType<typeof getApiTodosById>>
+        > , 'initialData'
+      >, fetch?: RequestInit}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+export function useGetApiTodosById<TData = Awaited<ReturnType<typeof getApiTodosById>>, TError = unknown>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiTodosById>>, TError, TData>>, fetch?: RequestInit}
+ , queryClient?: QueryClient
+  ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> }
+
+export function useGetApiTodosById<TData = Awaited<ReturnType<typeof getApiTodosById>>, TError = unknown>(
+ id: number, options?: { query?:Partial<UseQueryOptions<Awaited<ReturnType<typeof getApiTodosById>>, TError, TData>>, fetch?: RequestInit}
+ , queryClient?: QueryClient 
+ ):  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> } {
+
+  const queryOptions = getGetApiTodosByIdQueryOptions(id,options)
+
+  const query = useQuery(queryOptions, queryClient) as  UseQueryResult<TData, TError> & { queryKey: DataTag<QueryKey, TData, TError> };
+
+  query.queryKey = queryOptions.queryKey ;
+
+  return query;
+}
+
+
+
+
+export type deleteTodoResponse200 = {
   data: void
   status: 200
 }

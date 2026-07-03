@@ -85,6 +85,17 @@ When the fix lands, update the plan's `Status:` to `fixed in <commit-hash>`. Now
 doc and the commit point at each other, and `git log --grep`/the plan index both answer
 "did we already fix this?".
 
+## The demo app is the living reference (important)
+
+`examples/react-todos` is the canonical "this is what it looks like when it's
+implemented." **Every change to how the framework works must be reflected there
+in the same PR** — new conventions, renamed conventions, new client helpers,
+new codegen behavior. It stays deliberately small so a gap is easy to spot.
+When adding a feature, ask: "where does react-todos demonstrate this?" — if
+nowhere, the change isn't done. Verify by actually running it
+(`cargo build -p react-todos && PORT=<free> ./target/debug/react-todos`), not
+just compiling.
+
 ## Framework vs. generated-app changes (important)
 
 A fix in `crates/nextrs` reaches existing apps on their next `cargo update`/rebuild. A fix

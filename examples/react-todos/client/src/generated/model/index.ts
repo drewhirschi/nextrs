@@ -6,5 +6,7 @@
  */
 
 export * from './addTodoRequest';
+export * from './getApiTodosById200';
 export * from './getTodosParams';
 export * from './todo';
+export * from './todoDetail';

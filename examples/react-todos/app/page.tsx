@@ -16,9 +16,9 @@ export default function Todos() {
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: getGetTodosQueryKey() });
 
-  // Warmed from the stream by props.rs: defined on first render, no spinner,
-  // no mount fetch. Delete props.rs and this just fetches on mount instead —
-  // the component can't tell.
+  // Warmed from the stream by prefetch.rs: defined on first render, no
+  // spinner, no mount fetch. Delete prefetch.rs and this just fetches on
+  // mount instead — the component can't tell.
   const { data: todos, refetch, isFetching } = useGetTodos({ status: "open" });
 
   const addTodo = useAddTodo({
@@ -44,7 +44,9 @@ export default function Todos() {
       <ul className="list">
         {todos?.data.map((t) => (
           <li key={t.id}>
-            <span>{t.title}</span>
+            {/* Plain anchor — the app shell intercepts it and soft-navigates
+                to the [id] route (no document load; layout stays mounted). */}
+            <a href={`/todos/${t.id}`}>{t.title}</a>
             <button
               className="ghost"
               aria-label={`Delete ${t.title}`}
@@ -77,7 +79,7 @@ export default function Todos() {
         This page is a <code>page.tsx</code> rendered client-side by React. Its
         data comes from <code>route.rs</code> through generated typed hooks, and
         the list on first paint was seeded into the React Query cache by{" "}
-        <code>props.rs</code> — no fetch on load.
+        <code>prefetch.rs</code> — no fetch on load.
       </p>
       <p className="muted">
         Heads up: todos are stored in process memory with no database, so they
