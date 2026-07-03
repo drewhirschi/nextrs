@@ -310,6 +310,38 @@ fn parent_ident_of(layouts: &[&DiscoveredRoute], target: &str, is_layout: bool) 
         .unwrap_or_else(|| "rootRoute".to_string())
 }
 
+/// Map a discovery url_path to a JS regex literal matching concrete pathnames:
+/// `{param}` → one segment, `{*rest}` → the remainder, literals escaped.
+/// Drives the shell's click interceptor — only URLs the router can render are
+/// soft-navigated; everything else stays a normal document load.
+fn route_regex(url_path: &str) -> String {
+    if url_path == "/" {
+        return "/^\\/$/".to_string();
+    }
+    let mut re = String::from("/^");
+    for seg in url_path.split('/').filter(|s| !s.is_empty()) {
+        if seg.starts_with('(') && seg.ends_with(')') {
+            continue;
+        }
+        re.push_str("\\/");
+        if seg.starts_with("{*") && seg.ends_with('}') {
+            re.push_str(".+");
+        } else if seg.starts_with('{') && seg.ends_with('}') {
+            re.push_str("[^\\/]+");
+        } else {
+            // Escape JS regex metacharacters in literal segments.
+            for c in seg.chars() {
+                if !c.is_ascii_alphanumeric() && c != '_' && c != '-' {
+                    re.push('\\');
+                }
+                re.push(c);
+            }
+        }
+    }
+    re.push_str("$/");
+    re
+}
+
 /// Map a discovery url_path (`{param}`, `{*param}`, `(group)`) to a TanStack
 /// Router path: `{slug}`→`$slug`, `{*all}`→`$` (splat), `(group)` dropped.
 fn tanstack_path(url_path: &str) -> String {
@@ -531,6 +563,35 @@ fn app_shell_entry(routes: &[DiscoveredRoute], client_helper: &Path) -> String {
         "const router = createRouter({\n  routeTree,\n  defaultPreload: \"intent\",\n  defaultPendingMs: 150,\n  // A path absent from this tree (also absent from the axum page routes — same\n  // discovery source) hard-loads so the server (real route / static / strangler)\n  // handles it. No reload loop.\n  defaultNotFoundComponent: () => {\n    if (typeof window !== \"undefined\") window.location.assign(window.location.href);\n    return null;\n  },\n});\n\n",
     );
     out.push_str("Object.assign(window, { __nx_router__: router });\n\n");
+
+    // Transparent soft navigation: pages and layouts use plain <a> tags (zero
+    // app-page changes), so intercept same-origin clicks on URLs this router
+    // can render and turn them into router navigations. Anything else — other
+    // origins, downloads, modified clicks, new tabs, non-app paths (static
+    // files, API links, strangler routes) — falls through to a normal
+    // document load. `data-no-soft` opts an anchor out explicitly.
+    let route_patterns = pages
+        .iter()
+        .map(|pg| route_regex(&pg.url_path))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let _ = writeln!(out, "const NX_APP_ROUTES = [{route_patterns}];");
+    out.push_str(
+        "document.addEventListener(\"click\", (e) => {\n\
+           if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;\n\
+           const a = e.target instanceof Element ? e.target.closest(\"a\") : null;\n\
+           if (!a || (a.target && a.target !== \"_self\")) return;\n\
+           if (a.hasAttribute(\"download\") || a.hasAttribute(\"data-no-soft\")) return;\n\
+           const href = a.getAttribute(\"href\");\n\
+           if (!href || href.startsWith(\"#\")) return;\n\
+           const url = new URL(a.href, window.location.href);\n\
+           if (url.origin !== window.location.origin) return;\n\
+           if (!NX_APP_ROUTES.some((r) => r.test(url.pathname))) return;\n\
+           e.preventDefault();\n\
+           router.navigate({ href: url.pathname + url.search + url.hash });\n\
+         });\n\n",
+    );
+
     out.push_str(
         "createRoot(document.getElementById(\"__nx_root__\")!).render(<RouterProvider router={router} />);\n",
     );
@@ -891,6 +952,35 @@ mod tests {
         let s = entry_wrapper(Path::new("/abs/page.tsx"), &[], Path::new("/abs/helper.ts"));
         assert!(s.contains("__nx_params__"));
         assert!(s.contains("<Page params={params} />"));
+    }
+
+    #[test]
+    fn route_regex_shapes() {
+        assert_eq!(route_regex("/"), r"/^\/$/");
+        assert_eq!(route_regex("/todos"), r"/^\/todos$/");
+        assert_eq!(route_regex("/source/{id}"), r"/^\/source\/[^\/]+$/");
+        assert_eq!(route_regex("/files/{*rest}"), r"/^\/files\/.+$/");
+        assert_eq!(route_regex("/(group)/about"), r"/^\/about$/");
+        // Literal dots escaped: /foo.bar must not match /fooxbar.
+        assert_eq!(route_regex("/foo.bar"), r"/^\/foo\.bar$/");
+    }
+
+    #[test]
+    fn app_shell_intercepts_same_origin_anchor_clicks() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("source/[id]")).unwrap();
+        std::fs::write(tmp.path().join("page.tsx"), "").unwrap();
+        std::fs::write(tmp.path().join("source/[id]/page.tsx"), "").unwrap();
+        let routes = discover_routes(tmp.path());
+        let s = app_shell_entry(&routes, Path::new("/abs/helper.ts"));
+        // Plain <a> clicks soft-navigate when the router owns the URL...
+        assert!(s.contains("document.addEventListener(\"click\""));
+        assert!(s.contains("router.navigate({ href:"));
+        // ...matching against the discovered route set, params included.
+        assert!(s.contains(r"const NX_APP_ROUTES = [/^\/$/, /^\/source\/[^\/]+$/];"));
+        // Escape hatches: modified clicks, downloads, and explicit opt-out.
+        assert!(s.contains("data-no-soft"));
+        assert!(s.contains("e.metaKey"));
     }
 
     #[test]
