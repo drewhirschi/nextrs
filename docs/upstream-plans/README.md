@@ -22,3 +22,5 @@ user docs.
 - [Soft navigations seeded like hard loads](soft-nav-prefetch.md)
 - [Fallible handler seeding](fallible-handler-seeding.md)
 - [State-extractor seeding](state-extractor-seeding.md)
+- [Stale committed dist — prod build skew](stale-committed-dist-build-skew.md)
+- [Static JS caching](static-js-caching.md)

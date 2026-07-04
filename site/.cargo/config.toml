@@ -3,9 +3,9 @@
 # (or `cargo install cargo-nextrs-dev`); if `cargo dev` errors with "no such
 # command: nextrs-dev", that install is missing.
 #
-# Note: NEXTRS_SKIP_BUNDLE is intentionally NOT set here, so `cd site` dev
-# builds bundle the page.tsx landing normally. The Vercel build skips bundling
-# via `build.env` in vercel.json instead (Vercel runs no `npm install`).
+# Note: NEXTRS_SKIP_BUNDLE is intentionally NOT set here, so builds (dev and
+# Vercel alike) bundle the page.tsx landing normally. Only the client's
+# `npm run dump` sets it, to break the build.rs <-> openapi cycle.
 [alias]
 dev = "nextrs-dev --bin site"
 
