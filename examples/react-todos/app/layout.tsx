@@ -12,7 +12,11 @@ export default function Layout({ children }: { children: ReactNode }) {
       <link rel="icon" href="/favicon.ico" sizes="32x32" />
       <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
       <nav className="topnav">
-        <a href="/">Todos</a>
+        {/* Same wordmark as the docs site (nextrs-docs.vercel.app). */}
+        <a href="/" className="wordmark">
+          next<b>rs</b>
+        </a>
+        <span className="nav-tag">react-todos</span>
         <span className="muted"> · plain anchors, soft navigation</span>
       </nav>
       {children}

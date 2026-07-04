@@ -43,6 +43,24 @@ main { max-width: 36rem; margin: 0 auto; padding: 2.5rem 1.25rem 4rem; }
   letter-spacing: -0.01em;
 }
 .topnav a:hover { color: var(--accent); }
+/* The nextrs wordmark, matching the docs site's brand mark. */
+.wordmark {
+  font-size: 1.15rem;
+  font-weight: 800;
+  letter-spacing: 0;
+}
+.wordmark b { color: #ff5a5f; }
+.topnav a.wordmark:hover { color: var(--text); }
+.nav-tag {
+  font-size: 0.72rem;
+  font-weight: 650;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  padding: 0.12rem 0.5rem;
+  border-radius: 999px;
+}
 
 h1 { font-size: 1.75rem; margin: 0; letter-spacing: -0.02em; }
 a { color: var(--accent); text-decoration: none; }
