@@ -2,7 +2,7 @@
 
 - **Reported-in:** nextrs-docs site (same symptom seen in other apps by Drew)
 - **Date:** 2026-07-04
-- **Status:** open   <!-- open | fixed in <commit> | wontfix -->
+- **Status:** fixed in 55b779f
 
 ## Problem
 
