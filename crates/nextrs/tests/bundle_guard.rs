@@ -13,6 +13,11 @@ fn unresolved_bare_import_fails_the_build() {
     let fixture = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/unresolved-bare");
     let out_dir = tempfile::tempdir().expect("tempdir");
 
+    // The empty node_modules can't be committed (node_modules/ is gitignored,
+    // and git doesn't track empty dirs anyway) — bundle_pages checks for its
+    // existence before bundling, so create it here.
+    std::fs::create_dir_all(fixture.join("client/node_modules")).expect("create node_modules");
+
     // bundle_pages reads build-script env vars; integration tests run
     // single-threaded per binary here, and this is the only test touching env.
     unsafe {
