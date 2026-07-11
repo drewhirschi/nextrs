@@ -96,6 +96,14 @@ nowhere, the change isn't done. Verify by actually running it
 (`cargo build -p react-todos && PORT=<free> ./target/debug/react-todos`), not
 just compiling.
 
+**`site/` is an app too.** It consumes the framework via a path dep and picks
+up every change immediately — a convention change that isn't reflected there
+ships straight to docs production on the next push to main. After framework
+behavior changes, also `cargo build -p site` (with bundling ON — its
+skip-bundle dev path hides bundling breakage) and load the landing page.
+See docs/postmortems/2026-07-11-docs-site-dead-landing.md for what skipping
+this costs.
+
 ## Framework vs. generated-app changes (important)
 
 A fix in `crates/nextrs` reaches existing apps on their next `cargo update`/rebuild. A fix
