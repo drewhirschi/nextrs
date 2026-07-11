@@ -1,0 +1,70 @@
+# CI for nextrs. Exists because of
+# docs/postmortems/2026-07-11-docs-site-dead-landing.md — a green local build
+# shipped a dead docs landing. Three layers of defense run here:
+#   1. cargo tests (incl. the bundler's unresolved-bare-import guard test)
+#   2. real builds of both apps with bundling ON (the site's skip-bundle dev
+#      path hides bundling breakage)
+#   3. a headless-browser smoke over every route of both apps (e2e/smoke.mjs)
+# plus a post-deploy smoke against docs production after pushes to main.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install client deps
+        run: |
+          npm ci --prefix site/client
+          npm ci --prefix examples/react-todos/client
+          npm ci --prefix e2e
+
+      # dump-openapi (cargo, NEXTRS_SKIP_BUNDLE=1) + orval — must run before
+      # any bundling build, since page.tsx imports the generated client.
+      - name: Generate typed clients
+        run: |
+          npm run gen --prefix site/client
+          npm run gen --prefix examples/react-todos/client
+
+      - name: Workspace tests
+        run: cargo test --workspace --features nextrs/build,nextrs/tsx
+
+      - name: Build apps (bundling ON)
+        run: cargo build -p site -p react-todos
+
+      - name: Install Playwright browser
+        working-directory: e2e
+        run: npx playwright install --with-deps chromium
+
+      - name: Browser smoke over every route
+        run: node e2e/smoke.mjs
+
+  # After a push to main, Vercel deploys the docs site. Verify the LIVE page
+  # actually runs — the layer whose absence let the dead landing sit in prod.
+  prod-smoke:
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    needs: test-and-smoke
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Install e2e deps
+        working-directory: e2e
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+      - name: Smoke docs production
+        run: node e2e/prod-smoke.mjs https://nextrs-docs.vercel.app / /docs /docs/getting-started

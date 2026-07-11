@@ -1,0 +1,14 @@
+{
+  "name": "nextrs-e2e",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "smoke": "node smoke.mjs"
+  },
+  "devDependencies": {
+    "playwright": "^1.49.0"
+  },
+  "dependencies": {
+    "es-module-lexer": "^2.3.0"
+  }
+}

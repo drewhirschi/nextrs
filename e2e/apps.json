@@ -1,0 +1,18 @@
+{
+  "apps": [
+    {
+      "name": "site",
+      "package": "site",
+      "binary": "site",
+      "appDir": "site/app",
+      "dynamicSamples": { "/docs/[slug]": "/docs/getting-started" }
+    },
+    {
+      "name": "react-todos",
+      "package": "react-todos",
+      "binary": "react-todos",
+      "appDir": "examples/react-todos/app",
+      "dynamicSamples": { "/todos/[id]": "/todos/1" }
+    }
+  ]
+}
