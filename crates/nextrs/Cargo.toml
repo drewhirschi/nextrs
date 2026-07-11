@@ -1,6 +1,6 @@
 [package]
 name = "nextrs"
-version = "0.3.5"
+version = "0.3.6"
 description = "A Next.js-style React routing framework for Rust built on Axum."
 edition = "2024"
 rust-version = "1.85"

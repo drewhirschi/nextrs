@@ -1100,8 +1100,35 @@ fn run_bundler(
         .build()
         .map_err(|e| std::io::Error::other(format!("rolldown: {e:?}")))?;
     let rt = tokio::runtime::Runtime::new()?;
-    rt.block_on(bundler.write())
+    let output = rt
+        .block_on(bundler.write())
         .map_err(|e| std::io::Error::other(format!("rolldown bundling failed: {e:?}")))?;
+
+    // Rolldown ERRORS on unresolved relative imports but only WARNS on
+    // unresolved bare specifiers — it externalizes them, leaving a literal
+    // `import ... from "pkg"` in the emitted module. Browsers can't resolve
+    // bare specifiers, so that's a guaranteed runtime TypeError on every page
+    // that loads the chunk (how the docs site shipped a dead landing page:
+    // @tanstack/react-router missing from the client's package.json).
+    // Promote those warnings to build failures with the actionable fix.
+    let unresolved: Vec<String> = output
+        .warnings
+        .iter()
+        .map(|w| format!("{w:?}"))
+        .filter(|w| w.contains("UNRESOLVED_IMPORT"))
+        .collect();
+    if !unresolved.is_empty() {
+        return Err(std::io::Error::other(format!(
+            "nextrs: bundling left unresolved bare imports (a runtime error in \
+             the browser). Usually a missing dependency — add it to {}/package.json \
+             and `npm install`. Details: {}",
+            client_dir.display(),
+            unresolved.join("; ")
+        )));
+    }
+    for w in &output.warnings {
+        println!("cargo:warning=nextrs bundle: {w:?}");
+    }
     Ok(())
 }
 
