@@ -57,10 +57,14 @@ specifiers in native ES modules, so the shell threw before mounting anything.
 
 ## Follow-ups (the remaining layer)
 
-- [ ] **Post-deploy smoke check for docs prod**: after a push to main, load
-  `/` and one docs page headlessly and fail loudly on console errors — the
-  cheapest way to catch "green build, dead page" classes we haven't imagined
-  yet. (The framework guard closes this instance, not the category.)
-- [ ] Widen CLAUDE.md's living-reference rule: `site/` is an app — framework
+- [x] **Post-deploy smoke check for docs prod** — done, and generalized into
+  a test suite (fa68d70 + 7165d25): `.github/workflows/ci.yml` (the repo had
+  no CI at all) runs workspace tests, builds both apps with bundling ON, and
+  browser-smokes every route of site and react-todos on each PR/push
+  (`e2e/smoke.mjs`: fails on page errors, console.error, failed requests,
+  empty React mounts, and bare imports in served JS). Pushes to main also
+  smoke the live docs deployment (`e2e/prod-smoke.mjs`). The bundler guard
+  is pinned by `crates/nextrs/tests/bundle_guard.rs`.
+- [x] Widen CLAUDE.md's living-reference rule: `site/` is an app — framework
   behavior changes must be verified against it too, at minimum by building
   it with the bundler on (its skip-bundle dev path hides bundling breakage).
