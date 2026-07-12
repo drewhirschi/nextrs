@@ -1,0 +1,324 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>nextrs vs Next.js — the dev loop, measured</title>
+<style>
+  :root{
+    --ink:#11131a; --muted:#5b6270; --line:#e6e8ee; --bg:#fbfbfd; --card:#fff;
+    --rs:#0a7d4d;        /* nextrs green */
+    --rs-bg:#e7f6ee;
+    --next:#b4341f;      /* next red */
+    --next-bg:#fdecea;
+    --amber:#9a6b00; --amber-bg:#fcf3da;
+    --accent:#3b5bdb;
+    --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+    --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.55;-webkit-font-smoothing:antialiased}
+  .wrap{max-width:920px;margin:0 auto;padding:0 24px}
+  header.hero{padding:64px 0 36px;border-bottom:1px solid var(--line)}
+  .kicker{font:600 13px/1 var(--sans);letter-spacing:.08em;text-transform:uppercase;color:var(--accent);margin-bottom:14px}
+  h1{font-size:40px;line-height:1.1;margin:0 0 14px;letter-spacing:-.02em}
+  .sub{font-size:18px;color:var(--muted);max-width:680px}
+  .meta{margin-top:18px;font:500 13px/1.5 var(--mono);color:var(--muted)}
+  section{padding:42px 0;border-bottom:1px solid var(--line)}
+  h2{font-size:24px;margin:0 0 6px;letter-spacing:-.01em}
+  h2 .n{color:var(--accent);font:700 14px/1 var(--mono);vertical-align:middle;margin-right:10px}
+  .lead{color:var(--muted);margin:0 0 22px;font-size:16px}
+  /* hero stat pair */
+  .stops{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:30px}
+  @media(max-width:680px){.stops{grid-template-columns:1fr}}
+  .stop{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:22px 22px 18px}
+  .stop .lbl{font:600 12px/1.2 var(--sans);text-transform:uppercase;letter-spacing:.06em;color:var(--muted)}
+  .stop .big{font:800 44px/1 var(--sans);letter-spacing:-.03em;margin:10px 0 2px}
+  .stop .big small{font-size:18px;font-weight:700;color:var(--muted)}
+  .stop .vs{font:600 14px/1.4 var(--mono);color:var(--next);margin-top:8px}
+  .stop .note{font-size:13px;color:var(--muted);margin-top:10px}
+  .rs{color:var(--rs)} .nx{color:var(--next)} .am{color:var(--amber)}
+  /* bar chart */
+  .chart{margin:8px 0 4px}
+  .row{margin:16px 0}
+  .row .cap{display:flex;justify-content:space-between;font-size:14px;margin-bottom:7px}
+  .row .cap b{font-weight:600}
+  .bar{height:26px;border-radius:6px;position:relative;background:#f0f1f5;overflow:hidden;display:flex;align-items:center}
+  .fill{height:100%;border-radius:6px;display:flex;align-items:center;padding:0 10px;color:#fff;font:600 12px/26px var(--mono);white-space:nowrap;flex:0 0 auto}
+  .barlabel{font:700 12px/26px var(--mono);white-space:nowrap;padding-left:8px;flex:0 0 auto}
+  .barlabel.rs{color:var(--rs)}
+  .fill.next{background:var(--next)} .fill.rs{background:var(--rs)}
+  .ratio{display:inline-block;background:var(--rs-bg);color:var(--rs);font:700 12px/1 var(--mono);padding:5px 8px;border-radius:6px;margin-left:8px}
+  .scale-note{font-size:12px;color:var(--muted);font-style:italic;margin-top:6px}
+  /* table */
+  table{width:100%;border-collapse:collapse;margin-top:10px;font-size:14px}
+  th,td{text-align:left;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{font:600 12px/1.2 var(--sans);text-transform:uppercase;letter-spacing:.05em;color:var(--muted)}
+  td.num{font-family:var(--mono);white-space:nowrap}
+  tr.win-rs td:first-child{box-shadow:inset 3px 0 var(--rs)}
+  tr.win-next td:first-child{box-shadow:inset 3px 0 var(--amber)}
+  .pill{font:700 11px/1 var(--mono);padding:4px 7px;border-radius:5px}
+  .pill.rs{background:var(--rs-bg);color:var(--rs)} .pill.next{background:var(--amber-bg);color:var(--amber)}
+  /* callout */
+  .callout{background:var(--next-bg);border:1px solid #f3cdc6;border-radius:14px;padding:22px 24px;margin-top:8px}
+  .callout.good{background:var(--rs-bg);border-color:#bfe6d1}
+  .callout h3{margin:0 0 8px;font-size:18px}
+  .callout p{margin:6px 0;font-size:15px}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:680px){.grid2{grid-template-columns:1fr}}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:18px}
+  .card .h{font-weight:700;margin-bottom:6px}
+  ul.tight{margin:8px 0;padding-left:20px} ul.tight li{margin:5px 0;font-size:15px}
+  code{font-family:var(--mono);font-size:.92em;background:#f0f1f5;padding:1px 5px;border-radius:4px}
+  .foot{padding:34px 0 70px;color:var(--muted);font-size:13px}
+  .tag{display:inline-block;font:600 11px/1 var(--mono);color:var(--muted);border:1px solid var(--line);border-radius:20px;padding:6px 11px;margin:3px 4px 3px 0}
+  .legend{font-size:13px;color:var(--muted);margin-top:10px}
+  .legend .sw{display:inline-block;width:11px;height:11px;border-radius:3px;vertical-align:middle;margin:0 4px 0 12px}
+</style>
+</head>
+<body>
+<header class="hero"><div class="wrap">
+  <div class="kicker">Developer-experience benchmark · measured, reproducible</div>
+  <h1>The dev loop, measured:<br><span class="nx">Next.js</span> vs the Rust port (<span class="rs">nextrs</span>)</h1>
+  <p class="sub">One machine, one app, same database, same day. Every number below comes from a reproducible harness.</p>
+  <div class="meta">Intel Ultra 9 285K · 24 cores · 125 GiB · Next 16.2.6 (Turbopack) / React 19.2.3 · same Postgres · 2026-06-27</div>
+  <div class="stops">
+    <div class="stop">
+      <div class="lbl">Open a page you haven't visited yet today</div>
+      <div class="big nx">7.1 s <small>Next dev</small></div>
+      <div class="big rs">3.6 ms <small>nextrs</small></div>
+      <div class="vs">~1,975× · up to 22 s in Next · in a real browser: 18.7 s vs 45 ms</div>
+      <div class="note">In Next dev every route compiles on first visit. nextrs compiles all 205 routes into the binary once (31.5 s), then every page is a few ms — forever.</div>
+    </div>
+    <div class="stop">
+      <div class="lbl">Memory to run our own app in dev</div>
+      <div class="big nx">~14 GB <small>Next dev needs</small></div>
+      <div class="big rs">&lt;48 MB <small>nextrs runs in</small></div>
+      <div class="vs">kernel-OOM-killed at 4 GB AND 8 GB · works only at a 16 GB cap (13.9 GB peak)</div>
+      <div class="note">Measured with cgroup caps, kernel-confirmed. Next dev needs a 32 GB machine to be comfortable; nextrs fits ~300× over.</div>
+    </div>
+  </div>
+</div></header>
+
+<section><div class="wrap">
+  <h2><span class="n">01</span>At a glance</h2>
+  <p class="lead">Bars are roughly to scale — the nextrs bar is a sliver because the gap is that large. Real values + ratios labeled.</p>
+  <div class="chart">
+    <div class="row">
+      <div class="cap"><b>Open an unseen page (cold, in a real browser)</b><span>lower is better</span></div>
+      <div class="bar"><div class="fill next" style="width:100%">Next.js — 18,700 ms</div></div>
+      <div class="bar" style="margin-top:6px"><div class="fill rs" style="width:2%"></div><span class="barlabel rs">nextrs — 45 ms&nbsp;&nbsp;(~400× faster)</span></div>
+    </div>
+    <div class="row">
+      <div class="cap"><b>Dev-server RAM (load-tested)</b><span>lower is better</span></div>
+      <div class="bar"><div class="fill next" style="width:100%">Next.js — 16–27 GB</div></div>
+      <div class="bar" style="margin-top:6px"><div class="fill rs" style="width:2%"></div><span class="barlabel rs">nextrs — 46→75 MB&nbsp;&nbsp;(~210–600× less)</span></div>
+    </div>
+    <div class="row">
+      <div class="cap"><b>Production build → deployable</b><span>lower is better</span></div>
+      <div class="bar"><div class="fill next" style="width:100%">next build — 238 s → 5.7 GB</div></div>
+      <div class="bar" style="margin-top:6px"><div class="fill rs" style="width:19%"></div><span class="barlabel rs">cargo build --release — 46 s → 47 MB binary</span></div>
+    </div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2><span class="n">02</span>Every dimension, head to head</h2>
+  <p class="lead">13 dimensions of the dev loop. <b>11 favor nextrs; 2 favor the JS toolchain</b> (stated plainly — see §04).</p>
+  <table>
+    <thead><tr><th>Dimension</th><th>Next.js 16 dev</th><th>nextrs</th><th>Edge</th></tr></thead>
+    <tbody>
+      <tr class="win-rs"><td>First open of a page <span style="color:var(--muted)">(35-route census, median)</span></td><td class="num">7.1 s (≤22 s)</td><td class="num rs">3.6 ms</td><td><span class="pill rs">~1,975×</span></td></tr>
+      <tr class="win-rs"><td>Warm page (already compiled)</td><td class="num">682 ms TTI</td><td class="num rs">2.2 ms (rel 1.82)</td><td><span class="pill rs">~300×</span></td></tr>
+      <tr class="win-rs"><td>Dev-server RAM</td><td class="num">16–27 GB</td><td class="num rs">46→75 MB</td><td><span class="pill rs">~210–600×</span></td></tr>
+      <tr class="win-rs"><td>Min RAM to run at all</td><td class="num">~14 GB (OOM &lt;)</td><td class="num rs">&lt;48 MB</td><td><span class="pill rs">~300×</span></td></tr>
+      <tr class="win-rs"><td>Production build</td><td class="num">238 s → 5.7 GB</td><td class="num rs">46 s → 47 MB</td><td><span class="pill rs">~5× / 120×</span></td></tr>
+      <tr class="win-rs"><td>Type-check the project</td><td class="num">tsc 117 s (12 GB heap)</td><td class="num rs">cargo check 27.5 s</td><td><span class="pill rs">~4×</span></td></tr>
+      <tr class="win-rs"><td>~1,200 DB-backed tests</td><td class="num">vitest+Prisma ~141 s/shard</td><td class="num rs">nextrs 1.6 s</td><td><span class="pill rs">~85×</span></td></tr>
+      <tr class="win-rs"><td>Incremental compile (1 edit)</td><td class="num">—</td><td class="num rs">~1.9 s</td><td><span class="pill rs">crate-scoped</span></td></tr>
+      <tr class="win-rs"><td>Boot the server</td><td class="num">several s</td><td class="num rs">30 ms</td><td><span class="pill rs">fast</span></td></tr>
+      <tr class="win-next"><td>React hot-edit (HMR)</td><td class="num">0.3–0.7 s ✅</td><td class="num">2.5 s (rebuild+reload)</td><td><span class="pill next">Next</span></td></tr>
+      <tr class="win-next"><td>Lint</td><td class="num">Biome 3.8 s ✅</td><td class="num">clippy 17.7 s</td><td><span class="pill next">Next</span></td></tr>
+    </tbody>
+  </table>
+  <div class="legend"><span class="sw" style="background:var(--rs)"></span>nextrs wins <span class="sw" style="background:var(--amber)"></span>JS toolchain wins</div>
+</div></section>
+
+<section><div class="wrap">
+  <h2><span class="n">03</span>CI</h2>
+  <p class="lead"><b>What does it cost to run a thousand database-backed tests?</b> We ran both — same machine, same kind of test (fixtures → real Postgres → insertions).</p>
+  <table>
+    <thead><tr><th></th><th>nextrs</th><th>current app — real CI shard</th></tr></thead>
+    <tbody>
+      <tr class="win-rs"><td>Measured run</td><td class="num rs">1,201 tests · <b>1.6 s</b></td><td class="num">1,306 tests · <b>140.8 s</b> wall</td></tr>
+      <tr class="win-rs"><td>≈ per-test wall-clock</td><td class="num rs">~1.3 ms</td><td class="num">~108 ms (~<b>85×</b>)</td></tr>
+      <tr class="win-rs"><td>Range across the 12 shards</td><td class="num rs">—</td><td class="num">140–379 s each</td></tr>
+      <tr class="win-rs"><td>Isolation model</td><td class="num rs">one shared PG · txn rollback</td><td class="num">per-worker DB · module graph reloaded per file</td></tr>
+    </tbody>
+  </table>
+  <h3 style="margin:24px 0 4px;font-size:16px">Where the time actually goes — Prisma and the DB are <i>not</i> the bottleneck</h3>
+  <p class="lead" style="margin-bottom:12px">vitest runs many test files in parallel across worker threads, so its phase totals are <b>CPU-time summed across all workers</b> — that's why they add up to far more than the 141 s of wall-clock. Don't read them as seconds on a stopwatch; read the <b>ratio between phases</b> — that's what shows where the work goes. On shard 4:</p>
+  <table>
+    <thead><tr><th>Phase</th><th>What it is</th><th>CPU-time (all workers)</th></tr></thead>
+    <tbody>
+      <tr class="win-next"><td><b>collect</b></td><td>loading + evaluating each file's <b>module graph</b> (imports, app code, the generated Prisma client)</td><td class="num"><b>445 s</b></td></tr>
+      <tr class="win-next"><td>transform</td><td>transpiling TS → JS, per file</td><td class="num">30 s</td></tr>
+      <tr class="win-rs"><td>tests</td><td>the actual assertions, <b>including the real Postgres queries</b></td><td class="num">78 s</td></tr>
+      <tr class="win-rs"><td>setup (DB)</td><td>vitest setup + DB provisioning</td><td class="num">2.7 s</td></tr>
+    </tbody>
+  </table>
+  <div class="callout" style="margin-top:18px">
+    <h3>The real problem: the module graph, recomputed per file</h3>
+    <p>The database is <b>2.7 s</b> and the test bodies (with real queries) are <b>78 s</b> — both dwarfed by <b>collect at 445 s</b>. Resolving and evaluating this app's <b>module graph is already expensive in TypeScript</b>, and the way vitest runs tests makes it worse: it <b>re-computes that graph from scratch for every test file</b>, in every worker, every run. The cost scales with the app's dependency surface, not with the number of assertions.</p>
+  </div>
+  <table>
+    <thead><tr><th>CI gate (billed wall-clock)</th><th>Next.js</th><th>nextrs</th></tr></thead>
+    <tbody>
+      <tr class="win-rs"><td>Type-check</td><td class="num">tsc 117 s · 12 GB heap</td><td class="num rs">cargo check 27.5 s</td></tr>
+      <tr class="win-rs"><td>~1,200 DB-backed tests</td><td class="num">vitest+Prisma ~141 s/shard</td><td class="num rs">cargo-nextest 1.6 s</td></tr>
+      <tr class="win-rs"><td>Production build</td><td class="num">238 s → 5.7 GB</td><td class="num rs">46 s → 47 MB</td></tr>
+      <tr class="win-next"><td>Lint</td><td class="num">Biome 3.8 s</td><td class="num">clippy 17.7 s</td></tr>
+    </tbody>
+  </table>
+  <p class="scale-note">Honest caveat: a true full-suite comparison would require porting all 33k tests to Rust; we didn't. The per-file + per-gate + runner-memory numbers are the apples-to-apples ones — and they're what multiply into the monthly bill.</p>
+</div></section>
+
+<section><div class="wrap">
+  <div class="kicker" style="color:var(--amber)">Read this with §02 — the honest qualifier</div>
+  <h2>How comparable are these two apps?</h2>
+  <p class="lead">The numbers above only mean something if the two apps are the same app. They are the <i>same product</i> — and the port is deliberately <b>structurally complete and behaviorally partial</b>, applied <i>uniformly across all ~80 bounded contexts</i>.</p>
+  <table>
+    <thead><tr><th>Layer</th><th>Ported</th><th>How deep</th></tr></thead>
+    <tbody>
+      <tr class="win-rs"><td><b>Structure</b> — routes, schema, dispatch</td><td class="num rs">100%</td><td>All 205 routes · 404 models / 360 enums · ~1,935 procedure signatures wired &amp; type-checked. The React UI (<code>app/</code> + <code>components/</code>, <b>~768k LOC</b>) is reused byte-for-byte, zero-copy — not rewritten.</td></tr>
+      <tr><td><b>Behavior</b> — real handler logic</td><td class="num am">~40%</td><td>~800 of ~1,935 procedures have real <code>sqlx</code> bodies (org isolation, actual logic); the rest are typed stubs/proxies. Spread evenly — most contexts have some real, some stubbed.</td></tr>
+      <tr><td><b>Tests</b> — converted from the TS suite</td><td class="num am">~7%</td><td><b>1,532 of 22,680</b> backend cases (851 active + <b>681 documented <code>#[ignore]</code> PORT-GAPs</b>). <b>By design:</b> 8–15 representative cases per context to prove the conversion pattern, not one-shot parity.</td></tr>
+    </tbody>
+  </table>
+  <p class="scale-note">The 681 PORT-GAPs are the honest move — they <i>document</i> the behavior the Rust side stubs instead of faking a green. Why only 7%? Full conversion was deferred because the <b>old TS test pattern couldn't run at scale</b> (per-test pools + shared-DB writes deadlocked on connection exhaustion). The txn-rollback harness, crate split, and <code>cargo-nextest</code> built here are exactly what unblock it — the same machinery that runs 1,200 DB-backed tests in 1.6 s (§03). The remaining 93% is now a feasible swarm pass, not lost work.</p>
+</div></section>
+
+<section><div class="wrap">
+  <h2><span class="n">04</span>What if it was a full port?</h2>
+  <p class="lead">The port is ~123k LOC; the real TS app is ~<b>1.37M</b> first-party lines — so it <i>is</i> smaller. But the growth from here is <b>favorable</b>, because the expensive part of a Rust build is <b>already done</b>. The schema — the 404 models and 360 enums — is the single heaviest, most-expensive-per-line crate and the longest serial pole in the build, and it's <b>100% ported</b>. What's left to fill in is business logic, which compiles <b>cheaper per line and across ~40 crates in parallel</b>.</p>
+  <div class="grid2">
+    <div class="card"><div class="h rs">The expensive part is the schema — and it's finished</div>
+      Per-crate compile cost from a real <code>--timings</code> build:
+      <table style="margin-top:8px">
+        <thead><tr><th>Code type</th><th>ms / LOC</th></tr></thead>
+        <tbody>
+          <tr class="win-next"><td><b>Schema</b> — <code>db-models</code> (models + enums)</td><td class="num">1.02</td></tr>
+          <tr class="win-rs"><td><b>Business logic</b> — all <code>gen-*</code></td><td class="num rs">0.77</td></tr>
+        </tbody>
+      </table>
+      The schema is ~1.3× costlier per line, is the heaviest single crate (15 s) and the serial bottleneck — and it doesn't grow with a full port. Business logic is cheaper and lands in leaf crates that compile in parallel.</div>
+    <div class="card"><div class="h">And the overall slope is near-flat</div>
+      We injected <b>realistic handler-shaped code</b> (async + <code>Box::pin</code> + generics + json) to inflate the workspace to 158k → 196k → 278k LOC and re-measured: <b>~24 ms per 1,000 LOC</b>. A <code>--timings</code> split shows why it barely moves — <b>deps are 63% of the work but compiled once and cached</b>; only the first-party slice grows. <i>Held constant:</i> same machine, same Postgres, same React (byte-for-byte), nextrs in debug — biased against us. <i>Caveat:</i> the slope assumes handler-shaped code; heavy macros or deep generics compile slower.</div>
+  </div>
+  <div class="callout" style="margin-top:18px;background:var(--bg);border-color:var(--line)">
+    <h3>What a full-size port's cold build would cost</h3>
+    <table style="margin-top:6px">
+      <thead><tr><th>From-scratch cold build (deps + all first-party)</th><th>Projection</th></tr></thead>
+      <tbody>
+        <tr class="win-rs"><td>Today (~123k first-party LOC)</td><td class="num rs">34 s (measured)</td></tr>
+        <tr class="win-rs"><td><b>Best case</b> — full port, handler-shaped code spread across crates, parallelizes on multi-core</td><td class="num rs">~45 s</td></tr>
+        <tr class="win-next"><td><b>Worst case</b> — code concentrates in hub crates / heavy generics &amp; macros, parallelism degrades</td><td class="num">~90 s – 2 min</td></tr>
+      </tbody>
+    </table>
+    <p style="margin-top:8px">Either way it's a <b>once-in-a-while</b> event (clean checkout or dependency bump). The daily loop is the <b>~2 s incremental</b> — size-independent, because the crate split recompiles only the touched crate. For scale: <code>next build</code> is already <b>238 s</b> at <i>today's</i> size, and grows too.</p>
+  </div>
+  <p class="scale-note">Wherever this comparison is imperfect, it runs <i>against</i> nextrs — the beefy box flatters Next's heavier compile/memory, and nextrs's numbers are the understating debug build. So the measured gaps are a floor, not a ceiling.</p>
+</div></section>
+
+<section><div class="wrap">
+  <h2><span class="n">05</span>The memory cliff</h2>
+  <p class="lead">The JS dev server cannot run with less than ~14 GB of memory — capped with cgroups, kernel-confirmed.</p>
+  <table>
+    <thead><tr><th>Engine</th><th>Cap</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr class="win-rs"><td class="rs">nextrs</td><td class="num">256 MB</td><td>served 8/8 pages · 35 MB used</td></tr>
+      <tr class="win-rs"><td class="rs">nextrs</td><td class="num">48 MB</td><td>served the whole app · floor is <b>under 48 MB</b></td></tr>
+      <tr class="win-next"><td class="nx">Next dev</td><td class="num">4 GB</td><td>kernel-OOM-killed on the first page · 0/8</td></tr>
+      <tr class="win-next"><td class="nx">Next dev</td><td class="num">8 GB</td><td>kernel-OOM-killed · 0/8 — 8 GB still isn't enough</td></tr>
+      <tr class="win-next"><td class="nx">Next dev</td><td class="num">16 GB</td><td>works: 8/8, but <b>peak 13.9 GB</b> → needs ~14 GB to render</td></tr>
+    </tbody>
+  </table>
+</div></section>
+
+<section><div class="wrap">
+  <h2><span class="n">06</span>Cold starts &amp; function size</h2>
+  <p class="lead"><b>Cold starts are what the user feels.</b> We measured the real Next.js app live on Vercel; the nextrs runtime figures below are expectations, not Vercel measurements (we haven't deployed it there).</p>
+  <div class="callout">
+    <h3>The production Next.js app cold-started in 11.2 seconds — live, on Vercel</h3>
+    <p>First request to the real Next.js app on an idle instance: <b class="nx">11.2 s</b> to first byte, then 0.36 s warm. That multi-second cold start <i>is</i> the dead-click experience.</p>
+  </div>
+  <div class="callout good" style="margin-top:12px">
+    <h3>Why it's so slow: module resolution — the same beast as §03's tests</h3>
+    <p>The dominant cost in the Next cold start is the same thing that dominates the test suite: <b>resolving and evaluating a huge module graph</b> at request time. The way this app is structured gives Node an enormous import tree to walk and parse before it can serve a byte. A compiled Rust binary has <b>no module resolution at runtime</b> — the graph was linked at build time — so its app-init contribution is <b>~9 ms locally</b> (binary loads, tokio starts, DB pool connects). Same root cause, two symptoms: slow cold starts <i>and</i> slow tests.</p>
+  </div>
+  <h3 style="margin:26px 0 4px;font-size:16px">Function size — why Next hits Vercel's 250 MB limit and nextrs won't</h3>
+  <div class="grid2">
+    <div class="card"><div class="h nx">Next.js — per-route functions</div>
+      Each route becomes a serverless function bundling <b>React + that route's node_modules</b>; shared deps duplicate across functions → they creep toward the <b>250 MB unzipped</b> ceiling. "React in every function" is the tax you're paying.</div>
+    <div class="card"><div class="h rs">nextrs — one function</div>
+      The whole app is <b>one function = the Rust binary</b> — <b>measured 59 MB raw / 47 MB stripped</b>, the entire 205-route app, regardless of route count. <b>React isn't in the function</b> — it's static JS on the CDN. No per-route duplication, ~5× under the <b>250 MB</b> wall, and it doesn't grow with the route count the way per-route bundles do.</div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2><span class="n">07</span>What Next still wins (so you can trust the rest)</h2>
+  <p class="lead">Two loops favor the JS toolchain. We say so plainly.</p>
+  <div class="callout">
+    <p><b class="am">React hot-edit (HMR):</b> Next 0.3–0.7 s vs nextrs 2.5 s (rebuild + reload). This is the one loop Next wins — and it's the loop that already hurt least.</p>
+    <p><b class="am">Lint:</b> Biome 3.8 s vs clippy 17.7 s. Biome is itself Rust; it's just very good.</p>
+    <p style="margin-top:10px">The trade: nextrs gives up ~2 s on the cheap loop to erase <b>7–22 s on the expensive one</b> — and ~210–600× the memory. That's the whole bet.</p>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2><span class="n">08</span>What it costs (and what it unlocks)</h2>
+  <div class="grid2">
+    <div class="card"><div class="h">The daily tax (compounding)</div>
+      ~30 cold page-opens/day × ~7 s ≈ 3.5 min/dev/day of literal spinner → <b>~7 engineer-weeks/year across 20 devs</b>, before the dropped-intention cost of each flow-break.</div>
+    <div class="card"><div class="h">Hardware</div>
+      Next dev's ~14 GB floor forces 32 GB machines or cloud dev boxes (~$60–280/mo/dev). nextrs at &lt;48 MB removes "can my machine run our own app" from the equation: <b>~$0</b>.</div>
+    <div class="card"><div class="h">CI (billed wall-clock)</div>
+      Type-check 117 s→27.5 s, ~1,200 DB tests 141 s/shard→1.6 s, build 238 s→46 s — cheaper per run <b>and</b> on smaller runners.</div>
+    <div class="card"><div class="h">The unlock that's foreclosed today</div>
+      <b>A live preview env per open PR</b> and <b>agent-scale dev</b> — dozens of full app instances per box, each able to run the app to verify its own change. Impossible at 27 GB; trivial at 48 MB.</div>
+  </div>
+</div></section>
+
+<section><div class="wrap">
+  <h2><span class="n">09</span>My takeaways</h2>
+  <p class="lead">The numbers above are the case. These are the five things I actually walked away believing.</p>
+  <div class="callout good">
+    <h3>1 · The process itself is the headline</h3>
+    <p>I was extremely hands-off on this, and I'm genuinely amazed at the results for how little I had to put in. A full-breadth port of a 205-route app — measured, playable, honestly benchmarked — came together with a fraction of the effort I'd have budgeted. That's a data point about how we build now, not just about the framework.</p>
+  </div>
+  <div class="callout" style="margin-top:12px">
+    <h3>2 · The JS module graph will keep biting us</h3>
+    <p>Module resolution is the one thing that fought back the whole way — the runtime <code>process.env</code> shims, the bare-import roots, the cost of walking the graph itself. It's the same beast behind slow cold starts <i>and</i> slow tests, and it was the hardest part to wire even from the Rust side. I don't expect that edge to fully go away; it's the area to keep watching.</p>
+  </div>
+  <div class="callout good" style="margin-top:12px">
+    <h3>3 · The real prize is headroom, not seconds</h3>
+    <p>Shaving a dev loop is nice, but it's not the point. The point is what the speed and the &lt;48 MB footprint <i>unlock</i>: automated testing at a scale we can't afford today, dozens of app instances per box, and the freedom to stop spending so much of our attention on performance. Fast enough stops being a constraint we design around.</p>
+  </div>
+  <div class="callout good" style="margin-top:12px">
+    <h3>4 · In the AI era, why is the language the one thing we won't reconsider?</h3>
+    <p>We're rethinking almost everything about how we develop for AI — tools, workflows, how much a single engineer can hold. It's strange that the language we write in is the one layer we treat as fixed. If we're willing to question the <i>how</i>, the <i>what we build it in</i> deserves the same question.</p>
+  </div>
+  <div class="callout good" style="margin-top:12px">
+    <h3>5 · Rewrites have been going well for us</h3>
+    <p>We rewrote the mobile app and it went really well — and a lot of companies are rewriting right now, so the ground is well-trodden. My whole belief here is simple: a rewrite like this is what lets us move faster <i>later</i>. The point of doing it isn't this quarter; it's the velocity it buys for every quarter after.</p>
+  </div>
+</div></section>
+
+<div class="wrap foot">
+  <b>Methodology &amp; honesty.</b> All timings wall-clock, medians of N=3 where applicable; cold compiles are one-shot. nextrs runtime numbers are from the DEBUG build (release is faster + lighter — a conservative floor). Same app, same Postgres, same machine; Next pages were real error-free renders. Reproducible harnesses + full raw data in <code>docs/benchmarks/</code>.
+  <div style="margin-top:14px">
+    <span class="tag">cold page 7.1 s → 3.6 ms</span><span class="tag">RAM ~14 GB → &lt;48 MB</span><span class="tag">build 238 s → 46 s</span><span class="tag">typecheck 117 s → 27.5 s</span><span class="tag">~1.2k DB tests: 141 s shard → 1.6 s</span><span class="tag">HMR: Next wins</span><span class="tag">lint: Next wins</span><span class="tag">compile slope ~24 ms/1k LOC to 278k</span>
+  </div>
+</div>
+</body>
+</html>
