@@ -49,7 +49,19 @@ max-optimization settings on 2 cores.
 | Date | Commit | Build | Notes |
 |---|---|---|---|
 | 2026-07-12 | c908a5d | **10m 0s** | baseline above |
-| 2026-07-12 | (this change) | _measure on next deploy and record here_ | expected ~3m: drops the 3m42s debug build; release step ≈ half |
+| 2026-07-12 | 8cd4509 | **6m 0s** | −40%. Fix 2 delivered exactly as predicted (codegen: 3m43s → 1s). Fix 1 delivered ~nothing: release build 5m04s → **5m06s** — see finding below. |
+
+**Finding: fat LTO was not the bottleneck on a 2-core builder.** Dropping
+`lto="fat"`/`codegen-units=1` left the release build time unchanged (5m04s →
+5m06s). Compiling the ~700-crate dependency graph dominates at this core
+count; the serial LTO link and single-CGU codegen it replaced were noise.
+The profile change stays (it still speeds up many-core local release builds
+and a docs site gains nothing from max-opt), but the projected "release step
+≈ half" was wrong. Remaining big levers, in order: cache the cargo target dir
+(kills the cold build entirely when it fits), more builder cores, fewer
+dependencies. And queue time isn't build time: this measurement sat ~100
+minutes in Vercel's queue behind another project's deploys — one build slot
+per account is its own bottleneck (see nextrs-apps-build-audit.md).
 
 ## Not done (deliberately), and why
 
