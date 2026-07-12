@@ -1,0 +1,51 @@
+# Fleet cold-start telemetry. Pings every deployed nextrs app (metrics/
+# fleet.json) at randomized times through the day, records temperature
+# (cold / warm via /__nx/health) and response time, and publishes a rolling
+# summary — data + SUMMARY.md live on the `metrics` branch so appends never
+# trigger site deploys or clutter main's history.
+name: coldstart-pinger
+
+on:
+  schedule:
+    # Every 2 hours; the job then sleeps a random 0–40 min so samples don't
+    # land on the hour (Vercel and cron-aligned traffic would bias warm rates).
+    - cron: "17 */2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: coldstart-pinger
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Random jitter (skipped on manual runs)
+        if: github.event_name == 'schedule'
+        run: sleep $(( RANDOM % 2400 ))
+
+      - name: Ping the fleet
+        run: node metrics/ping.mjs | tee /tmp/batch.ndjson
+
+      - name: Append to the metrics branch and publish summary
+        run: |
+          git config user.name "coldstart-pinger"
+          git config user.email "noreply@github.com"
+          git fetch origin metrics:metrics 2>/dev/null || git branch metrics $(git commit-tree $(git hash-object -t tree /dev/null) -m "metrics root")
+          git worktree add /tmp/metrics metrics
+          mkdir -p /tmp/metrics/data
+          cat /tmp/batch.ndjson >> /tmp/metrics/data/coldstarts.ndjson
+          node metrics/summarize.mjs /tmp/metrics/data
+          cp /tmp/metrics/data/SUMMARY.md /tmp/metrics/SUMMARY.md
+          cd /tmp/metrics
+          git add -A
+          git commit -m "ping $(date -u +%FT%H:%M)Z"
+          git push origin metrics

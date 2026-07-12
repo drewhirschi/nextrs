@@ -344,6 +344,11 @@ fn build_route_table(entries: Arc<Vec<RouteEntry>>, prefetch: Arc<PrefetchConfig
         router = router.merge(build_prefetch_endpoint(Arc::clone(&entries)));
     }
 
+    // Fleet-uniform start-temperature telemetry; also anchors uptime_ms to
+    // router construction (≈ process boot).
+    crate::health::init();
+    router = router.route(crate::health::NX_HEALTH_PATH, get(crate::health::handler));
+
     router
 }
 

@@ -1,4 +1,5 @@
 pub mod conventions;
+pub mod health;
 pub mod discovery;
 pub mod openapi;
 pub mod params;

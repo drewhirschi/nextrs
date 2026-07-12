@@ -3,9 +3,19 @@
   "installCommand": "cd client && npm ci",
   "buildCommand": "cd client && npx orval --config ./orval.config.ts && cd .. && cargo build --release -p site",
   "functions": {
-    "api/index.rs": { "runtime": "vercel-rust@4.0.11" }
+    "api/index.rs": {
+      "runtime": "vercel-rust@4.0.11"
+    }
   },
   "rewrites": [
-    { "source": "/(.*)", "destination": "/api/index" }
-  ]
+    {
+      "source": "/(.*)",
+      "destination": "/api/index"
+    }
+  ],
+  "git": {
+    "deploymentEnabled": {
+      "main": true
+    }
+  }
 }

@@ -1,0 +1,29 @@
+{
+  "comment": "Fleet registry for the cold-start pinger (.github/workflows/coldstart-pinger.yml). Apps with `health: true` run nextrs >= 0.3.7 and answer /__nx/health with boot_id/uptime/first_request \u2014 the pinger classifies cold vs warm from those. Apps with `health: false` predate the endpoint; the pinger records response time only until they upgrade.",
+  "apps": [
+    {
+      "name": "nextrs-docs",
+      "url": "https://nextrs-docs.vercel.app",
+      "health": true
+    },
+    {
+      "name": "react-todos",
+      "url": "https://nextrs-react-todos.vercel.app",
+      "health": false,
+      "path": "/",
+      "note": "flip to health:true when nextrs 0.3.7 is published and the app redeployed"
+    },
+    {
+      "name": "onenote-extractor",
+      "url": "https://onenote-extractor.vercel.app",
+      "health": false,
+      "path": "/"
+    },
+    {
+      "name": "hhh-next",
+      "url": "https://hhh-rs.vercel.app",
+      "health": false,
+      "path": "/"
+    }
+  ]
+}
