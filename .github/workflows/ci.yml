@@ -37,6 +37,13 @@ jobs:
           npm run gen --prefix site/client
           npm run gen --prefix examples/react-todos/client
 
+      # Vercel builds run orval against the COMMITTED openapi.json (skipping a
+      # 3.5-minute debug cargo build — see docs/build-performance.md). That is
+      # only sound if the committed spec matches the code; fail here if a route
+      # change forgot to re-run `npm run gen`.
+      - name: Committed OpenAPI specs are fresh
+        run: git diff --exit-code site/client/openapi.json examples/react-todos/client/openapi.json
+
       - name: Workspace tests
         run: cargo test --workspace --features nextrs/build,nextrs/tsx
 

@@ -1,7 +1,7 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "installCommand": "cd client && npm ci",
-  "buildCommand": "cd client && npm run gen && cd .. && cargo build --release -p react-todos",
+  "buildCommand": "cd client && npx orval --config ./orval.config.ts && cd .. && cargo build --release -p react-todos",
   "functions": {
     "api/index.rs": {
       "runtime": "vercel-rust@4.0.11"

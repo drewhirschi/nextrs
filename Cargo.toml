@@ -19,7 +19,15 @@ nextrs-macros = { path = "crates/nextrs-macros" }
 [profile.dev]
 debug = 0
 
+# Default release: cargo's stock settings (parallel codegen, no LTO). The old
+# fat-LTO/single-CGU release added ~2.5min to every Vercel deploy on a 2-core
+# builder for zero benefit to a docs site. Benchmarks that want max-opt use
+# --profile perf explicitly (benchmarks/results.md pre-2026-07-12 was measured
+# under the old fat-LTO release).
 [profile.release]
+
+[profile.perf]
+inherits = "release"
 codegen-units = 1
 lto = "fat"
 opt-level = 3

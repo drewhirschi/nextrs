@@ -1,0 +1,63 @@
+# Building nextrs apps on Vercel — what costs what
+
+A running record of deploy-time measurements and the optimizations applied,
+so future changes can be judged against numbers instead of vibes. Measured on
+the docs site (`nextrs-docs`, Vercel 2-core/8GB builder) unless noted.
+
+## Anatomy of a deploy
+
+`vercel.json` drives it: `installCommand` (npm ci in `client/`), `buildCommand`
+(client codegen, then `cargo build --release`), then the `vercel-rust` runtime
+packages `api/index.rs` from the same target dir. The build cache Vercel
+restores covers npm — **not** the cargo target dir, so every deploy is a cold
+Rust build. That makes the Rust compile profile and the number of cargo
+invocations the entire game; the JS steps are noise.
+
+## Baseline — 2026-07-12, commit c908a5d (10m 0s total)
+
+| Phase | Time | Share |
+|---|---|---|
+| clone + cache restore | 1s | — |
+| `npm ci` | 9s | 1.5% |
+| rustup toolchain sync (1.96.0 pin) | 13s | 2% |
+| `cargo run dump-openapi` — full **debug** build of ~700 crates to run a 0.2s binary | 3m 42s | 37% |
+| orval client gen | 1s | — |
+| `cargo build --release -p site` under `lto="fat"`, `codegen-units=1` | 5m 04s | 51% |
+| bundle mirror + function packaging + upload | ~45s | 7.5% |
+
+Two full cold compiles of the workspace per deploy, the second one under
+max-optimization settings on 2 cores.
+
+## Optimizations applied (2026-07-12)
+
+1. **Release profile back to cargo defaults.** The workspace `[profile.release]`
+   had `lto = "fat"` + `codegen-units = 1` since the initial commit — settings
+   that serialize codegen and add a huge single-threaded LTO link, for zero
+   observable benefit to a docs site. Max-opt now lives in an explicit
+   `[profile.perf]` for benchmark runs. (`benchmarks/results/results.md`
+   numbers predating this change were measured under the old fat-LTO release.)
+2. **No Rust compile for client codegen on Vercel.** `buildCommand` runs orval
+   directly against the committed `client/openapi.json` instead of
+   `npm run gen` (which cargo-builds the whole workspace in debug just to run
+   `dump-openapi`). `npm run gen` stays the local workflow; CI fails if the
+   committed spec drifts from the code ("Committed OpenAPI specs are fresh"
+   step in `.github/workflows/ci.yml`). Applied to both `site/` and
+   `examples/react-todos/`.
+
+## Results
+
+| Date | Commit | Build | Notes |
+|---|---|---|---|
+| 2026-07-12 | c908a5d | **10m 0s** | baseline above |
+| 2026-07-12 | (this change) | _measure on next deploy and record here_ | expected ~3m: drops the 3m42s debug build; release step ≈ half |
+
+## Not done (deliberately), and why
+
+- **Caching the cargo target dir** (`CARGO_TARGET_DIR` under `.vercel/cache`):
+  could take warm deploys to ~1–2m, but Rust target dirs routinely exceed
+  Vercel's build-cache size limit, at which point the cache silently stops
+  sticking. Try only if the cold-build time above still chafes.
+- **Bigger build machine**: project-settings toggle, pure cores-for-money;
+  stacks with everything here. No repo change involved.
+- **Trimming release-built dev conveniences** (`tower-livereload`, `dotenvy`):
+  seconds, not minutes. Not worth the churn yet.
