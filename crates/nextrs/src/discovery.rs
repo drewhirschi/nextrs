@@ -37,8 +37,8 @@ pub struct DiscoveredRoute {
     pub middleware: Option<PathBuf>,
     /// `route.rs` (API handler) — no `.html` variant.
     pub route: Option<PathBuf>,
-    /// `props.rs` — server data for a `page.tsx` (Rust-only; requires the
-    /// page slot to be `.tsx`, enforced by codegen).
+    /// `prefetch.rs` (legacy name `props.rs`) — server data for a `page.tsx`
+    /// (Rust-only; requires the page slot to be `.tsx`, enforced by codegen).
     pub props: Option<PathBuf>,
 }
 

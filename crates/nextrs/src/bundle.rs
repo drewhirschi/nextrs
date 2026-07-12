@@ -715,7 +715,7 @@ import {{ seedQueryClient }} from "{helper}";
 import Page from "{page}";
 {layout_imports}
 
-// staleTime > 0 so server-seeded entries (see props.rs) render without an
+// staleTime > 0 so server-seeded entries (see prefetch.rs) render without an
 // immediate background refetch; with no seeds this is just a sane default.
 const qc = new QueryClient({{
   defaultOptions: {{ queries: {{ staleTime: 30_000 }} }},

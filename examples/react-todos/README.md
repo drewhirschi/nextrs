@@ -2,14 +2,14 @@
 
 A standalone nextrs app demonstrating **React `page.tsx` pages** with a
 **server-seeded React Query cache** — the list renders on first paint with no
-client fetch, because `props.rs` warmed the cache from the same stream that
+client fetch, because `prefetch.rs` warmed the cache from the same stream that
 delivered the HTML.
 
 ```
 app/
 ├── layout.{rs,html}        root layout + hand-written stylesheet
 ├── page.tsx                the React page (client-rendered)
-├── props.rs                seeds the open-todos query into the cache
+├── prefetch.rs                seeds the open-todos query into the cache
 └── api/todos/
     ├── route.rs            GET (list) + POST (add)  — #[nextrs::api]
     └── [id]/route.rs       DELETE (remove)          — #[nextrs::api]
@@ -44,10 +44,10 @@ local run with `NEXTRS_SKIP_BUNDLE=0` so the page bundle is regenerated.
 ## What to look at
 
 - **No fetch on load** — open the network panel: the todo list is there on
-  first paint, seeded by `props.rs`. The component (`page.tsx`) is unaware;
+  first paint, seeded by `prefetch.rs`. The component (`page.tsx`) is unaware;
   it just calls `useGetTodos(...)`.
 - **Mutations reach the seed** — add or delete a todo and the seeded list
-  refreshes, because `props.rs` seeds under the *same* canonical query key the
+  refreshes, because `prefetch.rs` seeds under the *same* canonical query key the
   hooks use (`["/api/todos", {...}]`).
 - **One binary** serves the page, the bundle, the static CSS, the API, and
   `/openapi.json`. No Node at runtime.

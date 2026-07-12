@@ -14,7 +14,7 @@ export function TodosClient({ initial }: { initial: Todo[] }) {
 
   // Seeded from the server-passed `initial` (read from the store in page.tsx) —
   // defined on first render, no mount fetch. The client-side analog of
-  // react-todos's props.rs cache seeding.
+  // react-todos's prefetch.rs cache seeding.
   const {
     data: todos,
     refetch,

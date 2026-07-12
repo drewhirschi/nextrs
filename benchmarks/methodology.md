@@ -6,13 +6,13 @@ How the numbers in [`results/results.md`](results/results.md) are produced, and 
 
 Two implementations of the *same* todos app — seeded open-todos list, add, delete — with identical semantics, seed data, and visual output:
 
-- **nextrs** — `examples/react-todos` (React `page.tsx` + `props.rs` server-seeded React Query cache).
+- **nextrs** — `examples/react-todos` (React `page.tsx` + `prefetch.rs` server-seeded React Query cache).
 - **Next.js** — `benchmarks/apps/nextjs` (Next.js 15 App Router).
 
 Fairness controls baked in:
 
 - **Both pages are client-rendered.** The Next.js page ships a shell + server-read seed and renders the list in the browser (`ssr: false`), exactly like nextrs's `<div id="__nx_root__">` + bundle. We do **not** compare nextrs's CSR shell against a server-rendered RSC page — that would charge Next.js for rendering work nextrs offloads to the client.
-- **Per-request fresh seed.** Both recompute the seed from the in-memory store on every request (`force-dynamic` in Next, `props.rs` in nextrs), so neither serves a cached static page.
+- **Per-request fresh seed.** Both recompute the seed from the in-memory store on every request (`force-dynamic` in Next, `prefetch.rs` in nextrs), so neither serves a cached static page.
 - **In-memory store both sides** — no DB, so we measure framework/runtime overhead, not I/O.
 - **Matched build profiles** — nextrs release build, Next.js production build (`next build` + `next start`). Same machine, same load tool (`hey`), warm, back to back.
 - **Idiomatic Next.js** — App Router + RSC + Route Handlers (its fast path), not a hand-nerfed config.

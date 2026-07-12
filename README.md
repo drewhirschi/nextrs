@@ -33,17 +33,17 @@ Each folder is a route segment. Each file is a convention slot:
 | `loading.{rs,html,tsx}` | Triggers streaming — shown while the page resolves | same |
 | `middleware.rs` | Runs before page rendering, loading streaming, and API handlers | `.rs` only |
 | `route.rs` | API method handlers (POST/PUT/etc.) | `.rs` only |
-| `props.rs` | Server data for a sibling `page.tsx` — seeds the React Query cache | `.rs` only |
+| `prefetch.rs` | Server data for a sibling `page.tsx` — seeds the React Query cache (legacy name `props.rs` still works) | `.rs` only |
 
 `.rs` files are Rust handlers (typically askama templates with logic). `.html` files are static fallbacks; when both exist for a slot, `.rs` wins. `.tsx` files are React client pages — bundled by an embedded rolldown bundler (behind the `tsx` cargo feature) into `/dist/<slug>.js` and mounted into `<div id="__nx_root__">` under a TanStack React Query provider.
 
-A React route pairs a `.tsx` page with a `props.rs` for server-seeded data (see [`examples/react-todos`](examples/react-todos)):
+A React route pairs a `.tsx` page with a `prefetch.rs` for server-seeded data (see [`examples/react-todos`](examples/react-todos)):
 
 ```
 app/
 ├── layout.{rs,html}            ← Rust/Askama shell around the React tree
 ├── page.tsx                    ← / — React client page, bundled to /dist/<slug>.js
-└── props.rs                    ← async fn props(req) -> nextrs::QuerySeed (cache seed)
+└── prefetch.rs                    ← async fn prefetch(req) -> nextrs::QuerySeed (cache seed)
 ```
 
 ## API routes
@@ -167,10 +167,10 @@ crates/            the framework + tooling crates
  nextrs/           framework crate (the lib)
   src/lib.rs
   src/conventions.rs    PageFn / LayoutFn / LoadingFn / MiddlewareFn types + static helpers
-  src/discovery.rs      scans app/ → DiscoveredRoute list (page/layout/loading {rs,html,tsx}, props.rs)
+  src/discovery.rs      scans app/ → DiscoveredRoute list (page/layout/loading {rs,html,tsx}, prefetch.rs)
   src/router.rs         build_router(_with_public/_with_prefetch)(registry) → axum::Router; streaming
   src/prefetch.rs       Speculation Rules navigation prefetch (PrefetchConfig → <script>)
-  src/seed.rs           QuerySeed / SeedEntry / seed_key — props.rs React Query cache seeding
+  src/seed.rs           QuerySeed / SeedEntry / seed_key — prefetch.rs React Query cache seeding
   src/openapi.rs        spec_router — serves the build-time OpenAPI doc
   src/vercel.rs         StreamingVercelLayer  (feature-gated `vercel`)
   src/build.rs          codegen + sync_public_dir (feature-gated `build`)
@@ -179,7 +179,7 @@ crates/            the framework + tooling crates
  nextrs-macros/    proc-macro crate (paired with nextrs)
  create-nextrs-app/ React-first app scaffolder (`create-nextrs-app`)
  cargo-nextrs-dev/  the `cargo nextrs-dev` watcher generated apps (and site) use
-examples/react-todos  React .tsx + props.rs + typed client demo app
+examples/react-todos  React .tsx + prefetch.rs + typed client demo app
 site/              self-contained docs/demo app — dev binary + Vercel deploy
   src/main.rs           dev binary: include! the generated registry, serve via axum
   api/index.rs          Vercel entry (`index` bin) — same registry + StreamingVercelLayer
@@ -204,7 +204,7 @@ User-facing files for adding a route: just files under `app/`. No mod declaratio
 cargo test --workspace --all-features
 ```
 
-~121 tests (across `nextrs` + `nextrs-macros`) covering discovery (`.rs` + `.html` + `.tsx` slots, props.rs, html-only, mixed nested, dynamic segments, API routes, middleware routes), conventions (static helpers and middleware helpers), router behavior (composition, layout-shell split, streaming chunk ordering, multi-frame body, **timing-based proof that the loading shell arrives before the page handler resolves**, middleware-before-loading redirects, nested middleware order, middleware request mutation, nested layouts under streaming, API methods, page+route coexistence), codegen (skeleton structure, `.rs`-precedence, absolute path emission, middleware, route.rs methods), `props.rs` seeding (`seed_key` shapes, script-tag escaping, entry ordering), and Speculation Rules prefetch config injection.
+~121 tests (across `nextrs` + `nextrs-macros`) covering discovery (`.rs` + `.html` + `.tsx` slots, prefetch.rs, html-only, mixed nested, dynamic segments, API routes, middleware routes), conventions (static helpers and middleware helpers), router behavior (composition, layout-shell split, streaming chunk ordering, multi-frame body, **timing-based proof that the loading shell arrives before the page handler resolves**, middleware-before-loading redirects, nested middleware order, middleware request mutation, nested layouts under streaming, API methods, page+route coexistence), codegen (skeleton structure, `.rs`-precedence, absolute path emission, middleware, route.rs methods), `prefetch.rs` seeding (`seed_key` shapes, script-tag escaping, entry ordering), and Speculation Rules prefetch config injection.
 
 ## Status
 
@@ -215,7 +215,7 @@ cargo test --workspace --all-features
 - Middleware before loading/page/API handlers ✓
 - `.rs`, `.html`, and `.tsx` for the page/layout/loading slots ✓
 - React client pages — `.tsx` bundled by the embedded rolldown bundler (`tsx` feature), mounted under a TanStack React Query provider ✓
-- `props.rs` server seeding into the React Query cache (`QuerySeed` / `seed_key`) ✓
+- `prefetch.rs` server seeding into the React Query cache (`QuerySeed` / `seed_key`) ✓
 - Typed React Query client generated from the build-time OpenAPI doc (orval) ✓
 - Native Speculation Rules navigation prefetch ✓
 - Build-time codegen (no hand-wired `#[path]` mods or `RouteEntry` constructors) ✓

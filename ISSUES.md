@@ -6,7 +6,7 @@ Status key: ✅ fixed · 🔧 partial · 🔒 needs a decision or a release (not
 **Progress (2026-06-27, branch `fix/audit-issues`):** Vercel build blockers fixed (VRC-1/2/3), `cargo dev` port panic fixed in site + scaffold (DEV-1), scaffold UX hint (DEV-5), `.env.example` (DEV-6), and the full doc-drift sweep (DOC-1…11, DEV-3, VRC-4). Remaining are release actions (publish crates) and product decisions.
 
 > ⚠️ **Cross-cutting — docs vs. unmerged work.** Some positioning references features not yet on `main`:
-> - **prefetch rename** (seeds→prefetch) — unmerged. Main ships `props.rs` / `QuerySeed` / `seed_key` / `__nx_seeds__`.
+> - **prefetch rename** — `prefetch.rs` is the convention on main (legacy `props.rs` still accepted); docs/scaffold/site renamed 2026-07-11. `QuerySeed` / `seed_key` / `__nx_seeds__` names unchanged.
 > - **TanStack Router soft-nav** ("instant navigation") — on unmerged `fix/dashboard-rs-aliases`. Main's instant-nav today is **browser Speculation Rules**, not a client router.
 > - **not-found convention** — PR #22, unmerged.
 >
@@ -37,12 +37,12 @@ Status key: ✅ fixed · 🔧 partial · 🔒 needs a decision or a release (not
 - 🔒 **CRA-2 (blocker)** — `cargo install cargo-nextrs-dev` fails (unpublished, `publish=false`). **Needs release/decision:** publish it or ship the watcher in the published crate.
 - 🔒 **CRA-3 (high)** — scaffolder itself unpublished + undocumented. **Needs release:** publish `create-nextrs-app`; add README quickstart.
 - 🔧 **CRA-4 (medium)** — manual workflow with a build-order trap. **Done:** ordered/annotated next-steps. **Remaining:** optionally have the scaffolder run the steps and/or write a project README + `.env.example`.
-- ☐ **CRA-5 (low)** — scaffold `props.rs` hand-builds a seed vs. the example's typed companion. Align or add a pointer comment.
+- ☐ **CRA-5 (low)** — scaffold `prefetch.rs` hand-builds a seed vs. the example's typed companion. Align or add a pointer comment.
 - ✅ **CRA-6 (info)** — verified: with `--nextrs-path` the full create→build→`cargo dev` flow works and matches current conventions.
 
 ## Documentation ↔ implementation drift
 - ✅ **DOC-1 (blocker)** — MANIFEST Non-goals rewritten (dropped "no React/no JS bundle").
-- ✅ **DOC-2/3 (high)** — Getting Started + Routing Conventions now cover `.tsx`/`props.rs` + a React track; removed "no client framework".
+- ✅ **DOC-2/3 (high)** — Getting Started + Routing Conventions now cover `.tsx`/`prefetch.rs` + a React track; removed "no client framework".
 - ✅ **DOC-4 (high)** — README body: conventions table, Status, Project layout, test count (51→~121).
 - ✅ **DOC-5 (high)** — React-server-props moved out of Roadmap, present tense, swc→rolldown.
 - ✅ **DOC-6/7 (medium)** — ROADMAP marks scaffolder shipped; local-dev-workflow around `cargo-nextrs-dev`.

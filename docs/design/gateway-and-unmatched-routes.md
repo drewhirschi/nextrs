@@ -147,7 +147,7 @@ convention users most expect to "just work."
   shell. To stay consistent with how `page.tsx` renders on `main`, the not-found
   tsx variant uses the same shell — stylesheet link, error boundary, module
   script — pointing at the `not_found_slug` bundle.
-- **No `props.rs` for not-found.** A not-found surface is propless (no server
+- **No `prefetch.rs` for not-found.** A not-found surface is propless (no server
   seed await), matching Next's `not-found.tsx` (a Server Component with no params
   by default). The contextual case is the `notFound()` escape hatch below.
 

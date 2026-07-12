@@ -30,7 +30,7 @@ Both apps: identical todos semantics (seeded open-todos list + add/delete), in-m
 
 - **Both pages are client-rendered.** Earlier drafts compared nextrs's CSR shell against a Next.js *server-rendered* (RSC) page — not apples-to-apples. Once Next.js is made CSR too (it ships a shell + seed via `ssr: false`, renders the list in the browser), the gap **widens**, because a `force-dynamic` Next page still runs the full RSC/Node request pipeline per request even when it renders nothing to HTML. The per-request cost is the *runtime*, not the rendering — which client-side rendering can't remove.
 - **nextrs's throughput numbers are a floor.** At 340k–385k req/s the bottleneck is loopback + the load generator sharing the machine's cores, not the Rust server (handlers are ~0.6 ms). Next.js at ~800–2,900 req/s is running flat out, well under any harness limit — so the *true* ratio is at least what's shown.
-- **`force-dynamic` is the fair match.** Both apps recompute their seed per request from the current store (nextrs via `props.rs`, Next via reading the store in the RSC), so neither gets to serve a cached static page.
+- **`force-dynamic` is the fair match.** Both apps recompute their seed per request from the current store (nextrs via `prefetch.rs`, Next via reading the store in the RSC), so neither gets to serve a cached static page.
 
 ## Deployed function size (the cold-start driver)
 

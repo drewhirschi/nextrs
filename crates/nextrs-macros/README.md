@@ -12,7 +12,7 @@ A thin wrapper over `#[utoipa::path]` that derives the OpenAPI `path` from the h
 pub async fn post(Json(req): Json<PingRequest>) -> Json<PingResponse> { /* … */ }
 ```
 
-`operation_id` and `tag` are derived from the route when omitted (giving the generated client clean hook names), and left alone when supplied. For eligible `GET` handlers the macro also emits a typed seed companion used by the server-side React Query cache seeding (`props.rs`).
+`operation_id` and `tag` are derived from the route when omitted (giving the generated client clean hook names), and left alone when supplied. For eligible `GET` handlers the macro also emits a typed seed companion used by the server-side React Query cache seeding (`prefetch.rs`).
 
 ## License
 

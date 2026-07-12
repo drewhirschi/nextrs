@@ -4,7 +4,7 @@
 //! the client re-parse `window.location`. For a dynamic tsx route the
 //! generated shell handler extracts the matched params and streams them as a
 //! JSON script tag (`__nx_params__`) ahead of the mount div — the same
-//! mechanism `props.rs` seeds use. The bundle entry wrapper reads the tag and
+//! mechanism `prefetch.rs` seeds use. The bundle entry wrapper reads the tag and
 //! passes them to the page Next.js-style:
 //!
 //! ```ignore
@@ -12,7 +12,7 @@
 //! export default function Page({ params }: { params: { id: string } }) { ... }
 //! ```
 //!
-//! Routes with dynamic segments also get params passed to their `props.rs`:
+//! Routes with dynamic segments also get params passed to their `prefetch.rs`:
 //! `pub async fn props(req, params: nextrs::Params) -> QuerySeed`. Paramless
 //! routes keep the one-argument `props(req)` form.
 

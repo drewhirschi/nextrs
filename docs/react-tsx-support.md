@@ -1,6 +1,6 @@
 # React/TSX Support: page.tsx In The App Tree
 
-**Status:** phases 1 and 2 implemented (CSR `page.tsx` via rolldown bundling; `props.rs` seeding the React Query cache). The runnable `examples/react-todos` crate exercises the full pipeline. Phase 3 (build-time prerender, `loading.tsx`) not started.
+**Status:** phases 1 and 2 implemented (CSR `page.tsx` via rolldown bundling; `prefetch.rs` seeding the React Query cache). The runnable `examples/react-todos` crate exercises the full pipeline. Phase 3 (build-time prerender, `loading.tsx`) not started.
 
 One toolchain change from the original: the bundler is **rolldown** (all-Rust, the Vite 8 engine, on crates.io since May 2026), not `swc_bundler` — swc's bundling is officially slated for removal and lacks code splitting.
 
@@ -33,7 +33,7 @@ Decided in review: **runtime server-side JS execution is out, permanently — no
 
 ### The RSC question
 
-Can we get what RSC gives without a JS runtime? RSC's practical wins are (1) fetch data on the server before the component renders — no client waterfall — and (2) ship less JS. Win 2 is out of reach for `.tsx` without server execution. Win 1 has a Rust-native path: **the server fetches the data (Rust, per request) and injects it into the streamed HTML as JSON; the client component picks it up as initial data.** Same chunk sequence as a `page.rs` await, no extra round-trip, and the payload's TypeScript type is generated through the existing OpenAPI pipeline so Rust renames break the `.tsx` compile. Explored in depth in **`docs/server-props.md`** — including why the no-JS-runtime constraint makes a Rust sibling file (`props.rs`) the only possible shape for the server half, and a mode that seeds the React Query cache so components keep authoring against plain hooks.
+Can we get what RSC gives without a JS runtime? RSC's practical wins are (1) fetch data on the server before the component renders — no client waterfall — and (2) ship less JS. Win 2 is out of reach for `.tsx` without server execution. Win 1 has a Rust-native path: **the server fetches the data (Rust, per request) and injects it into the streamed HTML as JSON; the client component picks it up as initial data.** Same chunk sequence as a `page.rs` await, no extra round-trip, and the payload's TypeScript type is generated through the existing OpenAPI pipeline so Rust renames break the `.tsx` compile. Explored in depth in **`docs/server-props.md`** — including why the no-JS-runtime constraint makes a Rust sibling file (`prefetch.rs`) the only possible shape for the server half, and a mode that seeds the React Query cache so components keep authoring against plain hooks.
 
 ## Non-Goals
 
@@ -96,7 +96,7 @@ The watcher also reruns the orval client generation when `route.rs` files change
 ## Phases
 
 1. **CSR pages** — discovery + codegen for `page.tsx`, swc-based bundling inside the build pipeline (spike `swc_bundler` resolution/splitting first), shell handler, dev-server two-track watch. Demo: rebuild one demo route as `.tsx` using the PR #6 hooks.
-2. **Server props (`props.rs`)** — Rust-fetched initial data injected as typed JSON into the stream; see `docs/server-props.md` (mode 1: typed initial props; mode 2: React Query cache seeding).
+2. **Server props (`prefetch.rs`)** — Rust-fetched initial data injected as typed JSON into the stream; see `docs/server-props.md` (mode 1: typed initial props; mode 2: React Query cache seeding).
 3. **Build-time prerender** — `loading.tsx`, plus optional prerender+hydrate for request-independent `page.tsx`. Node at build time only.
 4. **Research** (no commitment): client-side navigation between `.tsx` siblings; `layout.tsx`.
 

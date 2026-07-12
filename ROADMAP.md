@@ -43,7 +43,7 @@ The scaffold is intentionally small but covers the important framework seams:
 
 - A pure React route: `app/page.tsx`.
 - A React route backed by Rust server code: `app/slow/` pairs a `page.tsx` with
-  a `props.rs` that returns a `nextrs::QuerySeed` (seeding the React Query cache)
+  a `prefetch.rs` that returns a `nextrs::QuerySeed` (seeding the React Query cache)
   and a `loading.tsx` streaming fallback.
 - A Rust API route at `app/api/ping/route.rs` using `#[nextrs::api]`, plus a
   typed React Query client generated into `client/` by orval.
@@ -61,7 +61,7 @@ my-app/
 │   ├── page.tsx                    # pure client-rendered React page
 │   ├── slow/
 │   │   ├── page.tsx                # React page seeded from Rust props
-│   │   ├── props.rs                # async props() -> nextrs::QuerySeed
+│   │   ├── prefetch.rs                # async prefetch() -> nextrs::QuerySeed
 │   │   └── loading.tsx             # streaming loading fallback
 │   └── api/ping/
 │       └── route.rs                # Rust GET handler with #[nextrs::api]

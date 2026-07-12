@@ -1,5 +1,5 @@
 +++
-title = "React Pages & Server Props"
+title = "React Pages & Server Prefetch"
 description = "page.tsx in the app tree, with the React Query cache warmed by the server before your bundle runs"
 section = "Guides"
 order = 5
@@ -16,24 +16,24 @@ app/
 ├── layout.rs           # Rust layouts wrap React pages like any other page
 └── todos/
     ├── page.tsx        # React page — discovered and routed by the same codegen
-    └── props.rs        # optional: Rust warms your React Query cache
+    └── prefetch.rs        # optional: Rust warms your React Query cache
 ```
 
 `.tsx` pages are **client-rendered by default**. The server streams the layout shell and a script tag; your component renders in the browser and talks to the backend through the generated typed hooks. One Rust binary serves the APIs, the Rust pages, and the React pages. There is no Node server and no JS runtime inside the binary — that's a permanent constraint, not a temporary limitation. If a page needs request-time server rendering, that's what `page.rs` is for.
 
 The interesting part is what replaces server-side rendering's data story.
 
-## The waterfall, and `props.rs`
+## The waterfall, and `prefetch.rs`
 
 A client-rendered page normally pays: stream shell → download bundle → mount React → hook fires a fetch → round-trip *back to the server that just streamed the shell*. The server had the data the whole time.
 
-`props.rs` is a Rust file beside your page that runs per request, calls the same handler that serves the API endpoint, and injects the result into the streamed HTML — keyed exactly the way the generated client keys its queries:
+`prefetch.rs` is a Rust file beside your page that runs per request, calls the same handler that serves the API endpoint, and injects the result into the streamed HTML — keyed exactly the way the generated client keys its queries:
 
 ```rust
-// app/todos/props.rs
+// app/todos/prefetch.rs
 include!(concat!(env!("OUT_DIR"), "/nextrs_seeds.rs"));
 
-pub async fn props(req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
+pub async fn prefetch(req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
     nextrs::QuerySeed::new()
         // A plain typed function call (no HTTP): runs the GET /api/todos
         // handler and pairs the result with its canonical query key.
@@ -90,13 +90,13 @@ export default function Todos() {
 
 Three properties worth noticing:
 
-1. **Seeding is a pure progressive enhancement.** Delete `props.rs` and this file works unchanged — it just fetches on mount instead of rendering instantly.
+1. **Seeding is a pure progressive enhancement.** Delete `prefetch.rs` and this file works unchanged — it just fetches on mount instead of rendering instantly.
 2. **Mutations invalidate seeded data.** The seed lives under the same `[url, params]` key the hooks use, so your `invalidateQueries` call refreshes streamed data and fetched data alike.
 3. **Refetching, staleness, optimistic updates are untouched.** The seed is an ordinary cache entry; everything React Query does applies to it.
 
 ## Thin handlers, and why seeds go through them
 
-nextrs's conventions are deliberately just the adapter layer — `route.rs`, `page.rs`, `middleware.rs`, and `props.rs` all translate between the web and your domain logic, which lives wherever you keep it (a lib crate, a `core` module). Handlers stay thin:
+nextrs's conventions are deliberately just the adapter layer — `route.rs`, `page.rs`, `middleware.rs`, and `prefetch.rs` all translate between the web and your domain logic, which lives wherever you keep it (a lib crate, a `core` module). Handlers stay thin:
 
 ```rust
 // app/api/todos/route.rs — adapter only: extract, delegate, map
@@ -106,7 +106,7 @@ pub async fn get(Query(f): Query<TodosFilter>) -> Json<Vec<Todo>> {
 }
 ```
 
-`props.rs` runs on the server, so it *could* call `core::todos::list` directly. It calls the handler instead, on purpose: the seed is a cache entry **keyed by URL** — it impersonates a response from `GET /api/todos`, and the client will refetch that endpoint later and overwrite it. The wire shape (the DTO mapping, serde casing, the response envelope) belongs to the HTTP adapter, so producing a cache entry for that endpoint has to go through the adapter — or risk drifting from it and flickering from seed-shape to handler-shape on the first refetch. With a thin handler, calling it costs exactly one DTO mapping more than calling the service, and that mapping is the part the seed can't safely skip.
+`prefetch.rs` runs on the server, so it *could* call `core::todos::list` directly. It calls the handler instead, on purpose: the seed is a cache entry **keyed by URL** — it impersonates a response from `GET /api/todos`, and the client will refetch that endpoint later and overwrite it. The wire shape (the DTO mapping, serde casing, the response envelope) belongs to the HTTP adapter, so producing a cache entry for that endpoint has to go through the adapter — or risk drifting from it and flickering from seed-shape to handler-shape on the first refetch. With a thin handler, calling it costs exactly one DTO mapping more than calling the service, and that mapping is the part the seed can't safely skip.
 
 Server data that *isn't* endpoint-shaped — session user, feature flags, a precomputed view model — impersonates nothing, so it skips the HTTP adapter entirely: that's the design's second mode, plain typed initial props (`usePageProps<T>()`), with the TypeScript type generated from the Rust struct through the same OpenAPI pipeline. One rule, two lanes: data that belongs to an endpoint goes through the endpoint's adapter; data that belongs to the page goes through the page's.
 
@@ -117,7 +117,7 @@ The same property the typed client has, extended to seeds and props: the Rust st
 ## What ships today
 
 - **Client-rendered `page.tsx`** — discovery, routing, and bundling all run in `cargo build`. The bundler is an embedded rolldown, built into the framework and gated behind the `tsx` cargo feature — no external Node build step. A dev watcher rebuilds bundles in milliseconds without restarting the server.
-- **`props.rs` React Query cache seeding** — exactly as shown above: the server streams seed entries into the HTML and the client loads them into the cache before mount.
+- **`prefetch.rs` React Query cache seeding** — exactly as shown above: the server streams seed entries into the HTML and the client loads them into the cache before mount.
 - **`loading.tsx` skeletons** — a loading component mounts immediately while the page bundle loads.
 
 Still on the roadmap: build-time prerendering — static `.tsx` pages rendered to HTML during the build (Node at build time only) and hydrated in the browser.

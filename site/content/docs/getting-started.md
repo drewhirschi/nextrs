@@ -5,7 +5,7 @@ section = "Guides"
 order = 1
 +++
 
-nextrs is a Next.js-style routing framework for Rust. You write convention files (`page.tsx`, `page.rs`, `layout.rs`, `loading.html`, `middleware.rs`, `props.rs`, `route.rs`) in an `app/` directory; a build step discovers them and wires the router. Two rendering models coexist: Rust/HTML pages rendered with Askama (streamed when a route has a loading state), and React `.tsx` pages bundled to the client with their server data seeded from a `props.rs` sibling.
+nextrs is a Next.js-style routing framework for Rust. You write convention files (`page.tsx`, `page.rs`, `layout.rs`, `loading.html`, `middleware.rs`, `prefetch.rs`, `route.rs`) in an `app/` directory; a build step discovers them and wires the router. Two rendering models coexist: Rust/HTML pages rendered with Askama (streamed when a route has a loading state), and React `.tsx` pages bundled to the client with their server data seeded from a `prefetch.rs` sibling.
 
 ## The pieces
 
@@ -124,12 +124,12 @@ nextrs::bundle::bundle_pages(&nextrs::bundle::BundleConfig {
 
 Each page mounts into `<div id="__nx_root__">` under a TanStack `<QueryClientProvider>`. A sibling `client/` package holds the typed React Query client — generated from the app's OpenAPI spec with [orval](https://orval.dev) and imported through an alias like `@mysite/client`, so calling a Rust `route.rs` handler is a typed `useGet…` hook.
 
-### Server data with `props.rs`
+### Server data with `prefetch.rs`
 
-To warm the React Query cache on the server, drop a `props.rs` next to a `page.tsx`. It exports `pub async fn props(req) -> nextrs::QuerySeed`:
+To warm the React Query cache on the server, drop a `prefetch.rs` next to a `page.tsx`. It exports `pub async fn prefetch(req) -> nextrs::QuerySeed`:
 
 ```rust
-pub async fn props(_req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
+pub async fn prefetch(_req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
     nextrs::QuerySeed::new()
         .seed(async {
             nextrs::SeedEntry {
@@ -143,7 +143,7 @@ pub async fn props(_req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
 
 The framework streams the entries as a JSON `<script id="__nx_seeds__">` tag and the client loads them into the React Query cache before mount, so the page renders with the data already in place. Keys built with `seed_key` match the generated client's query keys exactly, so a seeded entry behaves like a fetched one (mutations and `invalidateQueries` reach it the same way).
 
-`create-nextrs-app` scaffolds this whole track for you — `app/page.tsx`, a `/slow` route with `props.rs` + `loading.tsx`, an `/api/ping` handler, and the `client/` orval package — so it's the fastest way to start a React-first app.
+`create-nextrs-app` scaffolds this whole track for you — `app/page.tsx`, a `/slow` route with `prefetch.rs` + `loading.tsx`, an `/api/ping` handler, and the `client/` orval package — so it's the fastest way to start a React-first app.
 
 ## The dev loop
 

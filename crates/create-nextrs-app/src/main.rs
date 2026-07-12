@@ -133,7 +133,7 @@ fn scaffold(target: &Path, nextrs_path: Option<&Path>) -> io::Result<()> {
     println!();
     println!("Routes:");
     println!("  /          React page");
-    println!("  /slow      React page + Rust props + loading.tsx");
+    println!("  /slow      React page + Rust prefetch + loading.tsx");
     println!("  /api/ping  Rust API route");
 
     Ok(())
@@ -282,7 +282,7 @@ fn template_files(
         ("app/page.tsx", page_tsx(client_alias)),
         ("app/slow/page.tsx", slow_page_tsx(client_alias)),
         ("app/slow/loading.tsx", slow_loading_tsx()),
-        ("app/slow/props.rs", slow_props_rs()),
+        ("app/slow/prefetch.rs", slow_prefetch_rs()),
         ("app/api/ping/route.rs", ping_route_rs()),
         ("client/package.json", client_package_json(crate_name)),
         ("client/orval.config.ts", client_orval_config_ts()),
@@ -476,7 +476,7 @@ export default function Layout({ children }: { children: ReactNode }) {
         <a href="/" className="brand">nextrs</a>
         <nav>
           <a href="/">Home</a>
-          <a href="/slow">Slow props</a>
+          <a href="/slow">Slow prefetch</a>
         </nav>
       </header>
       {children}
@@ -529,7 +529,7 @@ export default function SlowPage() {{
   return (
     <main className="page">
       <section className="panel">
-        <p className="eyebrow">Server props</p>
+        <p className="eyebrow">Server prefetch</p>
         <h1>Loaded after Rust finished.</h1>
         <p>{{data?.message ?? "No server seed found."}}</p>
       </section>
@@ -545,9 +545,9 @@ fn slow_loading_tsx() -> String {
   return (
     <main className="page">
       <section className="panel loading-panel">
-        <p className="eyebrow">Server props</p>
+        <p className="eyebrow">Server prefetch</p>
         <h1>Loading from Rust...</h1>
-        <p>This route waits two seconds in <code>props.rs</code>.</p>
+        <p>This route waits two seconds in <code>prefetch.rs</code>.</p>
       </section>
     </main>
   );
@@ -556,10 +556,10 @@ fn slow_loading_tsx() -> String {
     .into()
 }
 
-fn slow_props_rs() -> String {
+fn slow_prefetch_rs() -> String {
     r#"use std::time::Duration;
 
-pub async fn props(_req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
+pub async fn prefetch(_req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
     tokio::time::sleep(Duration::from_secs(2)).await;
 
     nextrs::QuerySeed::new()
@@ -871,7 +871,7 @@ mod tests {
         assert!(names.contains(&"app/layout.tsx"));
         assert!(names.contains(&"app/page.tsx"));
         assert!(names.contains(&"app/slow/loading.tsx"));
-        assert!(names.contains(&"app/slow/props.rs"));
+        assert!(names.contains(&"app/slow/prefetch.rs"));
         assert!(names.contains(&"app/api/ping/route.rs"));
         assert!(names.contains(&"client/orval.config.ts"));
         assert!(!names.iter().any(|name| name.ends_with(".html")));

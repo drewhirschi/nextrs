@@ -19,7 +19,7 @@ Under the no-JS-runtime constraint, this isn't a style choice — it's forced:
 
 > **Any code that computes data on the server must be Rust.** The only question is how that data reaches the React component.
 
-A `prefetch` declaration *inside* `page.tsx` (the "modern" alternative to a sibling file) hits the wall immediately: computing it per-request means executing JS. The most it could ever be is a static literal we parse out of the AST at build time — workable for fixed queries, useless the moment a param or session is involved. So the server-side half of this feature is a Rust file next to the page, whatever we call it. `props.rs` isn't a legacy Next convention smuggled in — it's the only shape the constraint permits.
+A `prefetch` declaration *inside* `page.tsx` (the "modern" alternative to a sibling file) hits the wall immediately: computing it per-request means executing JS. The most it could ever be is a static literal we parse out of the AST at build time — workable for fixed queries, useless the moment a param or session is involved. So the server-side half of this feature is a Rust file next to the page, whatever we call it. `prefetch.rs` isn't a legacy Next convention smuggled in — it's the only shape the constraint permits.
 
 Where the *old* `getServerSideProps` deserved its reputation — and why this isn't that:
 
@@ -34,18 +34,18 @@ Where the *old* `getServerSideProps` deserved its reputation — and why this is
 ```
 app/dashboard/
 ├── page.tsx        # client-rendered, as decided
-└── props.rs        # optional sibling
+└── prefetch.rs        # optional sibling
 ```
 
 ```rust
-// app/dashboard/props.rs
+// app/dashboard/prefetch.rs
 #[derive(serde::Serialize, utoipa::ToSchema)]
 pub struct DashboardProps {
     pub user: String,
     pub totals: Vec<u64>,
 }
 
-pub async fn props(req: http::Request<axum::body::Body>) -> DashboardProps {
+pub async fn prefetch(req: http::Request<axum::body::Body>) -> DashboardProps {
     // full request: middleware extensions (auth/tenant), db, anything async
 }
 ```
@@ -62,7 +62,7 @@ The generated shell handler (already an ordinary `PageFn`) becomes:
 [layout-close]
 ```
 
-By the time the bundle executes, the JSON is already in the DOM — synchronous read, zero round-trips. Discovery/codegen treat `props.rs` like any other slot (a `props.rs` without a `page.tsx` sibling is a build error; `props.rs` next to `page.rs` is too — Rust pages don't need it).
+By the time the bundle executes, the JSON is already in the DOM — synchronous read, zero round-trips. Discovery/codegen treat `prefetch.rs` like any other slot (a `prefetch.rs` without a `page.tsx` sibling is a build error; `prefetch.rs` next to `page.rs` is too — Rust pages don't need it).
 
 Error semantics are identical to `page.rs` by construction: with a loading slot the status is already committed when props run (same hole the roadmap's `error.{rs,html}` convention will fill); without one, a props failure can still produce a real error response.
 
@@ -82,7 +82,7 @@ export default function Dashboard() {
 
 Dead simple, no React Query involvement, right for data that *is* page-shaped (session, feature flags, a fully-computed view model). Limitation: it's a snapshot — refreshing it means a full page reload or hand-wiring a parallel API route.
 
-**Mode 2 — seed the React Query cache.** Instead of (or alongside) bespoke props, `props.rs` pre-executes data that client hooks would fetch anyway, and the framework injects it as dehydrated query state. The client adapter calls `queryClient.setQueryData` (or TanStack's `HydrationBoundary`) before mount:
+**Mode 2 — seed the React Query cache.** Instead of (or alongside) bespoke props, `prefetch.rs` pre-executes data that client hooks would fetch anyway, and the framework injects it as dehydrated query state. The client adapter calls `queryClient.setQueryData` (or TanStack's `HydrationBoundary`) before mount:
 
 ```tsx
 export default function Dashboard() {
@@ -105,7 +105,7 @@ The instinct to call the service/repo directly is right about the *mechanics* (i
 
 Repo-direct data has a home, and it's **mode 1**: data that isn't endpoint-shaped (session, flags, view models) goes out as typed props, no query key, no impersonation.
 
-In hexagonal terms (review discussion): every `app/` convention file is an adapter; domain logic lives in a lib/core layer. The query cache is keyed by URL, making it an HTTP-layer artifact — so seeding it must pass through the HTTP adapter (the handler), while page-shaped data passes through the page's own adapter (`props.rs` calling core directly, mode 1). Thin controllers make the handler call cost exactly one DTO mapping more than the service call — the one mapping the seed can't skip.
+In hexagonal terms (review discussion): every `app/` convention file is an adapter; domain logic lives in a lib/core layer. The query cache is keyed by URL, making it an HTTP-layer artifact — so seeding it must pass through the HTTP adapter (the handler), while page-shaped data passes through the page's own adapter (`prefetch.rs` calling core directly, mode 1). Thin controllers make the handler call cost exactly one DTO mapping more than the service call — the one mapping the seed can't skip.
 
 Handler reuse, by case: (1) **tests** call handlers directly — post-#6 they're plain `async fn`s with concrete types (`get(Query(f)).await` → `Json<Vec<Todo>>`); (2) **seeds** use the generated helpers, which exist because `app/` files are wired via mangled `#[path]` modules and can't `use` each other — codegen is the bridge; (3) **cross-endpoint/background logic reuse** is deliberately not handler reuse: `app/` files are unimportable leaves, so the dependency arrow only points `app/ → core`. Fat controllers aren't just discouraged — their logic is structurally unreachable from anywhere else, which makes the lib/core layer the path of least resistance.
 
@@ -122,10 +122,10 @@ orval generates keys mechanically as **`[url, params]`** — the key identifies 
 The seed (proposed ergonomics — generated typed helpers, one per annotated handler, names aligned with the hook names):
 
 ```rust
-// app/todos/props.rs
+// app/todos/prefetch.rs
 include!(concat!(env!("OUT_DIR"), "/nextrs_seeds.rs")); // generated
 
-pub async fn props(req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
+pub async fn prefetch(req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
     nextrs::QuerySeed::new()
         // A plain typed function call — runs the same handler that serves
         // GET /api/todos (which is what defines the cache entry's shape) and
@@ -171,7 +171,7 @@ export default function Todos() {
 ```
 
 Properties this demonstrates:
-1. **Seeding is a pure progressive enhancement** — delete `props.rs` and the page works identically, just fetch-on-mount (which is also why the `todos?.` optional chain stays).
+1. **Seeding is a pure progressive enhancement** — delete `prefetch.rs` and the page works identically, just fetch-on-mount (which is also why the `todos?.` optional chain stays).
 2. **Mutations invalidate seeded data** — the canonical-keys decision is what makes `invalidateQueries` reach the streamed entry. Private keys would leave seeded data frozen after mutations: the worst kind of bug.
 3. **Refetch/staleness/optimistic updates are vanilla React Query** — the seed is an ordinary cache entry; `refetch()`, `staleTime`, `onMutate` rollbacks all apply unchanged.
 
@@ -183,10 +183,10 @@ Build **mode 1 first** — it's the whole mechanism (slot discovery, await place
 
 Sequencing against the React phases: the injection mechanism touches only the generated shell handler, so it slots into **phase 1.5** — right after CSR pages work, before build-time prerendering. (Prerendered static pages by definition don't have request props; the conventions are naturally exclusive.)
 
-Naming: `props.rs` says exactly what the component receives; `data.rs` is the alternative if "props" feels too React-specific for a Rust file. Weak preference for `props.rs`.
+Naming: `prefetch.rs` says exactly what the component receives; `data.rs` is the alternative if "props" feels too React-specific for a Rust file. Weak preference for `prefetch.rs`.
 
 ## Open questions
 
 - Should `usePageProps` data also be exposed for refetch (an auto-generated `/dashboard/__props` endpoint)? Lean no for v1 — that's mode 2's job.
 - Payload guardrail: warn at build/serve time past some size (the JSON rides the HTML; 100KB of props is a smell).
-- Does `props.rs` get middleware extensions? Yes by construction (it receives the post-middleware request) — but document the auth pattern explicitly.
+- Does `prefetch.rs` get middleware extensions? Yes by construction (it receives the post-middleware request) — but document the auth pattern explicitly.

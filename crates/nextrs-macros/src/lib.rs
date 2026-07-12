@@ -71,7 +71,7 @@ pub fn api(args: TokenStream, item: TokenStream) -> TokenStream {
         .expect("nextrs::api: could not build the utoipa::path attribute");
     out.extend(item.clone());
 
-    // For eligible GET handlers, also emit a typed seed companion so props.rs
+    // For eligible GET handlers, also emit a typed seed companion so prefetch.rs
     // can warm the React Query cache through the handler (the wire contract),
     // not around it.
     if method == "get" {

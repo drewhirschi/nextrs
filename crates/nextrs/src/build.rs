@@ -206,7 +206,7 @@ pub fn emit_registry(
 
 /// Emit `$OUT_DIR/<out_name>` re-exporting the typed seed companions that
 /// `#[nextrs::api]` generates for eligible GET handlers, under names derived
-/// from the route. A `props.rs` includes this file and calls them:
+/// from the route. A `prefetch.rs` includes this file and calls them:
 ///
 /// ```ignore
 /// include!(concat!(env!("OUT_DIR"), "/nextrs_seeds.rs"));
@@ -216,7 +216,7 @@ pub fn emit_registry(
 ///
 /// The module alias exists so param-struct *types* are reachable too
 /// (`api_todos::TodosFilter`). Crate-root paths resolve because both the
-/// registry and props.rs land as crate-root modules in every consumer.
+/// registry and prefetch.rs land as crate-root modules in every consumer.
 ///
 /// Eligibility mirrors the macro: an annotated `get` returning `Json<...>`
 /// whose args are at most one `Path<...>` and one `Query<T>` extractor (in
@@ -244,7 +244,7 @@ pub fn emit_seeds(app_dir: impl AsRef<Path>, out_name: &str) -> std::io::Result<
             && get_is_seed_eligible(&source)
         {
             // pub(crate): the mangled route mods are crate-private; these
-            // aliases are for sibling props.rs modules in the same crate.
+            // aliases are for sibling prefetch.rs modules in the same crate.
             let module = mod_name(i, "route");
             let alias = url_snake(&route.url_path);
             let _ = writeln!(
@@ -476,7 +476,7 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
                 out,
                 "::core::compile_error!({:?});",
                 format!(
-                    "nextrs: props.rs at {} requires a page.tsx sibling — props feed a React page (Rust pages fetch their own data)",
+                    "nextrs: prefetch.rs/props.rs at {} requires a page.tsx sibling — prefetch data feeds a React page (Rust pages fetch their own data)",
                     route.url_path
                 )
             );
@@ -675,7 +675,7 @@ fn loading_tsx_applies_to_any_props_route(
 }
 
 /// Warn when a `loading.tsx` cannot affect any props-backed React route. A
-/// parent `app/loading.tsx` is valid when any descendant has `props.rs`.
+/// parent `app/loading.tsx` is valid when any descendant has `prefetch.rs`.
 fn print_loading_warnings(routes: &[DiscoveredRoute]) {
     for route in routes.iter().filter(|route| route.loading.tsx.is_some()) {
         if !loading_tsx_applies_to_any_props_route(routes, route) {
@@ -1069,7 +1069,7 @@ fn emit_path_mod(out: &mut String, name: &str, target: &Path) {
 /// `nextrs::bundle::bundle_pages` produces for the same slug. The component
 /// renders client-side; layouts/middleware/streaming behave as for any page.
 ///
-/// With a `props.rs` sibling, the handler awaits `props(req)` and streams its
+/// With a `prefetch.rs` sibling, the handler awaits `prefetch(req)` and streams its
 /// seeds as a JSON script tag ahead of the mount div — the await sits exactly
 /// where a `page.rs` await would, so a loading slot still ships first.
 fn emit_page_slot(out: &mut String, idx: usize, route: &DiscoveredRoute) {

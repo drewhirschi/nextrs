@@ -31,7 +31,7 @@ Each folder under `app/` is a route segment. The framework looks for these files
 | `page.{rs,html,tsx}` | The main content for the route | `.rs` (async handler) / `.html` (static Askama) / `.tsx` (React, bundled to `/dist/<slug>.js` and mounted into `<div id="__nx_root__">`; requires the `tsx` feature) |
 | `layout.{rs,html,tsx}` | Wraps this segment's page and any nested segments | same `.rs`/`.html`/`.tsx` variants |
 | `loading.{rs,html,tsx}` | Shown while the page resolves (triggers streaming) | same `.rs`/`.html`/`.tsx` variants |
-| `prefetch.rs` | Server data for a sibling `page.tsx` — exports `pub async fn prefetch(req) -> nextrs::QuerySeed` (`prefetch(req, params)` on dynamic routes); streamed as a JSON `<script id="__nx_seeds__">` and loaded into the React Query cache before mount. Legacy `props.rs` exporting `fn props` still works. | `.rs` only |
+| `prefetch.rs` | Server data for a sibling `page.tsx` — exports `pub async fn prefetch(req) -> nextrs::QuerySeed` (`prefetch(req, params)` on dynamic routes); streamed as a JSON `<script id="__nx_seeds__">` and loaded into the React Query cache before mount. Legacy `prefetch.rs` exporting `fn props` still works. | `.rs` only |
 | `middleware.rs` | Request guard that may continue or return a response before rendering/streaming | `.rs` only |
 | `route.rs` | API method handlers (POST/PUT/etc.) — `.rs` only |
 
@@ -92,11 +92,11 @@ soft-nav prefetch endpoint + shell loaders (0.3.4).
 
 | Area | File |
 |---|---|
-| Slot/file discovery | `nextrs/src/discovery.rs` — scans `app/` and produces `DiscoveredRoute { page, layout, loading, middleware, route, props }` where page/layout/loading are each a `Slot { rs, html, tsx }` (every variant optional) and `props` is the `props.rs` path |
+| Slot/file discovery | `nextrs/src/discovery.rs` — scans `app/` and produces `DiscoveredRoute { page, layout, loading, middleware, route, props }` where page/layout/loading are each a `Slot { rs, html, tsx }` (every variant optional) and `props` is the `prefetch.rs` path |
 | Route handler types | `nextrs/src/conventions.rs` — `PageFn`, `LayoutFn`, `LoadingFn`, `MiddlewareFn`, `RouteFn`; static helpers `static_page`, `static_layout`, `static_loading` |
 | Routing + streaming | `nextrs/src/router.rs` — `build_router(registry) -> axum::Router` (and `build_router_with_prefetch` / `build_router_with_public`). Runs middleware, composes layouts around a content marker, splits on the marker, streams loading-then-page when a loading slot is present |
 | React bundling | `nextrs/src/bundle.rs` (feature `tsx`) — `bundle_pages(BundleConfig)`. For each `page.tsx` / `loading.tsx` emits an entry wrapper (layout composition + `QueryClientProvider` + seed hydration + `createRoot` mount) and runs the embedded rolldown bundler to produce `/dist/<slug>.js` |
-| Server data seeding | `nextrs/src/seed.rs` — `QuerySeed`, `SeedEntry`, `seed_key`; the value a `props.rs` returns, serialized into a `<script id="__nx_seeds__">` tag and loaded into the React Query cache before mount |
+| Server data seeding | `nextrs/src/seed.rs` — `QuerySeed`, `SeedEntry`, `seed_key`; the value a `prefetch.rs` returns, serialized into a `<script id="__nx_seeds__">` tag and loaded into the React Query cache before mount |
 | Navigation prefetch | `nextrs/src/prefetch.rs` — `PrefetchConfig`, `SpeculationMode`, `Eagerness`; injects a `<script type="speculationrules">` for browser-native prefetch/prerender (no client router) |
 | OpenAPI serving | `nextrs/src/openapi.rs` — `spec_router(generated_openapi())` serves the codegen-built OpenAPI document at `/openapi.json` (consumed by the typed client) |
 | Docs pipeline | `nextrs/src/docs.rs` (feature `build`) — `emit_docs(DocsConfig)` renders markdown once into both the docs-UI slices and the `llms.txt` / `llms-full.txt` files |

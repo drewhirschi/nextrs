@@ -26,7 +26,7 @@ const NX_PAGE_ID: &str = "__nx_page__";
 /// Inline script that swaps the loading slot for the page template. Script
 /// elements moved out of a `<template>` are inert in browsers, so the swapper
 /// recreates them before insertion. That lets streamed React pages execute
-/// their final page bundle after `props.rs` resolves.
+/// their final page bundle after `prefetch.rs` resolves.
 const NX_SWAP_SCRIPT: &str = concat!(
     "<script>(function(){",
     "var s=document.getElementById('__nx_slot__');",

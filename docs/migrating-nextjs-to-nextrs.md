@@ -13,7 +13,7 @@ API, the OpenAPI document, and the static assets. Concretely:
 
 | Stays (byte-identical or trivially diffable) | Rewritten (Rust) |
 |---|---|
-| Client components (`"use client"` pages and everything they import) | Server components → client component + `props.rs` seed |
+| Client components (`"use client"` pages and everything they import) | Server components → client component + `prefetch.rs` seed |
 | Styles (Tailwind output, CSS files) | Route Handlers (`route.ts` → `route.rs`) |
 | `public/` assets | `middleware.ts` / `proxy.ts` → `middleware.rs` |
 | Third-party client packages (React Query, better-auth client, radix, …) | Data layer (kysely → sqlx), auth server, S3, image processing |
@@ -39,7 +39,7 @@ The short version:
   bundle. Rust pages (`page.rs` + Askama) are the "server components" of
   nextrs — but for a migration that keeps the frontend identical you will use
   `page.tsx` everywhere a page exists today.
-- **The RSC data win is recovered by `props.rs`**: a Rust sibling file that
+- **The RSC data win is recovered by `prefetch.rs`**: a Rust sibling file that
   pre-runs API handlers on the server and streams their results into the HTML
   as a JSON script tag. The client loads them into the React Query cache
   before mount — first paint with data, zero client fetch, and the component
@@ -73,7 +73,7 @@ not the route list, is the real API surface.
 | Next.js | nextrs | Notes |
 |---|---|---|
 | `app/**/page.tsx` (client component) | `app/**/page.tsx` | Ports nearly unchanged (§4.2). Client-rendered, same as today. |
-| `app/**/page.tsx` (server component) | `app/**/page.tsx` (client) + `app/**/props.rs` + a `route.rs` API | The server half is rewritten in Rust (§4.3). |
+| `app/**/page.tsx` (server component) | `app/**/page.tsx` (client) + `app/**/prefetch.rs` + a `route.rs` API | The server half is rewritten in Rust (§4.3). |
 | `app/**/layout.tsx` | `app/**/layout.html` or `layout.rs` + `layout.html` (Askama) | **`layout.tsx` is not a convention** — verified: discovery only picks up `.rs`/`.html` for the layout slot. Port the JSX to HTML (§5). |
 | `app/**/loading.tsx` | `app/**/loading.html` (or `loading.rs`) | **`loading.tsx` is not a convention** (phase 3, unimplemented). Hand-render the skeleton JSX to static HTML — it's request-independent by definition, and it never hydrates (the slot is swapped out). |
 | `app/api/**/route.ts` | `app/api/**/route.rs` | §6. |
@@ -112,7 +112,7 @@ redirects. No route groups, no parallel routes. The dominant surface is
 server actions: 12 `"use server"` modules under `app/actions/` exporting 68
 functions, imported by 16 client files — the conversion is mostly §6.2, not
 the route table. Only 2 pages are server components *with data* (`/admin`,
-`/admin/classes`); they're the only ones needing `props.rs` seeds.
+`/admin/classes`); they're the only ones needing `prefetch.rs` seeds.
 
 ## 2. Project scaffold
 
@@ -205,7 +205,7 @@ fn main() {
     // app/ tree → generated_registry() + generated_openapi()
     nextrs::build::emit_registry("app", "src/main.rs", "nextrs_routes.rs")
         .expect("emit_registry failed");
-    // Typed seed companions for props.rs
+    // Typed seed companions for prefetch.rs
     nextrs::build::emit_seeds("app", "nextrs_seeds.rs").expect("emit_seeds failed");
     // Bundle page.tsx entries into public/dist/ with rolldown
     nextrs::bundle::bundle_pages(&nextrs::bundle::BundleConfig {
@@ -361,7 +361,7 @@ first `npm run gen`).
 
 `app/` convention files are wired in via mangled `#[path]` modules — **they
 cannot import each other**. All shared logic (db access, auth, services) goes
-in `src/` as the package's lib crate, and `route.rs`/`props.rs`/`middleware.rs`
+in `src/` as the package's lib crate, and `route.rs`/`prefetch.rs`/`middleware.rs`
 files call it by crate name (`my_app::core::bookings::list(...)`). Keep
 handlers thin: extract → delegate to core → map to wire DTOs (the react-todos
 `route.rs` files are the model). This isn't just style — fat handlers are
@@ -380,7 +380,7 @@ Convert in this order; each step leaves the app buildable:
    module-by-module, read-only modules first; regenerate the typed client
    (§8) as annotated routes land.
 5. Middleware (§7).
-6. Layouts (§5), then pages leaf-first (§4), each with its `props.rs` seed.
+6. Layouts (§5), then pages leaf-first (§4), each with its `prefetch.rs` seed.
 7. Deploy (§11), then the verification pass (§12).
 
 ## 4. Pages
@@ -396,7 +396,7 @@ Every Next.js page — server or client component — becomes a **client-rendere
   client component + a Rust data path (§4.3).
 
 A `page.tsx` may not coexist with `page.rs`/`page.html` in the same segment
-(compile error, verified), and `props.rs` requires a `page.tsx` sibling
+(compile error, verified), and `prefetch.rs` requires a `page.tsx` sibling
 (compile error, verified).
 
 ### 4.2 Porting a client-component page
@@ -451,29 +451,29 @@ import { useGetProducts } from "@my-app/client";
 import { ProductTable } from "@/components/product-table";
 
 export default function ProductsPage() {
-  // Seeded from the stream by props.rs: defined on first render, no fetch.
+  // Seeded from the stream by prefetch.rs: defined on first render, no fetch.
   const { data } = useGetProducts();
   return <ProductTable products={data?.data ?? []} />;
 }
 ```
 
 (orval's fetch client wraps responses in `{ data, status, headers }` — hence
-`data?.data`. Keep the optional chain: deleting `props.rs` must degrade to
+`data?.data`. Keep the optional chain: deleting `prefetch.rs` must degrade to
 fetch-on-mount, not crash.)
 
-**(c) The seed** — `app/admin/products/props.rs`. The exact contract:
+**(c) The seed** — `app/admin/products/prefetch.rs`. The exact contract:
 
 ```rust
 include!(concat!(env!("OUT_DIR"), "/nextrs_seeds.rs")); // generated aliases
 
-pub async fn props(req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
+pub async fn prefetch(req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
     nextrs::QuerySeed::new()
         .seed(get_api_products(req.extensions()))
         .await
 }
 ```
 
-The signature is fixed: `pub async fn props(http::Request<axum::body::Body>)
+The signature is fixed: `pub async fn prefetch(http::Request<axum::body::Body>)
 -> nextrs::QuerySeed`. It receives the **post-middleware** request, so
 anything middleware stashed in `req.extensions()` (session, tenant) is
 available. The generated shell handler awaits `props()` exactly where a
@@ -501,8 +501,8 @@ page like `/admin/products/[id]` whose data endpoint is
 construct the key with `nextrs::seed_key`:
 
 ```rust
-// app/admin/products/[id]/props.rs
-pub async fn props(req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
+// app/admin/products/[id]/prefetch.rs
+pub async fn prefetch(req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
     // No Path extractor here — parse the id from the URL.
     let id = req.uri().path().rsplit('/').next()
         .and_then(|s| s.parse::<i64>().ok());
@@ -533,7 +533,7 @@ the page reads on first paint; let the rest fetch on mount.
 
 **searchParams:** the Next `searchParams` prop becomes `useSearchParams()`
 from the shim (client-side) — and if a seeded query's params depend on them,
-parse `req.uri().query()` in `props.rs` (e.g. with `serde_urlencoded`) and
+parse `req.uri().query()` in `prefetch.rs` (e.g. with `serde_urlencoded`) and
 pass the same params struct to the companion so the keys line up.
 
 ### 4.4 `next/*` shims
@@ -664,7 +664,7 @@ nothing hydrates. Tailwind classes carry over as-is (the CSS scan covers
 With a `loading` slot present the route streams: layout-open + skeleton at
 TTFB, then (after `props()` resolves) the seeds + mount div, then the swap
 script + layout-close. Without one, the response is a single synchronous
-chunk. Give every page whose `props.rs` does real work a `loading.html`.
+chunk. Give every page whose `prefetch.rs` does real work a `loading.html`.
 
 ## 6. API routes: `route.ts` → `route.rs`
 
@@ -968,7 +968,7 @@ Three data paths now exist; pick by what the component *was*:
   are plain promises (`useEffect` / event handlers), not React Query — seeds
   populate the RQ cache and are invisible to them.
 - **Former server component** → new client page + annotated GET + orval hook
-  + `props.rs` seed (§4.3). That page is new code anyway, so hooks cost no
+  + `prefetch.rs` seed (§4.3). That page is new code anyway, so hooks cost no
   frontend diff.
 - **Both need the same data** → keep the POST action endpoint for the shim
   *and* add an annotated GET twin for the hook + seed: two thin handlers
@@ -994,10 +994,10 @@ pub async fn handle(req: http::Request<axum::body::Body>) -> MiddlewareResult {
 
 Verified semantics (`router.rs`): middleware composes **root-to-leaf**
 (`app/middleware.rs`, then `app/admin/middleware.rs`, …) and runs before
-layouts, loading streams, pages, `props.rs`, and `route.rs` handlers — so
+layouts, loading streams, pages, `prefetch.rs`, and `route.rs` handlers — so
 redirects get real status codes before any byte is streamed. A middleware may
 mutate the request (insert the session into `req.extensions_mut()`) and pass
-it on; downstream `props.rs` and raw-request handlers see the extension.
+it on; downstream `prefetch.rs` and raw-request handlers see the extension.
 If it reads the body, it must put a body back before `next(req)`.
 
 There is **no matcher config**. Scoping is by placement:
@@ -1017,7 +1017,7 @@ landing-page and `/auth` redirects-when-authenticated, plus
 Resolve the session **in-process** — call `my_app::core::auth::session_from_headers(req.headers())`
 directly instead of the Next version's HTTP self-call to
 `/api/auth/get-session` — and stash it in `req.extensions_mut()` so pages'
-`props.rs` and API handlers don't re-query.
+`prefetch.rs` and API handlers don't re-query.
 
 ## 8. The typed client (orval)
 

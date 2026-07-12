@@ -1,6 +1,6 @@
 # Streaming in nextrs
 
-nextrs has two rendering models. **React `.tsx` pages** mount in the browser and seed their TanStack React Query cache from a `props.rs` sibling; **Rust/HTML pages** (`page.{rs,html}`) render on the server and stream. Streaming is the central UX feature of that second path.
+nextrs has two rendering models. **React `.tsx` pages** mount in the browser and seed their TanStack React Query cache from a `prefetch.rs` sibling; **Rust/HTML pages** (`page.{rs,html}`) render on the server and stream. Streaming is the central UX feature of that second path.
 
 When a Rust/HTML route has a `loading.{rs,html}` slot, the server sends the loading shell to the browser **before** the page handler has finished computing — and then sends the page content as a second chunk on the same response, swapping the loading shell out via a tiny inline `<script>`. No second HTTP request, and on this path no client-side framework and no htmx — React Query only runs on the `.tsx` path.
 

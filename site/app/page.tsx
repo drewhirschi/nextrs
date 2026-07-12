@@ -3,9 +3,9 @@
 // React track; the docs pages under /docs stay server-rendered.
 import { NextrsMark } from "@site/client";
 
-const PROPS_RS = `// app/props.rs — runs on the server, streaming
+const PREFETCH_RS = `// app/prefetch.rs — runs on the server, streaming
 // data into the React Query cache before mount.
-pub async fn props(req: Request) -> QuerySeed {
+pub async fn prefetch(req: Request) -> QuerySeed {
     let todos = db::recent_todos().await;
     QuerySeed::new()
         .add(seed_key(["todos"]), &todos)
@@ -93,8 +93,8 @@ export default function Home() {
                 <span className="c-dim">→ shell + nav</span>
                 {`
 ├─ `}
-                <span className="c-fn">props.rs</span>
-                {`        `}
+                <span className="c-fn">prefetch.rs</span>
+                {`     `}
                 <span className="c-dim">→ prefetch into the RQ cache</span>
                 {`
 └─ api/
@@ -129,7 +129,7 @@ export default function Home() {
             </Feature>
             <Feature n="03" title="React, the way you write it">
               <code>page.tsx</code> components render client-side under a TanStack
-              Query provider. <code>props.rs</code> prefetches server data into the
+              Query provider. <code>prefetch.rs</code> prefetches server data into the
               cache — first paint, no fetch.
             </Feature>
             <Feature n="04" title="One function on Vercel">
@@ -153,12 +153,12 @@ export default function Home() {
                   borderRadius: "var(--r-sm)",
                 }}
               >
-                props.rs
+                prefetch.rs
               </code>{" "}
-              prefetch
+              server prefetch
             </h2>
             <p>
-              Put a <code>props.rs</code> next to a page and the server streams its
+              Put a <code>prefetch.rs</code> next to a page and the server streams its
               data into the React Query cache before the component mounts. Delete
               it and the page just fetches on mount instead — the component
               can&apos;t tell the difference.
@@ -167,10 +167,10 @@ export default function Home() {
           <div className="code">
             <div className="code-head">
               <span className="dot" />
-              <span>app/props.rs</span>
+              <span>app/prefetch.rs</span>
             </div>
             <pre>
-              <code>{PROPS_RS}</code>
+              <code>{PREFETCH_RS}</code>
             </pre>
           </div>
         </div>

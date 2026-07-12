@@ -24,7 +24,7 @@ Full numbers: [`results/results.md`](results/results.md).
 
 ## The two apps
 
-- **nextrs** — [`../examples/react-todos`](../examples/react-todos) (React `page.tsx` + `props.rs` server-seeded React Query cache). Deployed as the `nextrs-react-todos` project → [nextrs-react-todos.vercel.app](https://nextrs-react-todos.vercel.app).
+- **nextrs** — [`../examples/react-todos`](../examples/react-todos) (React `page.tsx` + `prefetch.rs` server-seeded React Query cache). Deployed as the `nextrs-react-todos` project → [nextrs-react-todos.vercel.app](https://nextrs-react-todos.vercel.app).
 - **Next.js** — [`apps/nextjs`](apps/nextjs) (Next.js 15 App Router, RSC seed → `ssr:false` client render, Route Handlers). Deployed as the `bench-nextjs-todos` project → [bench-nextjs-todos.vercel.app](https://bench-nextjs-todos.vercel.app).
 
 This is the **small-app** pair; the **real-app** pair (`hhh-nextrs` vs `hhh-next`) and every other deployment are mapped in [`../docs/deployments.md`](../docs/deployments.md).

@@ -1,6 +1,6 @@
-//! Server-side React Query cache seeding (the `props.rs` convention).
+//! Server-side React Query cache seeding (the `prefetch.rs` convention).
 //!
-//! A `props.rs` next to a `page.tsx` returns a [`QuerySeed`]; the generated
+//! A `prefetch.rs` next to a `page.tsx` returns a [`QuerySeed`]; the generated
 //! shell handler serializes it into the streamed HTML as a JSON `<script>`
 //! tag, and the page's entry wrapper loads it into the React Query cache
 //! before mount. Entries are keyed exactly like the generated client keys its
@@ -12,10 +12,10 @@
 //! derived names):
 //!
 //! ```ignore
-//! // app/todos/props.rs
+//! // app/todos/prefetch.rs
 //! include!(concat!(env!("OUT_DIR"), "/nextrs_seeds.rs"));
 //!
-//! pub async fn props(req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
+//! pub async fn prefetch(req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
 //!     nextrs::QuerySeed::new()
 //!         .seed(get_api_todos(
 //!             api_todos::TodosFilter { status: Some("open".into()) },
@@ -34,7 +34,7 @@ pub struct SeedEntry {
     pub data: serde_json::Value,
 }
 
-/// The value a `props.rs` returns: a list of cache entries to stream into the
+/// The value a `prefetch.rs` returns: a list of cache entries to stream into the
 /// page.
 #[derive(Default)]
 pub struct QuerySeed {

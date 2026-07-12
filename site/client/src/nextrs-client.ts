@@ -7,8 +7,8 @@ interface SeedEntry {
   data: unknown;
 }
 
-/// Read the seeds the server streamed into the page (see props.rs /
-/// nextrs::QuerySeed). Absent tag (no props.rs) → no seeds.
+/// Read the seeds the server streamed into the page (see prefetch.rs /
+/// nextrs::QuerySeed). Absent tag (no prefetch.rs) → no seeds.
 export function readSeeds(): SeedEntry[] {
   const tag = document.getElementById("__nx_seeds__");
   if (!tag?.textContent) return [];
