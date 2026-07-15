@@ -238,6 +238,13 @@
             "type": "boolean",
             "description": "True when the request completed with status < 500."
           },
+          "phase": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "\"burst\" (concurrent spike) | \"seq\" (sequential, browser-like)."
+          },
           "status": {
             "type": [
               "integer",

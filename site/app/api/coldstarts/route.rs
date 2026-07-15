@@ -53,6 +53,9 @@ pub struct ColdstartSample {
     /// What was hit: "page" | "api" (older samples: null).
     #[serde(default)]
     pub target: Option<String>,
+    /// "burst" (concurrent spike) | "seq" (sequential, browser-like).
+    #[serde(default)]
+    pub phase: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, ToSchema)]
@@ -145,8 +148,8 @@ pub async fn post(
         let extra = s.extra.as_ref().map(|v| v.to_string());
         let res = conn
             .execute(
-                "INSERT INTO coldstarts (ts, app, url, ok, status, ms, temp, uptime_ms, boot_id, error, extra, target)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+                "INSERT INTO coldstarts (ts, app, url, ok, status, ms, temp, uptime_ms, boot_id, error, extra, target, phase)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 libsql::params![
                     s.ts.clone(),
                     s.app.clone(),
@@ -160,6 +163,7 @@ pub async fn post(
                     s.error.clone(),
                     extra,
                     s.target.clone(),
+                    s.phase.clone(),
                 ],
             )
             .await;
@@ -191,7 +195,7 @@ const REAL_COLD_MAX_UPTIME_MS: i64 = 10_000;
 async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libsql::Error> {
     let mut rows = conn
         .query(
-            "SELECT app, temp, ms, ok, error IS NOT NULL, ts, COALESCE(target, ''), uptime_ms FROM coldstarts",
+            "SELECT app, temp, ms, ok, error IS NOT NULL, ts, COALESCE(target, ''), uptime_ms, COALESCE(phase, '') FROM coldstarts",
             (),
         )
         .await?;
@@ -201,6 +205,7 @@ async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libs
     struct Acc {
         cold: Vec<i64>,
         warm: Vec<i64>,
+        seq_warm: Vec<i64>,
         prewarmed: i64,
         errors: i64,
         samples: i64,
@@ -218,6 +223,7 @@ async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libs
         let ts: String = row.get(5).unwrap_or_default();
         let target: String = row.get(6).unwrap_or_default();
         let uptime: Option<i64> = row.get(7).ok();
+        let phase: String = row.get(8).unwrap_or_default();
         let acc = by_app.entry((app, target)).or_default();
         acc.samples += 1;
         total += 1;
@@ -232,7 +238,15 @@ async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libs
                     acc.prewarmed += 1;
                     acc.warm.push(ms);
                 }
-                Some("warm") => acc.warm.push(ms),
+                Some("warm") => {
+                    // Sequential samples (and the pre-burst singles, which
+                    // were sequential by construction) are browser-like;
+                    // burst warms carry spike transport and only count.
+                    if phase != "burst" {
+                        acc.seq_warm.push(ms);
+                    }
+                    acc.warm.push(ms);
+                }
                 _ => {}
             }
         }
@@ -249,6 +263,10 @@ async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libs
         .map(|((app, target), mut a)| {
             a.cold.sort_unstable();
             a.warm.sort_unstable();
+            a.seq_warm.sort_unstable();
+            // Browser-like warm numbers when we have them; spike warms as
+            // fallback for apps that predate the sequential phase.
+            let warm_src = if a.seq_warm.is_empty() { &a.warm } else { &a.seq_warm };
             AppStats {
                 app,
                 target,
@@ -259,8 +277,8 @@ async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libs
                 errors: a.errors,
                 cold_p50_ms: pct(&a.cold, 0.50),
                 cold_p95_ms: pct(&a.cold, 0.95),
-                warm_p50_ms: pct(&a.warm, 0.50),
-                warm_p95_ms: pct(&a.warm, 0.95),
+                warm_p50_ms: pct(warm_src, 0.50),
+                warm_p95_ms: pct(warm_src, 0.95),
                 first_ts: a.first,
                 last_ts: a.last,
             }

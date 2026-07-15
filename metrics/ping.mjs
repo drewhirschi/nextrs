@@ -17,7 +17,7 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const fleet = JSON.parse(readFileSync(path.join(here, "fleet.json"), "utf8"));
 const BURST = fleet.burst ?? 20;
 
-async function one(app, target, targetPath, i) {
+async function one(app, target, targetPath, i, phase) {
   const url = app.url + targetPath;
   const started = performance.now();
   const record = {
@@ -29,6 +29,7 @@ async function one(app, target, targetPath, i) {
     status: 0,
     ms: 0,
     temp: "unknown",
+    phase,
     extra: { i, burst: BURST },
   };
   try {
@@ -54,12 +55,24 @@ async function one(app, target, targetPath, i) {
   return record;
 }
 
+// Phase 1 — concurrent burst: forces scale-out, catches the cold starts it
+// causes. Latencies here include per-socket TLS + queuing: spike numbers.
 const jobs = [];
 for (const app of fleet.apps) {
   for (const [target, p] of [["page", app.page], ["api", app.api]]) {
     if (!p) continue;
-    for (let i = 0; i < BURST; i++) jobs.push(one(app, target, p, i));
+    for (let i = 0; i < BURST; i++) jobs.push(one(app, target, p, i, "burst"));
   }
 }
 const records = await Promise.all(jobs);
+
+// Phase 2 — sequential on reused connections: what a clicking user sees.
+// These are the honest WARM latencies (the burst just heated everything up).
+const SEQ = 5;
+for (const app of fleet.apps) {
+  for (const [target, p] of [["page", app.page], ["api", app.api]]) {
+    if (!p) continue;
+    for (let i = 0; i < SEQ; i++) records.push(await one(app, target, p, i, "seq"));
+  }
+}
 for (const r of records) console.log(JSON.stringify(r));
