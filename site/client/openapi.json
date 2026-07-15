@@ -123,6 +123,7 @@
           "samples",
           "cold",
           "warm",
+          "prewarmed",
           "errors"
         ],
         "properties": {
@@ -162,6 +163,11 @@
               "string",
               "null"
             ]
+          },
+          "prewarmed": {
+            "type": "integer",
+            "format": "int64",
+            "description": "First-request-on-an-idle-instance: flagged cold by the process, but\nthe instance had been up long before (Vercel pre-provisioning), so no\nboot cost was paid. Counted separately; latency folded into warm."
           },
           "samples": {
             "type": "integer",

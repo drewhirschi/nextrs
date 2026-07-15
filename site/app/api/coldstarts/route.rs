@@ -69,6 +69,10 @@ pub struct AppStats {
     pub samples: i64,
     pub cold: i64,
     pub warm: i64,
+    /// First-request-on-an-idle-instance: flagged cold by the process, but
+    /// the instance had been up long before (Vercel pre-provisioning), so no
+    /// boot cost was paid. Counted separately; latency folded into warm.
+    pub prewarmed: i64,
     pub errors: i64,
     pub cold_p50_ms: Option<i64>,
     pub cold_p95_ms: Option<i64>,
@@ -163,6 +167,11 @@ pub async fn post(
             inserted += 1;
         }
     }
+    if inserted > 0 {
+        // Best-effort: a failed snapshot refresh must not fail the ingest;
+        // GET falls back to live computation when the snapshot is stale-less.
+        let _ = write_snapshot(&conn).await;
+    }
     Ok(Json(IngestResponse { inserted }))
 }
 
@@ -172,6 +181,111 @@ fn pct(sorted: &[i64], p: f64) -> Option<i64> {
     }
     let idx = ((sorted.len() as f64) * p).floor() as usize;
     Some(sorted[idx.min(sorted.len() - 1)])
+}
+
+/// A "cold" flag is only a real cold start if the instance was actually
+/// young when it served its first request. Vercel pre-provisions instances
+/// ahead of traffic; their first requests report cold but paid no boot.
+const REAL_COLD_MAX_UPTIME_MS: i64 = 10_000;
+
+async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libsql::Error> {
+    let mut rows = conn
+        .query(
+            "SELECT app, temp, ms, ok, error IS NOT NULL, ts, COALESCE(target, ''), uptime_ms FROM coldstarts",
+            (),
+        )
+        .await?;
+
+    use std::collections::BTreeMap;
+    #[derive(Default)]
+    struct Acc {
+        cold: Vec<i64>,
+        warm: Vec<i64>,
+        prewarmed: i64,
+        errors: i64,
+        samples: i64,
+        first: Option<String>,
+        last: Option<String>,
+    }
+    let mut by_app: BTreeMap<(String, String), Acc> = BTreeMap::new();
+    let mut total = 0i64;
+    while let Ok(Some(row)) = rows.next().await {
+        let app: String = row.get(0).unwrap_or_default();
+        let temp: Option<String> = row.get(1).ok();
+        let ms: Option<i64> = row.get(2).ok();
+        let ok: i64 = row.get(3).unwrap_or(0);
+        let errored: i64 = row.get(4).unwrap_or(0);
+        let ts: String = row.get(5).unwrap_or_default();
+        let target: String = row.get(6).unwrap_or_default();
+        let uptime: Option<i64> = row.get(7).ok();
+        let acc = by_app.entry((app, target)).or_default();
+        acc.samples += 1;
+        total += 1;
+        if ok == 0 || errored == 1 {
+            acc.errors += 1;
+        } else if let Some(ms) = ms {
+            match temp.as_deref() {
+                Some("cold") if uptime.unwrap_or(0) <= REAL_COLD_MAX_UPTIME_MS => {
+                    acc.cold.push(ms)
+                }
+                Some("cold") => {
+                    acc.prewarmed += 1;
+                    acc.warm.push(ms);
+                }
+                Some("warm") => acc.warm.push(ms),
+                _ => {}
+            }
+        }
+        if acc.first.as_deref().is_none_or(|f| ts.as_str() < f) {
+            acc.first = Some(ts.clone());
+        }
+        if acc.last.as_deref().is_none_or(|l| ts.as_str() > l) {
+            acc.last = Some(ts);
+        }
+    }
+
+    let apps = by_app
+        .into_iter()
+        .map(|((app, target), mut a)| {
+            a.cold.sort_unstable();
+            a.warm.sort_unstable();
+            AppStats {
+                app,
+                target,
+                samples: a.samples,
+                cold: a.cold.len() as i64,
+                warm: a.warm.len() as i64 - a.prewarmed,
+                prewarmed: a.prewarmed,
+                errors: a.errors,
+                cold_p50_ms: pct(&a.cold, 0.50),
+                cold_p95_ms: pct(&a.cold, 0.95),
+                warm_p50_ms: pct(&a.warm, 0.50),
+                warm_p95_ms: pct(&a.warm, 0.95),
+                first_ts: a.first,
+                last_ts: a.last,
+            }
+        })
+        .collect();
+
+    Ok(ColdstartStats {
+        apps,
+        total_samples: total,
+    })
+}
+
+/// Recompute aggregates and persist them as a single snapshot row, so GET is
+/// one tiny fetch instead of an all-rows scan. Called from POST — the stats
+/// only change when new samples arrive.
+async fn write_snapshot(conn: &libsql::Connection) -> Result<(), libsql::Error> {
+    let stats = compute_stats(conn).await?;
+    let json = serde_json::to_string(&stats).unwrap_or_default();
+    conn.execute(
+        "INSERT INTO stats_snapshot (id, json, updated_at) VALUES (1, ?1, datetime('now'))
+         ON CONFLICT(id) DO UPDATE SET json = ?1, updated_at = datetime('now')",
+        libsql::params![json],
+    )
+    .await?;
+    Ok(())
 }
 
 #[nextrs::api(
@@ -199,80 +313,28 @@ pub async fn get() -> Result<Json<ColdstartStats>, StatusCode> {
     let conn = database
         .connect()
         .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-    let mut rows = conn
-        .query(
-            "SELECT app, temp, ms, ok, error IS NOT NULL, ts, COALESCE(target, '') FROM coldstarts",
-            (),
-        )
+
+    // Snapshot first: one small row, precomputed at ingest. Fall back to a
+    // live computation only when no snapshot exists yet.
+    let snapshot: Option<String> = match conn
+        .query("SELECT json FROM stats_snapshot WHERE id = 1", ())
         .await
-        .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?;
-
-    use std::collections::BTreeMap;
-    #[derive(Default)]
-    struct Acc {
-        cold: Vec<i64>,
-        warm: Vec<i64>,
-        errors: i64,
-        samples: i64,
-        first: Option<String>,
-        last: Option<String>,
-    }
-    let mut by_app: BTreeMap<(String, String), Acc> = BTreeMap::new();
-    let mut total = 0i64;
-    while let Ok(Some(row)) = rows.next().await {
-        let app: String = row.get(0).unwrap_or_default();
-        let target: String = row.get(6).unwrap_or_default();
-        let temp: Option<String> = row.get(1).ok();
-        let ms: Option<i64> = row.get(2).ok();
-        let ok: i64 = row.get(3).unwrap_or(0);
-        let errored: i64 = row.get(4).unwrap_or(0);
-        let ts: String = row.get(5).unwrap_or_default();
-        let acc = by_app.entry((app, target)).or_default();
-        acc.samples += 1;
-        total += 1;
-        if ok == 0 || errored == 1 {
-            acc.errors += 1;
-        } else if let Some(ms) = ms {
-            match temp.as_deref() {
-                Some("cold") => acc.cold.push(ms),
-                Some("warm") => acc.warm.push(ms),
-                _ => {}
-            }
-        }
-        if acc.first.as_deref().is_none_or(|f| ts.as_str() < f) {
-            acc.first = Some(ts.clone());
-        }
-        if acc.last.as_deref().is_none_or(|l| ts.as_str() > l) {
-            acc.last = Some(ts);
-        }
-    }
-
-    let apps = by_app
-        .into_iter()
-        .map(|((app, target), mut a)| {
-            a.cold.sort_unstable();
-            a.warm.sort_unstable();
-            AppStats {
-                app,
-                target,
-                samples: a.samples,
-                cold: a.cold.len() as i64,
-                warm: a.warm.len() as i64,
-                errors: a.errors,
-                cold_p50_ms: pct(&a.cold, 0.50),
-                cold_p95_ms: pct(&a.cold, 0.95),
-                warm_p50_ms: pct(&a.warm, 0.50),
-                warm_p95_ms: pct(&a.warm, 0.95),
-                first_ts: a.first,
-                last_ts: a.last,
-            }
-        })
-        .collect();
-
-    let stats = ColdstartStats {
-        apps,
-        total_samples: total,
+    {
+        Ok(mut rows) => rows
+            .next()
+            .await
+            .ok()
+            .flatten()
+            .and_then(|row| row.get::<String>(0).ok()),
+        Err(_) => None,
     };
+    let stats = match snapshot.and_then(|j| serde_json::from_str::<ColdstartStats>(&j).ok()) {
+        Some(stats) => stats,
+        None => compute_stats(&conn)
+            .await
+            .map_err(|_| StatusCode::SERVICE_UNAVAILABLE)?,
+    };
+
     *STATS_CACHE.lock().unwrap() = Some((std::time::Instant::now(), stats.clone()));
     Ok(Json(stats))
 }

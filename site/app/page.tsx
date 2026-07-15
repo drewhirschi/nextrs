@@ -85,10 +85,12 @@ function LiveColdstarts() {
         </div>
       )}
       <p className="live-note" style={{ opacity: 0.6, fontSize: 13, marginTop: 10 }}>
-        Cold = the response that reported paying its instance&apos;s first request
-        (<code>x-nextrs-cold</code>). Bursts of 20 concurrent requests per target,
-        every ~2 h, stored in Turso, aggregated by <code>/api/coldstarts</code> —
-        the endpoint this page is calling right now.
+        Cold = the response that paid its instance&apos;s first request
+        (<code>x-nextrs-cold</code>) on an instance under 10s old — first
+        requests landing on pre-provisioned idle instances are counted as warm,
+        not cold. Bursts of 20 concurrent requests per target, every ~2 h,
+        stored in Turso, aggregated by <code>/api/coldstarts</code> — the
+        endpoint this page is calling right now.
       </p>
     </div>
   );
