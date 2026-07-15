@@ -73,7 +73,7 @@ function LiveColdstarts() {
               {rows.map((a: AppStats) => (
                 <tr key={a.app + a.target} style={{ borderTop: "1px solid var(--line, #333)" }}>
                   <td style={{ padding: "6px 10px" }}>{a.app}</td>
-                  <td style={{ padding: "6px 10px" }}>{a.target || "api"}</td>
+                  <td style={{ padding: "6px 10px" }}>{a.target || "single-ping era"}</td>
                   <td style={{ padding: "6px 10px" }}>{fmtMs(a.cold_p50_ms as number | null)}</td>
                   <td style={{ padding: "6px 10px" }}>{fmtMs(a.cold_p95_ms as number | null)}</td>
                   <td style={{ padding: "6px 10px" }}>{fmtMs(a.warm_p50_ms as number | null)}</td>
