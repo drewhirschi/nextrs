@@ -51,11 +51,11 @@ function LiveColdstarts() {
   if (isError || !stats) return <p className="live-note">Telemetry temporarily unavailable.</p>;
   if (stats.total_samples === 0)
     return <p className="live-note">Collecting first samples — check back shortly.</p>;
-  const rows = stats.apps.filter((a: AppStats) => a.cold + a.warm > 0);
+  const rows = stats.apps.filter((a: AppStats) => a.target !== "" && a.cold + a.warm > 0);
   return (
     <div>
       <div className="stats-row" style={{ display: "flex", gap: 28, margin: "18px 0" }}>
-        <Stat value={String(stats.total_samples)} label="samples collected" />
+        <Stat value={String(rows.reduce((n: number, a: AppStats) => n + a.samples, 0))} label="samples collected" />
         <Stat value={String(rows.reduce((n: number, a: AppStats) => n + a.cold, 0))} label="cold starts observed" />
         <Stat value={String(rows.reduce((n: number, a: AppStats) => n + a.warm, 0))} label="warm responses" />
       </div>
@@ -73,7 +73,7 @@ function LiveColdstarts() {
               {rows.map((a: AppStats) => (
                 <tr key={a.app + a.target} style={{ borderTop: "1px solid var(--line, #333)" }}>
                   <td style={{ padding: "6px 10px" }}>{a.app}</td>
-                  <td style={{ padding: "6px 10px" }}>{a.target || "single-ping era"}</td>
+                  <td style={{ padding: "6px 10px" }}>{a.target}</td>
                   <td style={{ padding: "6px 10px" }}>{fmtMs(a.cold_p50_ms as number | null)}</td>
                   <td style={{ padding: "6px 10px" }}>{fmtMs(a.cold_p95_ms as number | null)}</td>
                   <td style={{ padding: "6px 10px" }}>{fmtMs(a.warm_p50_ms as number | null)}</td>

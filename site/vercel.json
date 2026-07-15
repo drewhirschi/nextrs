@@ -26,5 +26,8 @@
   ],
   "git": {
     "deploymentEnabled": false
-  }
+  },
+  "regions": [
+    "pdx1"
+  ]
 }

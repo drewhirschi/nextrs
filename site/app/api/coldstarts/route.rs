@@ -61,7 +61,7 @@ pub struct IngestResponse {
 }
 
 /// Per-app aggregate served by GET.
-#[derive(Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, ToSchema)]
 pub struct AppStats {
     pub app: String,
     /// "page" | "api" | "" for pre-burst samples.
@@ -78,13 +78,20 @@ pub struct AppStats {
     pub last_ts: Option<String>,
 }
 
-#[derive(Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, ToSchema)]
 pub struct ColdstartStats {
     pub apps: Vec<AppStats>,
     pub total_samples: i64,
 }
 
 static DB: OnceCell<Option<libsql::Database>> = OnceCell::const_new();
+
+/// GET aggregates cache: recomputing from Turso costs a cross-process query
+/// per hit and scales with row count; the landing polls every 60s, so a 30s
+/// TTL keeps the data effectively live while making repeat hits ~0ms.
+static STATS_CACHE: std::sync::Mutex<Option<(std::time::Instant, ColdstartStats)>> =
+    std::sync::Mutex::new(None);
+const STATS_TTL: std::time::Duration = std::time::Duration::from_secs(30);
 
 async fn db() -> Option<&'static libsql::Database> {
     DB.get_or_init(|| async {
@@ -175,6 +182,11 @@ fn pct(sorted: &[i64], p: f64) -> Option<i64> {
     ),
 )]
 pub async fn get() -> Result<Json<ColdstartStats>, StatusCode> {
+    if let Some((at, cached)) = STATS_CACHE.lock().unwrap().as_ref() {
+        if at.elapsed() < STATS_TTL {
+            return Ok(Json(cached.clone()));
+        }
+    }
     // Unconfigured (local dev / CI): empty aggregates, not an error — the
     // landing page calls this on every load and a 503 would log console
     // noise in every environment without the Turso env.
@@ -257,8 +269,10 @@ pub async fn get() -> Result<Json<ColdstartStats>, StatusCode> {
         })
         .collect();
 
-    Ok(Json(ColdstartStats {
+    let stats = ColdstartStats {
         apps,
         total_samples: total,
-    }))
+    };
+    *STATS_CACHE.lock().unwrap() = Some((std::time::Instant::now(), stats.clone()));
+    Ok(Json(stats))
 }
