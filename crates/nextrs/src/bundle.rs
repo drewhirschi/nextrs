@@ -20,9 +20,12 @@
 //! })?;
 //! ```
 //!
-//! Bundle names are stable (`/dist/<slug>.js`, shared chunks under
-//! `/dist/chunks/`) — no content hashing yet; revisit if CDN staleness bites.
+//! Production bundle names are content-addressed (`/dist/<slug>-<hash>.js`,
+//! shared chunks under `/dist/chunks/`). The generated registry includes an
+//! asset table written after Rolldown runs, so applications keep the familiar
+//! `emit_registry()` then `bundle_pages()` build order.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 pub use crate::build::{loading_slug, not_found_slug, page_slug};
@@ -65,22 +68,35 @@ pub struct BundleConfig<'a> {
     pub aliases: &'a [(&'a str, &'a str)],
 }
 
+/// Content-addressed browser assets emitted by [`bundle_pages`]. URLs are
+/// rooted at `/dist/`, matching `BundleConfig::public_dist`'s public mount.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct BundleManifest {
+    pub entries: BTreeMap<String, String>,
+    pub stylesheet: Option<String>,
+}
+
 /// Discover `page.tsx` routes, bundle them, and mirror the output into
 /// `<public_dist>`. No-op when the app has no `.tsx` pages.
-pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<()> {
+pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<BundleManifest> {
     // Escape hatch for the client-generation bootstrap: a brand-new page.tsx
     // may import hooks that `npm run gen` hasn't generated yet, while `npm run
     // gen` itself needs `cargo build` (for dump-openapi). The dump script sets
     // NEXTRS_SKIP_BUNDLE=1 to break the cycle.
-    println!("cargo:rerun-if-env-changed=NEXTRS_SKIP_BUNDLE");
-    if std::env::var_os("NEXTRS_SKIP_BUNDLE").is_some_and(|v| v == "1") {
-        return Ok(());
-    }
-
     let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set in build.rs"),
     );
     let abs_app = manifest_dir.join(cfg.app_dir).canonicalize()?;
+    let routes = discover_routes(&abs_app);
+    let dist = manifest_dir.join(cfg.public_dist);
+
+    println!("cargo:rerun-if-env-changed=NEXTRS_SKIP_BUNDLE");
+    if std::env::var_os("NEXTRS_SKIP_BUNDLE").is_some_and(|v| v == "1") {
+        let manifest = manifest_from_existing_dist(&routes, &dist, &manifest_dir)?;
+        write_asset_module(&routes, &manifest)?;
+        return Ok(manifest);
+    }
+
     let client_dir = manifest_dir.join(cfg.client_dir).canonicalize()?;
 
     // Rerun when client source or deps change. NOT node_modules (huge); a dep
@@ -103,7 +119,6 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<()> {
     // re-exported, so a hand-maintained list can never go stale.
     emit_client_barrel(&client_dir)?;
 
-    let routes = discover_routes(&abs_app);
     let tsx_pages = page_bundles(&routes);
     let tsx_loadings: Vec<(String, PathBuf)> = routes
         .iter()
@@ -118,13 +133,14 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<()> {
 
     let tsx_not_founds = not_found_bundles(&routes);
 
-    let dist = manifest_dir.join(cfg.public_dist);
     if tsx_pages.is_empty() && tsx_loadings.is_empty() && tsx_not_founds.is_empty() {
         // Prune a stale dist from a previous build that had tsx pages.
         if dist.is_dir() {
             std::fs::remove_dir_all(&dist)?;
         }
-        return Ok(());
+        let manifest = BundleManifest::default();
+        write_asset_module(&routes, &manifest)?;
+        return Ok(manifest);
     }
 
     let node_modules = client_dir.join("node_modules");
@@ -144,17 +160,20 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<()> {
     let mut inputs = Vec::with_capacity(tsx_pages.len() + tsx_loadings.len() + 1);
 
     // The ONE app-shell entry: a TanStack Router built from every discovered
-    // route, mounted once. Every page.tsx document boots /dist/__app_shell__.js
-    // (see build::tsx_page_shell), so shared layout.tsx chrome stays mounted
-    // across soft navigation and only the changed leaf swaps.
+    // route, mounted once. Every page.tsx document boots the manifest-resolved
+    // __app_shell__ asset, so shared layout.tsx chrome stays mounted across
+    // soft navigation and only the changed leaf swaps.
     let shell_path = entries_dir.join("__app_shell__.tsx");
-    write_if_changed(&shell_path, app_shell_entry(&routes, &client_helper).as_bytes())?;
+    write_if_changed(
+        &shell_path,
+        app_shell_entry(&routes, &client_helper).as_bytes(),
+    )?;
     inputs.push(rolldown::InputItem {
         name: Some("__app_shell__".to_string()),
         import: shell_path.display().to_string(),
     });
     // Each page.tsx is ALSO a named entry (the RAW page, no createRoot wrapper) so
-    // it gets a stable /dist/<slug>.js that the app-shell's lazy
+    // it gets a named content-addressed chunk that the app-shell's lazy
     // `import("<abs page.tsx>")` dedups to (preserve_entry_signatures=False keeps
     // it from emitting an extra facade chunk).
     for page in &tsx_pages {
@@ -190,10 +209,140 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<()> {
     }
     std::fs::create_dir_all(&staging)?;
 
-    run_bundler(inputs, &staging, &client_dir, cfg.client_alias, cfg.aliases)?;
+    let entries = run_bundler(inputs, &staging, &client_dir, cfg.client_alias, cfg.aliases)?;
+    let stylesheet = fingerprint_stylesheet(&manifest_dir, &staging)?;
+    let manifest = BundleManifest {
+        entries,
+        stylesheet,
+    };
+    write_if_changed(
+        &staging.join("nextrs-assets.json"),
+        serde_json::to_string_pretty(&manifest)
+            .map_err(std::io::Error::other)?
+            .as_bytes(),
+    )?;
+    write_asset_module(&routes, &manifest)?;
 
     std::fs::create_dir_all(&dist)?;
-    mirror_by_content(&staging, &dist)
+    mirror_by_content(&staging, &dist)?;
+    Ok(manifest)
+}
+
+fn write_asset_module(
+    routes: &[DiscoveredRoute],
+    manifest: &BundleManifest,
+) -> std::io::Result<()> {
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR must be set"));
+    let source = crate::build::asset_module_source(
+        &manifest.entries,
+        routes,
+        manifest.stylesheet.as_deref(),
+    )?;
+    write_if_changed(&out_dir.join("nextrs_assets.rs"), source.as_bytes())
+}
+
+fn manifest_from_existing_dist(
+    routes: &[DiscoveredRoute],
+    dist: &Path,
+    manifest_dir: &Path,
+) -> std::io::Result<BundleManifest> {
+    let manifest_path = dist.join("nextrs-assets.json");
+    if manifest_path.is_file() {
+        let bytes = std::fs::read(&manifest_path)?;
+        return serde_json::from_slice(&bytes).map_err(std::io::Error::other);
+    }
+
+    // The client-codegen bootstrap compiles dump-openapi with bundling skipped
+    // before a brand-new app has any dist directory. Stable placeholders keep
+    // the generated registry compilable; the subsequent normal build replaces
+    // this asset table with the real Rolldown manifest before serving pages.
+    if !dist.is_dir() {
+        return Ok(BundleManifest {
+            entries: expected_entry_names(routes)
+                .into_iter()
+                .map(|name| {
+                    let href = format!("/dist/{name}.js");
+                    (name, href)
+                })
+                .collect(),
+            stylesheet: fallback_stylesheet(manifest_dir),
+        });
+    }
+
+    // Backward-compatible bootstrap for an app's first upgrade: older
+    // committed dist directories have stable entry names and no manifest.
+    let mut entries = BTreeMap::new();
+    for name in expected_entry_names(routes) {
+        let stable = dist.join(format!("{name}.js"));
+        if stable.is_file() {
+            entries.insert(name.clone(), format!("/dist/{name}.js"));
+            continue;
+        }
+        let prefix = format!("{name}-");
+        let found = std::fs::read_dir(dist)?
+            .filter_map(Result::ok)
+            .filter_map(|entry| entry.file_name().into_string().ok())
+            .find(|file| file.starts_with(&prefix) && file.ends_with(".js"));
+        let Some(file) = found else {
+            return Err(std::io::Error::other(format!(
+                "nextrs: NEXTRS_SKIP_BUNDLE=1 but {dist:?} has no bundle for {name:?}; rebuild and commit public/dist"
+            )));
+        };
+        entries.insert(name, format!("/dist/{file}"));
+    }
+
+    let stylesheet = std::fs::read_dir(dist)
+        .ok()
+        .into_iter()
+        .flatten()
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .find(|file| file.starts_with("style-") && file.ends_with(".css"))
+        .map(|file| format!("/dist/{file}"))
+        .or_else(|| fallback_stylesheet(manifest_dir));
+
+    Ok(BundleManifest {
+        entries,
+        stylesheet,
+    })
+}
+
+fn fallback_stylesheet(manifest_dir: &Path) -> Option<String> {
+    let css = manifest_dir.join("public/style.css");
+    std::fs::read(css)
+        .ok()
+        .map(|bytes| format!("/style.css?v={}", crate::build::content_hash(&bytes)))
+}
+
+fn expected_entry_names(routes: &[DiscoveredRoute]) -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    if routes.iter().any(|route| route.page.tsx.is_some()) {
+        names.insert("__app_shell__".to_string());
+    }
+    for page in page_bundles(routes) {
+        names.insert(page.slug);
+    }
+    for route in routes {
+        if route.loading.tsx.is_some() {
+            names.insert(loading_slug(&route.url_path));
+        }
+    }
+    for not_found in not_found_bundles(routes) {
+        names.insert(not_found.slug);
+    }
+    names
+}
+
+fn fingerprint_stylesheet(manifest_dir: &Path, staging: &Path) -> std::io::Result<Option<String>> {
+    let source = manifest_dir.join("public/style.css");
+    if !source.is_file() {
+        return Ok(None);
+    }
+    println!("cargo:rerun-if-changed={}", source.display());
+    let bytes = std::fs::read(source)?;
+    let filename = format!("style-{}.css", crate::build::content_hash(&bytes));
+    write_if_changed(&staging.join(&filename), &bytes)?;
+    Ok(Some(format!("/dist/{filename}")))
 }
 
 #[derive(Debug, Clone)]
@@ -245,9 +394,8 @@ fn emit_client_barrel(client_dir: &Path) -> std::io::Result<()> {
         .collect();
     tags.sort();
 
-    let mut out = String::from(
-        "// @generated by nextrs::bundle (every build). Do not edit by hand.\n",
-    );
+    let mut out =
+        String::from("// @generated by nextrs::bundle (every build). Do not edit by hand.\n");
     for tag in &tags {
         out.push_str(&format!("export * from \"./{tag}/{tag}\";\n"));
     }
@@ -499,7 +647,13 @@ export function {hook}FromUrl({lead_args}opts?: {{
 fn ts_ident(name: &str) -> String {
     let mut ident: String = name
         .chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c
+            } else {
+                '_'
+            }
+        })
         .collect();
     if ident.chars().next().is_some_and(|c| c.is_ascii_digit()) {
         ident.insert(0, '_');
@@ -530,7 +684,7 @@ fn collect_layouts_for_path(routes: &[DiscoveredRoute], target_path: &str) -> Ve
 
 /// Raw browser entries for every `page.tsx`: the page module itself (no
 /// wrapper — pages render inside the app shell, which lazy-imports the same
-/// path and dedups to this stable `/dist/<slug>.js` chunk).
+/// path and dedups to this content-addressed `/dist/<slug>-<hash>.js` chunk).
 fn page_bundles(routes: &[DiscoveredRoute]) -> Vec<PageBundle> {
     routes
         .iter()
@@ -759,8 +913,7 @@ fn app_shell_entry(routes: &[DiscoveredRoute], client_helper: &Path) -> String {
             .cmp(&route_depth(&b.url_path))
             .then_with(|| a.url_path.cmp(&b.url_path))
     });
-    let mut pages: Vec<&DiscoveredRoute> =
-        routes.iter().filter(|r| r.page.tsx.is_some()).collect();
+    let mut pages: Vec<&DiscoveredRoute> = routes.iter().filter(|r| r.page.tsx.is_some()).collect();
     pages.sort_by(|a, b| a.url_path.cmp(&b.url_path));
 
     let mut out = String::new();
@@ -902,7 +1055,11 @@ fn app_shell_entry(routes: &[DiscoveredRoute], client_helper: &Path) -> String {
             .or_default()
             .push(format!("route_{i}"));
     }
-    let _ = writeln!(out, "const routeTree = {};\n", emit_route_node("rootRoute", &children));
+    let _ = writeln!(
+        out,
+        "const routeTree = {};\n",
+        emit_route_node("rootRoute", &children)
+    );
 
     out.push_str(
         "const router = createRouter({\n  routeTree,\n  defaultPreload: \"intent\",\n  defaultPendingMs: 150,\n  // A path absent from this tree (also absent from the axum page routes — same\n  // discovery source) hard-loads so the server (real route / static / strangler)\n  // handles it. No reload loop.\n  defaultNotFoundComponent: () => {\n    if (typeof window !== \"undefined\") window.location.assign(window.location.href);\n    return null;\n  },\n});\n\n",
@@ -1020,7 +1177,7 @@ fn run_bundler(
     client_dir: &Path,
     client_alias: &str,
     user_aliases: &[(&str, &str)],
-) -> std::io::Result<()> {
+) -> std::io::Result<BTreeMap<String, String>> {
     use rolldown::{
         BundlerOptions, CodeSplittingMode, OutputFormat, Platform, PreserveEntrySignatures,
         RawMinifyOptions,
@@ -1040,8 +1197,8 @@ fn run_bundler(
         dir: Some(staging.display().to_string()),
         format: Some(OutputFormat::Esm),
         platform: Some(Platform::Browser),
-        entry_filenames: Some("[name].js".to_string().into()),
-        chunk_filenames: Some("chunks/[name].js".to_string().into()),
+        entry_filenames: Some("[name]-[hash].js".to_string().into()),
+        chunk_filenames: Some("chunks/[name]-[hash].js".to_string().into()),
         // Each page.tsx is both a named entry and a dynamic import() target from
         // the app-shell; split so each leaf is its own loadable chunk, and don't
         // preserve entry signatures (avoids a per-page facade chunk = extra
@@ -1129,7 +1286,17 @@ fn run_bundler(
     for w in &output.warnings {
         println!("cargo:warning=nextrs bundle: {w:?}");
     }
-    Ok(())
+    let entries = output
+        .assets
+        .iter()
+        .filter_map(|asset| match asset {
+            rolldown_common::Output::Chunk(chunk) if chunk.is_entry => {
+                Some((chunk.name.to_string(), format!("/dist/{}", chunk.filename)))
+            }
+            _ => None,
+        })
+        .collect();
+    Ok(entries)
 }
 
 /// Mirror `src` into `dst`, writing a file only when its bytes differ
@@ -1284,6 +1451,52 @@ mod tests {
     }
 
     #[test]
+    fn stylesheet_is_copied_under_a_content_addressed_name() {
+        let tmp = tempfile::tempdir().unwrap();
+        let public = tmp.path().join("public");
+        let staging = tmp.path().join("staging");
+        std::fs::create_dir_all(&public).unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+        std::fs::write(public.join("style.css"), b"body { color: tomato; }").unwrap();
+
+        let href = fingerprint_stylesheet(tmp.path(), &staging)
+            .unwrap()
+            .expect("stylesheet href");
+        let expected = format!(
+            "/dist/style-{}.css",
+            crate::build::content_hash(b"body { color: tomato; }")
+        );
+
+        assert_eq!(href, expected);
+        assert_eq!(
+            std::fs::read(staging.join(href.trim_start_matches("/dist/"))).unwrap(),
+            b"body { color: tomato; }"
+        );
+    }
+
+    #[test]
+    fn skipped_first_build_uses_compilable_asset_placeholders() {
+        let tmp = tempfile::tempdir().unwrap();
+        let app = tmp.path().join("app");
+        std::fs::create_dir_all(&app).unwrap();
+        std::fs::write(app.join("page.tsx"), "export default function Page() {}").unwrap();
+        let routes = discover_routes(&app);
+
+        let manifest =
+            manifest_from_existing_dist(&routes, &tmp.path().join("public/dist"), tmp.path())
+                .unwrap();
+
+        assert_eq!(
+            manifest.entries.get("__app_shell__").map(String::as_str),
+            Some("/dist/__app_shell__.js")
+        );
+        assert_eq!(
+            manifest.entries.get("index").map(String::as_str),
+            Some("/dist/index.js")
+        );
+    }
+
+    #[test]
     fn mirror_prunes_and_copies() {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("src");
@@ -1400,14 +1613,23 @@ mod tests {
         assert!(src.contains(
             "export function useGetTrackPlaysFromUrl(id: Parameters<typeof useGetTrackPlays>[0], opts?: {"
         ), "{src}");
-        assert!(src.contains(
-            "type useGetTrackPlaysParams = NonNullable<Parameters<typeof useGetTrackPlays>[1]>;"
-        ), "{src}");
-        assert!(src.contains("const query = useGetTrackPlays(id, params);"), "{src}");
+        assert!(
+            src.contains(
+                "type useGetTrackPlaysParams = NonNullable<Parameters<typeof useGetTrackPlays>[1]>;"
+            ),
+            "{src}"
+        );
+        assert!(
+            src.contains("const query = useGetTrackPlays(id, params);"),
+            "{src}"
+        );
         // Query-only hooks keep the argument-0 shape.
-        assert!(src.contains(
-            "type useGetTodosParams = NonNullable<Parameters<typeof useGetTodos>[0]>;"
-        ), "{src}");
+        assert!(
+            src.contains(
+                "type useGetTodosParams = NonNullable<Parameters<typeof useGetTodos>[0]>;"
+            ),
+            "{src}"
+        );
         assert!(src.contains("const query = useGetTodos(params);"), "{src}");
     }
 
@@ -1436,8 +1658,7 @@ mod tests {
 
         // Barrel picks it up.
         emit_client_barrel(tmp.path()).unwrap();
-        let barrel =
-            std::fs::read_to_string(tmp.path().join("src/generated/index.ts")).unwrap();
+        let barrel = std::fs::read_to_string(tmp.path().join("src/generated/index.ts")).unwrap();
         assert!(barrel.contains(r#"export * from "./url-hooks";"#));
 
         // Spec loses its eligible ops → stale file is removed.
@@ -1527,7 +1748,9 @@ mod tests {
         // Exactly one loader (the prefetch-backed leaf).
         assert_eq!(s.matches("loader: ({ location }").count(), 1, "{s}");
         // Hydration respects freshness and matches the seed envelope.
-        assert!(s.contains("qc.setQueryData(e.key, { data: e.data, status: 200, headers: new Headers() })"));
+        assert!(s.contains(
+            "qc.setQueryData(e.key, { data: e.data, status: 200, headers: new Headers() })"
+        ));
         assert!(s.contains("AbortSignal.timeout(1000)"));
     }
 

@@ -35,14 +35,14 @@ Each folder is a route segment. Each file is a convention slot:
 | `route.rs` | API method handlers (POST/PUT/etc.) | `.rs` only |
 | `prefetch.rs` | Server data for a sibling `page.tsx` — seeds the React Query cache (legacy name `props.rs` still works) | `.rs` only |
 
-`.rs` files are Rust handlers (typically askama templates with logic). `.html` files are static fallbacks; when both exist for a slot, `.rs` wins. `.tsx` files are React client pages — bundled by an embedded rolldown bundler (behind the `tsx` cargo feature) into `/dist/<slug>.js` and mounted into `<div id="__nx_root__">` under a TanStack React Query provider.
+`.rs` files are Rust handlers (typically askama templates with logic). `.html` files are static fallbacks; when both exist for a slot, `.rs` wins. `.tsx` files are React client pages — bundled by an embedded rolldown bundler (behind the `tsx` cargo feature) into content-addressed `/dist/<slug>-<hash>.js` assets and mounted into `<div id="__nx_root__">` under a TanStack React Query provider.
 
 A React route pairs a `.tsx` page with a `prefetch.rs` for server-seeded data (see [`examples/react-todos`](examples/react-todos)):
 
 ```
 app/
 ├── layout.{rs,html}            ← Rust/Askama shell around the React tree
-├── page.tsx                    ← / — React client page, bundled to /dist/<slug>.js
+├── page.tsx                    ← / — React client page, bundled to /dist/<slug>-<hash>.js
 └── prefetch.rs                    ← async fn prefetch(req) -> nextrs::QuerySeed (cache seed)
 ```
 
@@ -143,7 +143,7 @@ cd site
 vercel deploy
 ```
 
-`site` is a self-contained deployable. Its `index` binary at `site/api/index.rs` wraps the framework's axum router with `nextrs::vercel::StreamingVercelLayer` (a drop-in replacement for `vercel_runtime::axum::VercelLayer` that doesn't buffer `text/html` streaming responses). One catch-all rewrite in `site/vercel.json` (`/(.*)` → `/api/index`) routes everything to it. Static files (and the prebuilt `public/dist/` React bundle) live in `site/public/`, served from the CDN edge cache. Vercel runs no `npm install`, so `site/vercel.json` sets `NEXTRS_SKIP_BUNDLE=1` to use the committed bundle instead of bundling at build time.
+`site` is a self-contained deployable. Its `index` binary at `site/api/index.rs` wraps the framework's axum router with `nextrs::vercel::StreamingVercelLayer` (a drop-in replacement for `vercel_runtime::axum::VercelLayer` that doesn't buffer `text/html` streaming responses). One catch-all rewrite in `site/vercel.json` (`/(.*)` → `/api/index`) routes everything to it. Vercel installs the client dependencies and regenerates `public/dist/` during every build. The emitted JavaScript and stylesheet use content-addressed URLs, and the deployment config serves `/dist/*` with a one-year immutable cache policy.
 
 Latency on a fresh preview deploy:
 
@@ -185,9 +185,9 @@ site/              self-contained docs/demo app — dev binary + Vercel deploy
   api/index.rs          Vercel entry (`index` bin) — same registry + StreamingVercelLayer
   build.rs              nextrs::build::emit_registry + emit_docs + bundle_pages from app/
   app/                  the convention tree (incl. page.tsx React landing)
-  public/               static assets (CSS, images) + prebuilt dist/ bundle
+  public/               static assets (CSS, images) + generated dist/ bundle
   style/                Tailwind/DaisyUI build → public/style.css
-  vercel.json           catch-all rewrite to /api/index + NEXTRS_SKIP_BUNDLE
+  vercel.json           client/build commands + immutable dist headers + catch-all rewrite
   .cargo/config.toml    `cargo dev` alias → nextrs-dev --bin site
   askama.toml           dirs = ["app"]
 docs/

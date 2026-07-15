@@ -1,36 +1,34 @@
 # Dev Static Asset Caching
 
+- **Status:** fixed in this change
+
 ## Problem
 
-During development, the browser can keep running an old `/dist/index.js` after
-the bundle changes. Static serving currently exposes freshness metadata such as
-`last-modified`, but generated JS/CSS should be unambiguously uncached in dev.
+During development, the browser could keep running an old generated asset
+after the bundle changed. Freshness metadata such as `last-modified` still
+allowed conditional reuse when generated JavaScript and CSS should be
+unambiguously uncached.
 
-## Proposed Direction
+## Implemented
 
-Serve generated development assets with:
+Successful `/dist/*` responses from `build_router_with_public` now use:
 
 ```text
 Cache-Control: no-store
 ```
 
-This should apply at least to generated TSX assets under `/dist/*` while running
-the development server. A future production story can use content-hashed URLs or
-long-lived immutable caching.
+in debug builds. Release builds use content-addressed URLs and:
 
-## Implementation Notes
+```text
+Cache-Control: public, max-age=31536000, immutable
+```
 
-- Prefer dev-only `no-store` first. It is simpler than build counters and avoids
-  touching every generated shell URL.
-- Keep production static asset caching separate from dev behavior.
-- If no explicit dev mode flag exists in the router/static layer, add a small
-  config surface rather than guessing from `debug_assertions` in library code.
+Non-generated files under `public/` retain their existing behavior. Deployment
+CDNs that bypass Axum must set the release header in platform configuration;
+the Vercel examples and generated scaffold do so.
 
 ## Validation
 
-- Add a router/static asset test that `/dist/index.js` has
-  `Cache-Control: no-store` in dev mode.
-- Confirm non-generated public assets keep their current behavior unless the app
-  opts into broader no-store.
-- Manual check: edit a TSX page, rebuild, refresh, and confirm the browser loads
-  the new bundle without cache intervention.
+- Router test: a successful generated asset has `no-store` in debug mode.
+- Policy test: the release value is one-year immutable.
+- Bundle tests and app builds verify that generated URLs change with content.

@@ -17,7 +17,7 @@ fn main() {
     // Bundle React convention files (page.tsx) into public/dist/ with rolldown.
     // The docs site is a hybrid: the landing is React (app/page.tsx), the docs
     // pages stay server-rendered. No-op when there are no .tsx pages.
-    nextrs::bundle::bundle_pages(&nextrs::bundle::BundleConfig {
+    let assets = nextrs::bundle::bundle_pages(&nextrs::bundle::BundleConfig {
         app_dir: "app",
         client_dir: "client",
         client_alias: "@site/client",
@@ -25,4 +25,8 @@ fn main() {
         ..Default::default()
     })
     .expect("nextrs::bundle::bundle_pages failed");
+    println!(
+        "cargo:rustc-env=NEXTRS_STYLE_URL={}",
+        assets.stylesheet.as_deref().unwrap_or("/style.css")
+    );
 }

@@ -21,13 +21,13 @@ pub async fn handle(req: Request<Body>) -> MiddlewareResult {
     }
 }
 
-const NOT_FOUND_HTML: &str = r#"<!doctype html>
+const NOT_FOUND_HTML: &str = concat!(r#"<!doctype html>
 <html lang="en" data-theme="dim">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Not found · nextrs</title>
-  <link rel="stylesheet" href="/style.css?v=20260630">
+  <link rel="stylesheet" href=""#, env!("NEXTRS_STYLE_URL"), r#"">
 </head>
 <body class="min-h-screen flex items-center justify-center">
   <div class="text-center space-y-4">
@@ -37,4 +37,4 @@ const NOT_FOUND_HTML: &str = r#"<!doctype html>
   </div>
 </body>
 </html>
-"#;
+"#);
