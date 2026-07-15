@@ -28,7 +28,7 @@ Each folder under `app/` is a route segment. The framework looks for these files
 
 | File | Purpose | Variants |
 |---|---|---|
-| `page.{rs,html,tsx}` | The main content for the route | `.rs` (async handler) / `.html` (static Askama) / `.tsx` (React, bundled to `/dist/<slug>.js` and mounted into `<div id="__nx_root__">`; requires the `tsx` feature) |
+| `page.{rs,html,tsx}` | The main content for the route | `.rs` (async handler) / `.html` (static Askama) / `.tsx` (React, bundled to content-addressed `/dist/<slug>-<hash>.js` and mounted into `<div id="__nx_root__">`; requires the `tsx` feature) |
 | `layout.{rs,html,tsx}` | Wraps this segment's page and any nested segments | same `.rs`/`.html`/`.tsx` variants |
 | `loading.{rs,html,tsx}` | Shown while the page resolves (triggers streaming) | same `.rs`/`.html`/`.tsx` variants |
 | `prefetch.rs` | Server data for a sibling `page.tsx` — exports `pub async fn prefetch(req) -> nextrs::QuerySeed` (`prefetch(req, params)` on dynamic routes); streamed as a JSON `<script id="__nx_seeds__">` and loaded into the React Query cache before mount. Legacy `prefetch.rs` exporting `fn props` still works. | `.rs` only |
@@ -80,7 +80,7 @@ soft-nav prefetch endpoint + shell loaders (0.3.4).
 
 ## Static assets
 
-`site/public/` (colocated with `site/app/`) holds files served at root URL paths, plus the prebuilt `public/dist/` React bundle. Because Vercel's Root Directory is `site/`, its CDN serves `site/public/` directly — no mirror step (verified `x-vercel-cache: HIT`, ~145ms warm TTFB). Locally, `nextrs::router::build_router_with_public(registry, dir)` wires `tower-http::services::ServeDir` as a router fallback so the same paths resolve the same way.
+`site/public/` (colocated with `site/app/`) holds files served at root URL paths, plus the generated `public/dist/` React bundle. JavaScript, shared chunks, and the shell stylesheet are content-addressed; the generated registry embeds their exact URLs. Locally, `nextrs::router::build_router_with_public(registry, dir)` serves `/dist/*` with `no-store` in debug builds and a one-year immutable policy in release builds. Vercel serves `public/` before Axum, so `vercel.json` applies the matching immutable header at the CDN layer.
 
 ## Vercel deployment
 
@@ -95,7 +95,7 @@ soft-nav prefetch endpoint + shell loaders (0.3.4).
 | Slot/file discovery | `nextrs/src/discovery.rs` — scans `app/` and produces `DiscoveredRoute { page, layout, loading, middleware, route, props }` where page/layout/loading are each a `Slot { rs, html, tsx }` (every variant optional) and `props` is the `prefetch.rs` path |
 | Route handler types | `nextrs/src/conventions.rs` — `PageFn`, `LayoutFn`, `LoadingFn`, `MiddlewareFn`, `RouteFn`; static helpers `static_page`, `static_layout`, `static_loading` |
 | Routing + streaming | `nextrs/src/router.rs` — `build_router(registry) -> axum::Router` (and `build_router_with_prefetch` / `build_router_with_public`). Runs middleware, composes layouts around a content marker, splits on the marker, streams loading-then-page when a loading slot is present |
-| React bundling | `nextrs/src/bundle.rs` (feature `tsx`) — `bundle_pages(BundleConfig)`. For each `page.tsx` / `loading.tsx` emits an entry wrapper (layout composition + `QueryClientProvider` + seed hydration + `createRoot` mount) and runs the embedded rolldown bundler to produce `/dist/<slug>.js` |
+| React bundling | `nextrs/src/bundle.rs` (feature `tsx`) — `bundle_pages(BundleConfig)`. For each `page.tsx` / `loading.tsx` emits an entry wrapper (layout composition + `QueryClientProvider` + seed hydration + `createRoot` mount), runs the embedded rolldown bundler, and writes a manifest mapping logical entries to content-addressed `/dist/<slug>-<hash>.js` URLs |
 | Server data seeding | `nextrs/src/seed.rs` — `QuerySeed`, `SeedEntry`, `seed_key`; the value a `prefetch.rs` returns, serialized into a `<script id="__nx_seeds__">` tag and loaded into the React Query cache before mount |
 | Navigation prefetch | `nextrs/src/prefetch.rs` — `PrefetchConfig`, `SpeculationMode`, `Eagerness`; injects a `<script type="speculationrules">` for browser-native prefetch/prerender (no client router) |
 | OpenAPI serving | `nextrs/src/openapi.rs` — `spec_router(generated_openapi())` serves the codegen-built OpenAPI document at `/openapi.json` (consumed by the typed client) |

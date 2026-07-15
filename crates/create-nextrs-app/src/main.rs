@@ -224,9 +224,9 @@ impl DependencySource {
 
     fn runtime_dependency(&self) -> String {
         match self {
-            Self::Version => format!(r#""{VERSION}""#),
+            Self::Version => format!(r#"{{ version = "{VERSION}", features = ["vercel"] }}"#),
             Self::Path(path) => format!(
-                r#"{{ path = "{}" }}"#,
+                r#"{{ path = "{}", features = ["vercel"] }}"#,
                 toml_string(&path.display().to_string())
             ),
         }
@@ -278,6 +278,8 @@ fn template_files(
         ("build.rs", build_rs(client_alias)),
         ("src/main.rs", main_rs()),
         ("src/bin/dump-openapi.rs", dump_openapi_rs()),
+        ("api/index.rs", api_index_rs()),
+        ("vercel.json", vercel_json()),
         ("app/layout.tsx", layout_tsx()),
         ("app/page.tsx", page_tsx(client_alias)),
         ("app/slow/page.tsx", slow_page_tsx(client_alias)),
@@ -338,6 +340,10 @@ default-run = "{crate_name}"
 name = "{crate_name}"
 path = "src/main.rs"
 
+[[bin]]
+name = "index"
+path = "api/index.rs"
+
 [build-dependencies]
 nextrs = {build_dependency}
 
@@ -346,6 +352,8 @@ nextrs = {runtime_dependency}
 axum = "0.8"
 dotenvy = "0.15"
 tokio = {{ version = "1", features = ["full"] }}
+tower = "0.5"
+vercel_runtime = {{ version = "2", features = ["axum"] }}
 http = "1"
 serde = {{ version = "1", features = ["derive"] }}
 tower-livereload = "0.9"
@@ -465,13 +473,64 @@ fn main() {
     .into()
 }
 
+fn api_index_rs() -> String {
+    r#"use nextrs::vercel::StreamingVercelLayer;
+use tower::ServiceBuilder;
+
+include!(concat!(env!("OUT_DIR"), "/nextrs_routes.rs"));
+
+#[tokio::main]
+async fn main() -> Result<(), vercel_runtime::Error> {
+    let router = nextrs::router::build_router(generated_registry())
+        .merge(nextrs::openapi::spec_router(generated_openapi()));
+    let app = ServiceBuilder::new()
+        .layer(StreamingVercelLayer::new())
+        .service(router);
+
+    vercel_runtime::run(app).await
+}
+"#
+    .into()
+}
+
+fn vercel_json() -> String {
+    r#"{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "installCommand": "cd client && npm ci",
+  "buildCommand": "cd client && npx orval --config ./orval.config.ts && cd .. && cargo build --release --bin index",
+  "functions": {
+    "api/index.rs": {
+      "runtime": "vercel-rust@4.0.11"
+    }
+  },
+  "headers": [
+    {
+      "source": "/dist/(.*)",
+      "headers": [
+        {
+          "key": "Cache-Control",
+          "value": "public, max-age=31536000, immutable"
+        }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/(.*)",
+      "destination": "/api/index"
+    }
+  ]
+}
+"#
+    .into()
+}
+
 fn layout_tsx() -> String {
     r#"import type { ReactNode } from "react";
 
 export default function Layout({ children }: { children: ReactNode }) {
   return (
     <div className="app-shell">
-      <link rel="stylesheet" href="/style.css" />
       <header className="topbar">
         <a href="/" className="brand">nextrs</a>
         <nav>
@@ -868,6 +927,8 @@ mod tests {
         let names: Vec<_> = files.iter().map(|(name, _)| *name).collect();
         assert!(names.contains(&".cargo/config.toml"));
         assert!(names.contains(&"src/bin/dump-openapi.rs"));
+        assert!(names.contains(&"api/index.rs"));
+        assert!(names.contains(&"vercel.json"));
         assert!(names.contains(&"app/layout.tsx"));
         assert!(names.contains(&"app/page.tsx"));
         assert!(names.contains(&"app/slow/loading.tsx"));
@@ -891,6 +952,8 @@ mod tests {
             .1
             .as_str();
         assert!(cargo_toml.contains("tower-livereload"));
+        assert!(cargo_toml.contains(r#"features = ["vercel"]"#));
+        assert!(cargo_toml.contains("vercel_runtime"));
         assert!(!cargo_toml.contains("command-group"));
         assert!(!cargo_toml.contains("ctrlc"));
         assert!(!cargo_toml.contains("ignore"));
@@ -948,6 +1011,22 @@ mod tests {
             .1
             .as_str();
         assert!(toolchain.contains("channel = \"1.96.0\""));
+
+        let vercel = files
+            .iter()
+            .find(|(name, _)| *name == "vercel.json")
+            .unwrap()
+            .1
+            .as_str();
+        assert!(vercel.contains("public, max-age=31536000, immutable"));
+
+        let layout = files
+            .iter()
+            .find(|(name, _)| *name == "app/layout.tsx")
+            .unwrap()
+            .1
+            .as_str();
+        assert!(!layout.contains("/style.css"));
     }
 
     #[test]
@@ -961,6 +1040,8 @@ mod tests {
                 r#"nextrs = { path = "/work/nextrs/nextrs", features = ["build", "tsx"] }"#
             )
         );
-        assert!(toml.contains(r#"nextrs = { path = "/work/nextrs/nextrs" }"#));
+        assert!(
+            toml.contains(r#"nextrs = { path = "/work/nextrs/nextrs", features = ["vercel"] }"#)
+        );
     }
 }

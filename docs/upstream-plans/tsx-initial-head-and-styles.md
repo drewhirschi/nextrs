@@ -7,19 +7,19 @@ chance to render layout-level `<link>` tags. If `layout.tsx` includes
 `<link rel="stylesheet" href="/style.css" />`, CSS arrives only after the
 bundle loads and React mounts, causing a flash of unstyled content.
 
-## Current Local Patch
+## Current Behavior
 
-`nextrs/src/build.rs` has a local first-pass patch that injects:
+`nextrs/src/build.rs` injects the bundled stylesheet before the page and
+loading mount points:
 
 ```html
-<link rel="stylesheet" href="/style.css" />
+<link rel="stylesheet" href="/dist/style-<content-hash>.css" />
 ```
 
-before both the TSX page mount div and the TSX loading mount div. Tests were
-added locally to keep the stylesheet before the client script path.
-
-This is useful as a quick framework fix, but hard-coding `/style.css` should not
-be the final API.
+The generated asset table resolves the exact URL from the bundle manifest, so
+the initial response is styled without a late React-rendered link or a cache
+revalidation. Explicit application-defined document-head support remains a
+separate API direction below.
 
 ## Proposed Direction
 
@@ -37,8 +37,8 @@ Add explicit document-head support for TSX shells:
 
 - Head support should apply to page shells and loading shells.
 - It should compose with nested layouts without requiring React to mount first.
-- The existing hard-coded stylesheet patch can be replaced once the explicit API
-  exists.
+- The generated stylesheet link remains the default when explicit head support
+  is added.
 
 ## Validation
 

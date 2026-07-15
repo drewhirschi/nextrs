@@ -151,7 +151,7 @@ fn build_router_with_public_inner(
     let router = build_route_table(Arc::clone(&entries), Arc::clone(&prefetch));
     let path = public_dir.as_ref();
 
-    if path.is_dir() {
+    let router = if path.is_dir() {
         // ServeDir is tried for unmatched paths; when it misses, fall through to
         // the not-found surfaces (if any) rather than ServeDir's bare 404.
         if not_found.is_empty() {
@@ -176,6 +176,32 @@ fn build_router_with_public_inner(
         }
     } else {
         with_not_found_fallback(router, entries, not_found, prefetch)
+    };
+
+    router.layer(axum::middleware::from_fn(generated_asset_cache))
+}
+
+/// Generated assets are content-addressed in production and deliberately
+/// uncached in development. This covers local/Docker ServeDir; deployment
+/// adapters whose static CDN bypasses Axum must install the same `/dist/*`
+/// policy in their platform configuration.
+async fn generated_asset_cache(req: Request, next: axum::middleware::Next) -> Response {
+    let generated = req.uri().path().starts_with("/dist/");
+    let mut response = next.run(req).await;
+    if generated && response.status().is_success() {
+        response.headers_mut().insert(
+            http::header::CACHE_CONTROL,
+            http::HeaderValue::from_static(generated_asset_cache_control(cfg!(debug_assertions))),
+        );
+    }
+    response
+}
+
+fn generated_asset_cache_control(debug: bool) -> &'static str {
+    if debug {
+        "no-store"
+    } else {
+        "public, max-age=31536000, immutable"
     }
 }
 
@@ -585,6 +611,38 @@ mod tests {
             .unwrap();
         assert_eq!(resp.status(), StatusCode::OK);
         assert_eq!(body_to_string(resp.into_body()).await, "hi from public");
+    }
+
+    #[tokio::test]
+    async fn generated_assets_receive_the_current_profile_policy() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("dist")).unwrap();
+        std::fs::write(tmp.path().join("dist/app-deadbeef.js"), "export {};").unwrap();
+
+        let app = build_router_with_public(RouteRegistry::new(), tmp.path());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/dist/app-deadbeef.js")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert_eq!(
+            resp.headers()[http::header::CACHE_CONTROL],
+            generated_asset_cache_control(cfg!(debug_assertions))
+        );
+    }
+
+    #[test]
+    fn generated_asset_policies_cover_development_and_production() {
+        assert_eq!(generated_asset_cache_control(true), "no-store");
+        assert_eq!(
+            generated_asset_cache_control(false),
+            "public, max-age=31536000, immutable"
+        );
     }
 
     #[tokio::test]
@@ -1871,7 +1929,10 @@ mod tests {
     #[tokio::test]
     async fn prefetch_endpoint_serves_a_static_routes_seeds() {
         let mut registry = RouteRegistry::new();
-        registry.add(prefetch_entry("/todos", one_seed("/api/todos", serde_json::json!([1, 2]))));
+        registry.add(prefetch_entry(
+            "/todos",
+            one_seed("/api/todos", serde_json::json!([1, 2])),
+        ));
         let app = build_router(registry);
 
         let resp = app
@@ -1959,13 +2020,22 @@ mod tests {
     #[tokio::test]
     async fn prefetch_endpoint_rejects_bad_targets() {
         let mut registry = RouteRegistry::new();
-        registry.add(prefetch_entry("/todos", one_seed("/api/todos", serde_json::json!(1))));
+        registry.add(prefetch_entry(
+            "/todos",
+            one_seed("/api/todos", serde_json::json!(1)),
+        ));
         let app = build_router(registry);
 
         for (uri, expect) in [
             ("/__nx/prefetch", StatusCode::BAD_REQUEST),
-            ("/__nx/prefetch?path=https%3A%2F%2Fevil.example", StatusCode::BAD_REQUEST),
-            ("/__nx/prefetch?path=%2F%2Fevil.example", StatusCode::BAD_REQUEST),
+            (
+                "/__nx/prefetch?path=https%3A%2F%2Fevil.example",
+                StatusCode::BAD_REQUEST,
+            ),
+            (
+                "/__nx/prefetch?path=%2F%2Fevil.example",
+                StatusCode::BAD_REQUEST,
+            ),
             // A real path with no prefetch-capable route: plain 404.
             ("/__nx/prefetch?path=%2Fnope", StatusCode::NOT_FOUND),
         ] {

@@ -241,11 +241,13 @@ Notes, all verified in `nextrs/src/bundle.rs`:
   in `0.2.1` and later.
 - Release builds (`cargo build --release`) minify and set
   `process.env.NODE_ENV = "production"`; debug builds don't.
-- Bundle names are stable: `/dist/<slug>.js` where `/` → `index`, `/todos` →
-  `todos`, `/users/{id}` → `users-_id_`, with shared chunks under
-  `/dist/chunks/`. No content hashing.
-- `NEXTRS_SKIP_BUNDLE=1` skips bundling entirely (used on Vercel and by the
-  client-codegen bootstrap, §8).
+- Bundle names are content-addressed: `/dist/<slug>-<hash>.js` where `/` →
+  `index`, `/todos` → `todos`, `/users/{id}` → `users-_id_`, with hashed shared
+  chunks under `/dist/chunks/`. The generated registry reads the bundle
+  manifest and embeds the exact URLs.
+- `NEXTRS_SKIP_BUNDLE=1` skips Rolldown and reuses an existing dist manifest
+  (used by the client-codegen bootstrap, §8). Production deploys should rebuild
+  the bundle so server code and browser assets cannot skew.
 
 ### 2.3 main.rs (local dev), api/index.rs (Vercel), dump-openapi.rs
 
@@ -1373,7 +1375,7 @@ and commit it.
 For every route, against both the old app and the new one (same DB):
 
 - [ ] `GET` returns 200; HTML contains the layout, the stylesheet link, and
-      (for tsx pages) `#__nx_root__` + the `/dist/<slug>.js` script tag.
+      (for tsx pages) `#__nx_root__` + a `/dist/<slug>-<hash>.js` script tag.
 - [ ] First paint has data with **no client fetch** for seeded queries
       (network panel: no request to the seeded endpoint on load; verify
       `#__nx_seeds__` content matches a direct `curl` of the endpoint).
