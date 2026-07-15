@@ -239,10 +239,11 @@ async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libs
                     acc.warm.push(ms);
                 }
                 Some("warm") => {
-                    // Sequential samples (and the pre-burst singles, which
-                    // were sequential by construction) are browser-like;
-                    // burst warms carry spike transport and only count.
-                    if phase != "burst" {
+                    // Only explicitly-sequential samples are browser-like.
+                    // (NOT phase != "burst": rows ingested before the phase
+                    // column exist with NULL phase, and most of those were
+                    // bursts — that inference already burned us once.)
+                    if phase == "seq" {
                         acc.seq_warm.push(ms);
                     }
                     acc.warm.push(ms);
