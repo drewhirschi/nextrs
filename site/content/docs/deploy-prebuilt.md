@@ -73,6 +73,8 @@ typically ~12 MB instead of your whole source tree.
 | Build environment | reproducible, Vercel's | your machine (or your CI runner) |
 | Preview URLs per PR | automatic | manual (`--preview`) |
 
-A good default: keep git-push deploys as the always-works baseline, and use
-prebuilt for iteration bursts, queue congestion, or anything the cloud build
-chokes on. Both can coexist on the same project.
+Scaffolded apps ship with the prebuilt flow as the default: `create-nextrs-app`
+generates `scripts/deploy-prebuilt.sh` and sets `"git": { "deploymentEnabled":
+false }` in `vercel.json`, so pushes never trigger cloud builds. Re-enable git
+deploys (delete that key) if you prefer the push-to-deploy baseline — both can
+coexist on one project.

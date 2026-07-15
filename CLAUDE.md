@@ -121,7 +121,11 @@ existing apps can adopt it with a one-line change.
 
 ## Deploy / conventions quick refs
 
-- Docs site: project `nextrs-docs` (Vercel `ashirsc` team), auto-deploys on push to `main`.
-  Post-2026-06-29 reorg, `site/` is self-contained — the Vercel project's **Root Directory
-  must be `site`** with "Include source files outside the Root Directory" enabled.
+- Docs site: project `nextrs-docs` (Vercel `ashirsc` team). **Git auto-builds are OFF
+  fleet-wide** (2026-07-14, `git.deploymentEnabled: false` in every app's vercel.json —
+  cloud builds cost 6-10 min + shared queue). Deploys are prebuilt-only:
+  `scripts/deploy-prebuilt.sh site` (local cargo-zigbuild → `vercel deploy --prebuilt`,
+  ~seconds; guide at /docs/deploy-prebuilt). **A push to main no longer ships anything —
+  run the deploy script after docs/site changes.** The Vercel project's Root Directory
+  must stay `site` with "Include source files outside the Root Directory" enabled.
 - Full deploy topology and other cross-repo facts live in agent memory, not the repo.
