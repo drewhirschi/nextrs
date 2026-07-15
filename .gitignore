@@ -17,3 +17,4 @@ site/style/tailwindcss
 # intentionally committed: Vercel deploys the site without a build-time bundler
 # (NEXTRS_SKIP_BUNDLE=1 in site/vercel.json), so the prebuilt bundle must be in
 # git — same pattern as examples/react-todos.
+docs/nextrs-transcripts-backup.zip
