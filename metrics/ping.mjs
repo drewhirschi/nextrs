@@ -1,16 +1,13 @@
-// Cold-start fleet pinger. Hits every app in fleet.json once and emits one
-// NDJSON record per app on stdout. Run by the scheduled workflow
-// (.github/workflows/coldstart-pinger.yml), usable by hand:
+// Cold-start fleet pinger. For each app in fleet.json, fires one concurrent
+// burst: `burst` requests at the app's page path + `burst` at its api path,
+// all in flight together. The requests that force instances to boot come
+// back cold (x-nextrs-cold: 1); the rest ride warm instances — one batch
+// measures both temperatures, on both target kinds.
 //
-//   node metrics/ping.mjs            # ping the fleet, NDJSON to stdout
+//   node metrics/ping.mjs            # NDJSON to stdout, one line per request
 //
-// Temperature classification (apps with the /__nx/health endpoint):
-//   cold  — the instance says this was its first request (x-nextrs-cold: 1),
-//           i.e. this ping paid the cold start.
-//   warm  — an already-running instance answered.
-// Apps without the endpoint get temp: "unknown" — timing only.
-//
-// No dependencies; node >= 20.
+// Run by .github/workflows/coldstart-pinger.yml, which POSTs the batch to
+// the docs site's /api/coldstarts (Turso-backed). No dependencies; node>=20.
 
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -18,43 +15,37 @@ import { fileURLToPath } from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fleet = JSON.parse(readFileSync(path.join(here, "fleet.json"), "utf8"));
+const BURST = fleet.burst ?? 20;
 
-async function pingOnce(app) {
-  const target = app.url + (app.health ? "/__nx/health" : (app.path ?? "/"));
+async function one(app, target, targetPath, i) {
+  const url = app.url + targetPath;
   const started = performance.now();
   const record = {
     ts: new Date().toISOString(),
     app: app.name,
-    url: target,
+    target,
+    url,
     ok: false,
     status: 0,
     ms: 0,
     temp: "unknown",
+    extra: { i, burst: BURST },
   };
   try {
-    const res = await fetch(target, {
+    const res = await fetch(url, {
       redirect: "manual",
       headers: { "user-agent": "nextrs-coldstart-pinger" },
       signal: AbortSignal.timeout(30_000),
     });
-    // Read the body so `ms` covers the full response, not just headers.
-    const body = await res.text();
+    await res.arrayBuffer(); // full body → ms covers the whole response
     record.ms = Math.round(performance.now() - started);
     record.status = res.status;
     record.ok = res.status < 500;
-    if (app.health && res.status === 200) {
-      const cold = res.headers.get("x-nextrs-cold");
-      const uptime = res.headers.get("x-nextrs-uptime-ms");
-      const bootId = res.headers.get("x-nextrs-boot-id");
-      if (cold !== null) {
-        record.temp = cold === "1" ? "cold" : "warm";
-        record.uptime_ms = Number(uptime);
-        record.boot_id = bootId;
-      } else {
-        // App answered but without telemetry headers — not on 0.3.7 yet.
-        record.temp = "unknown";
-        record.note = body.slice(0, 80);
-      }
+    const cold = res.headers.get("x-nextrs-cold");
+    if (cold !== null) {
+      record.temp = cold === "1" ? "cold" : "warm";
+      record.uptime_ms = Number(res.headers.get("x-nextrs-uptime-ms"));
+      record.boot_id = res.headers.get("x-nextrs-boot-id");
     }
   } catch (err) {
     record.ms = Math.round(performance.now() - started);
@@ -63,8 +54,12 @@ async function pingOnce(app) {
   return record;
 }
 
-const records = [];
+const jobs = [];
 for (const app of fleet.apps) {
-  records.push(await pingOnce(app));
+  for (const [target, p] of [["page", app.page], ["api", app.api]]) {
+    if (!p) continue;
+    for (let i = 0; i < BURST; i++) jobs.push(one(app, target, p, i));
+  }
 }
+const records = await Promise.all(jobs);
 for (const r of records) console.log(JSON.stringify(r));

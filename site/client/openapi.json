@@ -6,6 +6,63 @@
     "version": "0.1.0"
   },
   "paths": {
+    "/api/coldstarts": {
+      "get": {
+        "tags": [
+          "coldstarts"
+        ],
+        "operationId": "getColdstartStats",
+        "responses": {
+          "200": {
+            "description": "Per-app cold/warm aggregates (empty when the store is unconfigured, e.g. local dev)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ColdstartStats"
+                }
+              }
+            }
+          }
+        }
+      },
+      "post": {
+        "tags": [
+          "coldstarts"
+        ],
+        "operationId": "ingestColdstarts",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ColdstartSample"
+                }
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Samples stored",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/IngestResponse"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Missing or wrong x-api-key"
+          },
+          "503": {
+            "description": "Metrics store not configured"
+          }
+        }
+      }
+    },
     "/api/ping": {
       "get": {
         "tags": [
@@ -57,6 +114,198 @@
   },
   "components": {
     "schemas": {
+      "AppStats": {
+        "type": "object",
+        "description": "Per-app aggregate served by GET.",
+        "required": [
+          "app",
+          "target",
+          "samples",
+          "cold",
+          "warm",
+          "errors"
+        ],
+        "properties": {
+          "app": {
+            "type": "string"
+          },
+          "cold": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "cold_p50_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "cold_p95_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "errors": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "first_ts": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_ts": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "samples": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "target": {
+            "type": "string",
+            "description": "\"page\" | \"api\" | \"\" for pre-burst samples."
+          },
+          "warm": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "warm_p50_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "warm_p95_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          }
+        }
+      },
+      "ColdstartSample": {
+        "type": "object",
+        "description": "One pinger observation. `extra` keeps the schema open for expansion —\nanything the pinger learns to measure lands there without a migration.",
+        "required": [
+          "ts",
+          "app"
+        ],
+        "properties": {
+          "app": {
+            "type": "string",
+            "description": "Fleet app name (metrics/fleet.json)."
+          },
+          "boot_id": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Instance boot id reported by /__nx/health."
+          },
+          "error": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Transport error, if any."
+          },
+          "extra": {
+            "description": "Open extension point (JSON object)."
+          },
+          "ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Full response time in ms."
+          },
+          "ok": {
+            "type": "boolean",
+            "description": "True when the request completed with status < 500."
+          },
+          "status": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "HTTP status (0 on transport error)."
+          },
+          "target": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "What was hit: \"page\" | \"api\" (older samples: null)."
+          },
+          "temp": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "\"cold\" | \"warm\" | \"unknown\"."
+          },
+          "ts": {
+            "type": "string",
+            "description": "RFC3339 timestamp of the ping."
+          },
+          "uptime_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Instance uptime reported by /__nx/health."
+          },
+          "url": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "URL that was hit."
+          }
+        }
+      },
+      "ColdstartStats": {
+        "type": "object",
+        "required": [
+          "apps",
+          "total_samples"
+        ],
+        "properties": {
+          "apps": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/AppStats"
+            }
+          },
+          "total_samples": {
+            "type": "integer",
+            "format": "int64"
+          }
+        }
+      },
+      "IngestResponse": {
+        "type": "object",
+        "required": [
+          "inserted"
+        ],
+        "properties": {
+          "inserted": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
       "PingRequest": {
         "type": "object",
         "description": "Request body for `POST /api/ping`.",

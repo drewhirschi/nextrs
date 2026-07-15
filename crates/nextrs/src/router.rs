@@ -133,6 +133,14 @@ pub fn build_router_with_public(
     registry: RouteRegistry,
     public_dir: impl AsRef<std::path::Path>,
 ) -> Router {
+    return build_router_with_public_inner(registry, public_dir)
+        .layer(axum::middleware::map_response(crate::health::stamp));
+}
+
+fn build_router_with_public_inner(
+    registry: RouteRegistry,
+    public_dir: impl AsRef<std::path::Path>,
+) -> Router {
     use axum::handler::HandlerWithoutStateExt;
 
     // Mirror `build_router`'s default: prefetch on. Build the route table on its
@@ -209,6 +217,7 @@ pub fn build_router_with_prefetch(registry: RouteRegistry, prefetch: PrefetchCon
     let prefetch = Arc::new(prefetch);
     let router = build_route_table(Arc::clone(&entries), Arc::clone(&prefetch));
     with_not_found_fallback(router, entries, not_found, prefetch)
+        .layer(axum::middleware::map_response(crate::health::stamp))
 }
 
 /// Reserved path of the soft-nav data-prefetch endpoint. The generated app

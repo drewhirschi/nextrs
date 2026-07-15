@@ -1,19 +1,17 @@
-# Fleet cold-start telemetry. Pings every deployed nextrs app (metrics/
-# fleet.json) at randomized times through the day, records temperature
-# (cold / warm via /__nx/health) and response time, and publishes a rolling
-# summary — data + SUMMARY.md live on the `metrics` branch so appends never
-# trigger site deploys or clutter main's history.
+# Fleet cold-start telemetry. Every 2 hours (with random jitter so samples
+# never align with the hour), fires a concurrent burst per app — page + api
+# targets — and POSTs the batch to the docs site's authenticated ingestion
+# endpoint (/api/coldstarts → Turso `nextrs-metrics`). Aggregates are public
+# at GET /api/coldstarts and rendered live on the site.
+#
+# History: before 2026-07-14 samples were committed to the `metrics` branch;
+# that data was backfilled into Turso and the branch is now an archive.
 name: coldstart-pinger
 
 on:
   schedule:
-    # Every 2 hours; the job then sleeps a random 0–40 min so samples don't
-    # land on the hour (Vercel and cron-aligned traffic would bias warm rates).
     - cron: "17 */2 * * *"
   workflow_dispatch:
-
-permissions:
-  contents: write
 
 concurrency:
   group: coldstart-pinger
@@ -32,20 +30,16 @@ jobs:
         if: github.event_name == 'schedule'
         run: sleep $(( RANDOM % 2400 ))
 
-      - name: Ping the fleet
-        run: node metrics/ping.mjs | tee /tmp/batch.ndjson
+      - name: Burst the fleet
+        run: node metrics/ping.mjs > /tmp/batch.ndjson && wc -l /tmp/batch.ndjson
 
-      - name: Append to the metrics branch and publish summary
+      - name: POST batch to the ingestion endpoint
         run: |
-          git config user.name "coldstart-pinger"
-          git config user.email "noreply@github.com"
-          git fetch origin metrics:metrics 2>/dev/null || git branch metrics $(git commit-tree $(git hash-object -t tree /dev/null) -m "metrics root")
-          git worktree add /tmp/metrics metrics
-          mkdir -p /tmp/metrics/data
-          cat /tmp/batch.ndjson >> /tmp/metrics/data/coldstarts.ndjson
-          node metrics/summarize.mjs /tmp/metrics/data
-          cp /tmp/metrics/data/SUMMARY.md /tmp/metrics/SUMMARY.md
-          cd /tmp/metrics
-          git add -A
-          git commit -m "ping $(date -u +%FT%H:%M)Z"
-          git push origin metrics
+          jq -s '.' /tmp/batch.ndjson > /tmp/batch.json
+          code=$(curl -s -o /tmp/ingest-resp.txt -w '%{http_code}' \
+            -X POST https://nextrs-docs.vercel.app/api/coldstarts \
+            -H "x-api-key: ${{ secrets.METRICS_API_KEY }}" \
+            -H 'content-type: application/json' \
+            --data @/tmp/batch.json)
+          cat /tmp/ingest-resp.txt; echo
+          [ "$code" = "200" ] || { echo "ingest failed: $code"; exit 1; }

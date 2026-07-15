@@ -48,6 +48,32 @@ fn boot_id() -> u64 {
     z ^ (z >> 31)
 }
 
+/// Stamp the telemetry headers onto any response that doesn't already carry
+/// them (the health handler sets its own). Installed as a router-wide
+/// `map_response` layer so page loads and API calls classify cold/warm the
+/// same way `/__nx/health` does — a burst against a page is as measurable as
+/// a burst against the health endpoint.
+pub(crate) async fn stamp(mut resp: axum::response::Response) -> axum::response::Response {
+    if resp.headers().contains_key("x-nextrs-boot-id") {
+        return resp;
+    }
+    let (start, id) = *BOOT.get_or_init(|| (Instant::now(), boot_id()));
+    let uptime_ms = start.elapsed().as_millis() as u64;
+    let first = !SERVED.swap(true, Ordering::Relaxed);
+    let headers = resp.headers_mut();
+    if let Ok(v) = format!("{id:016x}").parse() {
+        headers.insert("x-nextrs-boot-id", v);
+    }
+    if let Ok(v) = uptime_ms.to_string().parse() {
+        headers.insert("x-nextrs-uptime-ms", v);
+    }
+    headers.insert(
+        "x-nextrs-cold",
+        http::HeaderValue::from_static(if first { "1" } else { "0" }),
+    );
+    resp
+}
+
 pub(crate) async fn handler() -> axum::response::Response {
     let (start, id) = *BOOT.get_or_init(|| (Instant::now(), boot_id()));
     let uptime_ms = start.elapsed().as_millis() as u64;

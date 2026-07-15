@@ -1,7 +1,7 @@
 // The docs-site landing page — a React (page.tsx) route, mounted client-side
 // into __nx_root__ by the bundle nextrs generates. This page dogfoods the
 // React track; the docs pages under /docs stay server-rendered.
-import { NextrsMark } from "@site/client";
+import { NextrsMark, useGetColdstartStats, type AppStats } from "@site/client";
 
 const PREFETCH_RS = `// app/prefetch.rs — runs on the server, streaming
 // data into the React Query cache before mount.
@@ -34,6 +34,62 @@ function Feature({
       <span className="num">{n}</span>
       <h3>{title}</h3>
       <p>{children}</p>
+    </div>
+  );
+}
+
+function fmtMs(v: number | null | undefined) {
+  return v == null ? "—" : `${v} ms`;
+}
+
+function LiveColdstarts() {
+  const { data, isLoading, isError } = useGetColdstartStats({
+    query: { refetchInterval: 60_000 },
+  });
+  const stats = data && data.status === 200 ? data.data : undefined;
+  if (isLoading) return <p className="live-note">Loading live numbers…</p>;
+  if (isError || !stats) return <p className="live-note">Telemetry temporarily unavailable.</p>;
+  if (stats.total_samples === 0)
+    return <p className="live-note">Collecting first samples — check back shortly.</p>;
+  const rows = stats.apps.filter((a: AppStats) => a.cold + a.warm > 0);
+  return (
+    <div>
+      <div className="stats-row" style={{ display: "flex", gap: 28, margin: "18px 0" }}>
+        <Stat value={String(stats.total_samples)} label="samples collected" />
+        <Stat value={String(rows.reduce((n: number, a: AppStats) => n + a.cold, 0))} label="cold starts observed" />
+        <Stat value={String(rows.reduce((n: number, a: AppStats) => n + a.warm, 0))} label="warm responses" />
+      </div>
+      {rows.length > 0 && (
+        <div style={{ overflowX: "auto" }}>
+          <table className="live-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+            <thead>
+              <tr>
+                {["app", "target", "cold p50", "cold p95", "warm p50", "warm p95"].map((h) => (
+                  <th key={h} style={{ textAlign: "left", padding: "6px 10px", opacity: 0.6 }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((a: AppStats) => (
+                <tr key={a.app + a.target} style={{ borderTop: "1px solid var(--line, #333)" }}>
+                  <td style={{ padding: "6px 10px" }}>{a.app}</td>
+                  <td style={{ padding: "6px 10px" }}>{a.target || "api"}</td>
+                  <td style={{ padding: "6px 10px" }}>{fmtMs(a.cold_p50_ms as number | null)}</td>
+                  <td style={{ padding: "6px 10px" }}>{fmtMs(a.cold_p95_ms as number | null)}</td>
+                  <td style={{ padding: "6px 10px" }}>{fmtMs(a.warm_p50_ms as number | null)}</td>
+                  <td style={{ padding: "6px 10px" }}>{fmtMs(a.warm_p95_ms as number | null)}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+      <p className="live-note" style={{ opacity: 0.6, fontSize: 13, marginTop: 10 }}>
+        Cold = the response that reported paying its instance&apos;s first request
+        (<code>x-nextrs-cold</code>). Bursts of 20 concurrent requests per target,
+        every ~2 h, stored in Turso, aggregated by <code>/api/coldstarts</code> —
+        the endpoint this page is calling right now.
+      </p>
     </div>
   );
 }
@@ -173,6 +229,22 @@ export default function Home() {
               <code>{PREFETCH_RS}</code>
             </pre>
           </div>
+        </div>
+      </section>
+
+      <section className="section">
+        <div className="shell">
+          <div className="section-head">
+            <span className="eyebrow">Live from production</span>
+            <h2>Cold starts, measured continuously.</h2>
+            <p>
+              Every two hours a burst of requests hits real nextrs apps in
+              production — pages and API routes. Each response says whether it
+              paid a cold start. No lab, no cherry-picking; this table is the
+              running total. <a href="/docs/case-study-hhh">How we measure →</a>
+            </p>
+          </div>
+          <LiveColdstarts />
         </div>
       </section>
 

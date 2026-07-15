@@ -1,29 +1,37 @@
 {
-  "comment": "Fleet registry for the cold-start pinger (.github/workflows/coldstart-pinger.yml). Apps with `health: true` run nextrs >= 0.3.7 and answer /__nx/health with boot_id/uptime/first_request \u2014 the pinger classifies cold vs warm from those. Apps with `health: false` predate the endpoint; the pinger records response time only until they upgrade.",
+  "comment": "Fleet registry for the cold-start pinger (.github/workflows/coldstart-pinger.yml). Per run, each app gets a concurrent burst of `burst` requests to its `page` path and `burst` to its `api` path — one batch captures both the cold start (the request that boots an instance) and warm behavior (the rest). Apps with `health: true` run nextrs >= 0.3.7, which stamps x-nextrs-cold/-boot-id/-uptime-ms on EVERY response, so page and api samples classify identically. Apps with `health: false` predate the headers; timing-only until they upgrade.",
+  "burst": 20,
   "apps": [
     {
       "name": "nextrs-docs",
       "url": "https://nextrs-docs.vercel.app",
-      "health": true
+      "health": true,
+      "page": "/",
+      "api": "/__nx/health"
     },
     {
       "name": "react-todos",
       "url": "https://nextrs-react-todos.vercel.app",
       "health": false,
-      "path": "/",
+      "page": "/",
+      "api": "/api/todos",
       "note": "flip to health:true when nextrs 0.3.7 is published and the app redeployed"
     },
     {
       "name": "onenote-extractor",
       "url": "https://onenote-extractor.vercel.app",
       "health": false,
-      "path": "/"
+      "page": "/",
+      "api": null,
+      "note": "vendored 0.3.3; page 303s to auth — timing only"
     },
     {
       "name": "hhh-next",
       "url": "https://hhh-rs.vercel.app",
       "health": false,
-      "path": "/"
+      "page": "/",
+      "api": "/api/health",
+      "note": "nextrs 0.2.1; /api/health was mirrored for the June bench rounds"
     }
   ]
 }
