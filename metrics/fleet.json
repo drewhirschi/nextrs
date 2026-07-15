@@ -19,18 +19,17 @@
     {
       "name": "onenote-extractor",
       "url": "https://onenote-extractor.vercel.app",
-      "health": false,
+      "health": true,
       "page": "/",
-      "api": null,
-      "note": "vendored 0.3.3; page 303s to auth \u2014 timing only"
+      "api": "/__nx/health",
+      "note": "page 303s to auth \u2014 page samples are timing-only by status"
     },
     {
       "name": "hhh-next",
       "url": "https://hhh-rs.vercel.app",
-      "health": false,
+      "health": true,
       "page": "/",
-      "api": "/api/health",
-      "note": "nextrs 0.2.1; /api/health was mirrored for the June bench rounds"
+      "api": "/__nx/health"
     }
   ]
 }
