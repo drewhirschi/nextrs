@@ -83,6 +83,10 @@ pub struct AppStats {
     pub warm_p50_ms: Option<i64>,
     pub warm_p90_ms: Option<i64>,
     pub warm_p95_ms: Option<i64>,
+    /// Burst-phase totals (the concurrency probe): how many requests the
+    /// app's instances absorbed, and how many required a fresh instance.
+    pub burst_requests: i64,
+    pub burst_colds: i64,
     pub first_ts: Option<String>,
     pub last_ts: Option<String>,
 }
@@ -209,6 +213,8 @@ async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libs
         warm: Vec<i64>,
         seq_warm: Vec<i64>,
         prewarmed: i64,
+        burst_reqs: i64,
+        burst_colds: i64,
         errors: i64,
         samples: i64,
         first: Option<String>,
@@ -229,6 +235,14 @@ async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libs
         let acc = by_app.entry((app, target)).or_default();
         acc.samples += 1;
         total += 1;
+        if phase == "burst" && ok == 1 && errored == 0 {
+            acc.burst_reqs += 1;
+            if temp.as_deref() == Some("cold")
+                && uptime.unwrap_or(0) <= REAL_COLD_MAX_UPTIME_MS
+            {
+                acc.burst_colds += 1;
+            }
+        }
         if ok == 0 || errored == 1 {
             acc.errors += 1;
         } else if let Some(ms) = ms {
@@ -292,6 +306,8 @@ async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libs
                 warm_p50_ms: pct(warm_src, 0.50),
                 warm_p90_ms: pct(warm_src, 0.90),
                 warm_p95_ms: pct(warm_src, 0.95),
+                burst_requests: a.burst_reqs,
+                burst_colds: a.burst_colds,
                 first_ts: a.first,
                 last_ts: a.last,
             }

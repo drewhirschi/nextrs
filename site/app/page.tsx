@@ -111,10 +111,10 @@ function LiveColdstarts() {
         <table className="live-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
           <thead>
             <tr>
-              {["", "", "typical page load", "typical API route", "cold start"].map((h, i) => (
+              {["", "", "warm page load", "cold page load", "warm API route", "cold API route"].map((h, i) => (
                 <th key={i} style={{ textAlign: "left", padding: "6px 10px", opacity: 0.6, fontWeight: 600 }}>
                   {h}
-                  {i >= 2 ? <span style={{ fontWeight: 400 }}> · p50 / p90</span> : null}
+                  {i >= 2 ? <span style={{ fontWeight: 400, opacity: 0.7 }}> · p50/p90</span> : null}
                 </th>
               ))}
             </tr>
@@ -132,6 +132,7 @@ function LiveColdstarts() {
                   ) : null}
                   <td style={{ padding: "6px 10px", fontWeight: 700 }}>nextrs</td>
                   <MetricCell m={metric(c.rust, "page", "warm")} vs={metric(c.next, "page", "warm")} />
+                  <MetricCell m={metric(c.rust, "page", "cold")} vs={metric(c.next, "page", "cold")} />
                   <MetricCell m={metric(c.rust, "api", "warm")} vs={metric(c.next, "api", "warm")} />
                   <MetricCell m={metric(c.rust, "api", "cold")} vs={metric(c.next, "api", "cold")} />
                 </tr>
@@ -146,6 +147,7 @@ function LiveColdstarts() {
                     </td>
                     <td style={{ padding: "6px 10px" }}>Next.js</td>
                     <MetricCell m={metric(c.next, "page", "warm")} />
+                    <MetricCell m={metric(c.next, "page", "cold")} />
                     <MetricCell m={metric(c.next, "api", "warm")} />
                     <MetricCell m={metric(c.next, "api", "cold")} />
                   </tr>
@@ -156,13 +158,68 @@ function LiveColdstarts() {
           </tbody>
         </table>
       </div>
+      <h3 style={{ marginTop: 28, marginBottom: 4 }}>How often does a request pay a cold start?</h3>
+      <p className="live-note" style={{ opacity: 0.7, fontSize: 14, marginTop: 0, marginBottom: 8 }}>
+        Each probe fires 20 concurrent API requests. An instance that handles more of
+        the burst means fewer cold starts for the same traffic.
+      </p>
+      <div style={{ overflowX: "auto" }}>
+        <table className="live-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+          <thead>
+            <tr>
+              {["", "", "burst requests served", "cold starts paid", "requests per cold start"].map((h, i) => (
+                <th key={i} style={{ textAlign: "left", padding: "6px 10px", opacity: 0.6, fontWeight: 600 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {COMPARISONS.filter((c) => c.next).map((c) => {
+              const rows = [
+                { framework: "Next.js", a: pick(stats.apps, c.next, "api") },
+                { framework: "nextrs", a: pick(stats.apps, c.rust, "api") },
+              ];
+              const rpc = (a?: AppStats) =>
+                a && a.burst_colds > 0 ? a.burst_requests / a.burst_colds : null;
+              const jsRpc = rpc(rows[0].a);
+              return rows.map((r, i) => {
+                const mine = rpc(r.a);
+                const ratio =
+                  r.framework === "nextrs" && mine != null && jsRpc != null && jsRpc > 0
+                    ? mine / jsRpc
+                    : null;
+                return (
+                  <tr key={c.label + r.framework} style={{ borderTop: i === 0 ? "1px solid var(--line, #333)" : "none" }}>
+                    {i === 0 ? (
+                      <td rowSpan={2} style={{ padding: "8px 10px", verticalAlign: "top" }}>
+                        <b>{c.label}</b>
+                      </td>
+                    ) : null}
+                    <td style={{ padding: "6px 10px", fontWeight: r.framework === "nextrs" ? 700 : 400 }}>{r.framework}</td>
+                    <td style={{ padding: "6px 10px" }}>{r.a?.burst_requests ?? "—"}</td>
+                    <td style={{ padding: "6px 10px" }}>{r.a?.burst_colds ?? "—"}</td>
+                    <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
+                      {mine == null ? "—" : `1 per ${mine.toFixed(1)}`}
+                      {ratio != null && ratio > 1.15 ? (
+                        <span style={{ color: "var(--ok, #22c55e)", fontWeight: 600, fontSize: 12, marginLeft: 8 }}>
+                          {ratio.toFixed(1)}× fewer cold starts
+                        </span>
+                      ) : null}
+                    </td>
+                  </tr>
+                );
+              });
+            })}
+          </tbody>
+        </table>
+      </div>
       <p className="live-note" style={{ opacity: 0.6, fontSize: 13, marginTop: 10 }}>
         {stats.total_samples.toLocaleString()} samples and counting — real deployments
         on Vercel, probed at randomized times every ~2 hours, measured from the same
         place in the same minutes. Typical = sequential requests against a warm
-        instance (what a user clicking around experiences). Cold start = first
-        request on a fresh instance, measured on API routes (Next.js pages can’t
-        self-report instance temperature). Aggregated by <code>/api/coldstarts</code>,
+        instance (what a user clicking around experiences). Cold = first
+        request on a fresh instance. Next.js page functions can’t self-report
+        instance temperature, so their cold-page cells stay “—” (their API
+        routes can, and do). Aggregated by <code>/api/coldstarts</code>,
         the endpoint this page is calling right now.
       </p>
     </div>
