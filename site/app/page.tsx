@@ -49,9 +49,9 @@ const COMPARISONS: {
   rust: string;
   next?: string;
 }[] = [
-  { label: "This docs site", detail: "the site you\u2019re reading right now", rust: "nextrs-docs" },
-  { label: "A todo app", detail: "small \u00b7 typed API + React Query", rust: "react-todos", next: "nextjs-todos" },
-  { label: "A booking app", detail: "medium \u00b7 auth, Postgres, admin management", rust: "hhh-rs", next: "hhh-nextjs" },
+  { label: "This docs site", detail: "the site you’re reading right now", rust: "nextrs-docs" },
+  { label: "A todo app", detail: "small · typed API + React Query", rust: "react-todos", next: "nextjs-todos" },
+  { label: "A booking app", detail: "medium · auth, Postgres, admin management", rust: "hhh-rs", next: "hhh-nextjs" },
 ];
 
 type Metric = { p50: number | null; p90: number | null };
@@ -61,7 +61,7 @@ function pick(apps: AppStats[], app: string | undefined, target: string) {
 }
 
 function MetricCell({ m, vs }: { m: Metric | null; vs?: Metric | null }) {
-  if (!m || m.p50 == null) return <td style={{ padding: "6px 10px" }}>{"\u2014"}</td>;
+  if (!m || m.p50 == null) return <td style={{ padding: "6px 10px" }}>{"—"}</td>;
   let diff: React.ReactNode = null;
   if (vs?.p50 != null && vs.p50 > 0) {
     const pctDiff = Math.round(((vs.p50 - m.p50) / vs.p50) * 100);
@@ -81,7 +81,7 @@ function MetricCell({ m, vs }: { m: Metric | null; vs?: Metric | null }) {
   }
   return (
     <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
-      {m.p50} / {m.p90 ?? "\u2014"} ms{diff}
+      {m.p50} / {m.p90 ?? "—"} ms{diff}
     </td>
   );
 }
@@ -91,10 +91,10 @@ function LiveColdstarts() {
     query: { refetchInterval: 60_000 },
   });
   const stats = data && data.status === 200 ? data.data : undefined;
-  if (isLoading) return <p className="live-note">Loading live numbers\u2026</p>;
+  if (isLoading) return <p className="live-note">Loading live numbers…</p>;
   if (isError || !stats) return <p className="live-note">Telemetry temporarily unavailable.</p>;
   if (stats.total_samples === 0)
-    return <p className="live-note">Collecting first samples \u2014 check back shortly.</p>;
+    return <p className="live-note">Collecting first samples — check back shortly.</p>;
 
   const metric = (app: string | undefined, target: string, kind: "warm" | "cold"): Metric | null => {
     const a = pick(stats.apps, app, target);
@@ -114,7 +114,7 @@ function LiveColdstarts() {
               {["", "", "typical page load", "typical API route", "cold start"].map((h, i) => (
                 <th key={i} style={{ textAlign: "left", padding: "6px 10px", opacity: 0.6, fontWeight: 600 }}>
                   {h}
-                  {i >= 2 ? <span style={{ fontWeight: 400 }}> \u00b7 p50 / p90</span> : null}
+                  {i >= 2 ? <span style={{ fontWeight: 400 }}> · p50 / p90</span> : null}
                 </th>
               ))}
             </tr>
@@ -157,11 +157,11 @@ function LiveColdstarts() {
         </table>
       </div>
       <p className="live-note" style={{ opacity: 0.6, fontSize: 13, marginTop: 10 }}>
-        {stats.total_samples.toLocaleString()} samples and counting \u2014 real deployments
+        {stats.total_samples.toLocaleString()} samples and counting — real deployments
         on Vercel, probed at randomized times every ~2 hours, measured from the same
         place in the same minutes. Typical = sequential requests against a warm
         instance (what a user clicking around experiences). Cold start = first
-        request on a fresh instance, measured on API routes (Next.js pages can\u2019t
+        request on a fresh instance, measured on API routes (Next.js pages can’t
         self-report instance temperature). Aggregated by <code>/api/coldstarts</code>,
         the endpoint this page is calling right now.
       </p>
