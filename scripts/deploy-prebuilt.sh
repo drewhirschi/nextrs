@@ -19,15 +19,27 @@ MODE="${2:---prod}"
 [ "$MODE" = "--preview" ] && PROD_FLAGS=() || PROD_FLAGS=(--prod)
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 
-# Monorepo rule (learned the hard way): when the Vercel project sets a
-# rootDirectory, `vercel build` must run from the REPO root, or the CLI
-# never engages the app's builders and falls back to static-only output.
-# The app dir holds the canonical link; mirror it to the root for the build.
-if [ -f "$ROOT/$APP/.vercel/project.json" ]; then
+# Where to run `vercel build` depends on the project's rootDirectory setting
+# (both learned the hard way — the wrong dir silently falls back to
+# static-only output, no function, nothing to deploy):
+#   - rootDirectory SET (e.g. nextrs-docs → "site"): build from the REPO
+#     root; the CLI descends into the root directory itself.
+#   - rootDirectory UNSET (e.g. nextrs-react-todos): the app dir IS the
+#     project; build from there.
+LINK="$ROOT/$APP/.vercel/project.json"
+[ -f "$LINK" ] || { echo "ERROR: $APP is not linked (run vercel link in it)" >&2; exit 1; }
+if python3 -c "import json,sys; sys.exit(0 if json.load(open('$LINK')).get('settings',{}).get('rootDirectory') else 1)"; then
   mkdir -p "$ROOT/.vercel"
-  cp "$ROOT/$APP/.vercel/project.json" "$ROOT/.vercel/project.json"
+  cp "$LINK" "$ROOT/.vercel/project.json"
+  cd "$ROOT"
+else
+  cd "$ROOT/$APP"
+  # Workspace members: cargo's default target dir lives at the WORKSPACE
+  # root, which is outside this upload root — the function's filePathMap
+  # would point at ../../target and the binary would silently not upload
+  # (deployment errors with no message). Keep the build inside the app.
+  export CARGO_TARGET_DIR="$PWD/target-vercel"
 fi
-cd "$ROOT"
 
 echo "==> vercel pull (project settings + env)"
 vercel pull --yes --environment=production > /dev/null

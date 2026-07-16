@@ -42,55 +42,102 @@ function fmtMs(v: number | null | undefined) {
   return v == null ? "—" : `${v} ms`;
 }
 
+const COMPARISONS: {
+  label: string;
+  detail: string;
+  rust: string;
+  next?: string;
+}[] = [
+  { label: "This docs site", detail: "the site you\u2019re reading right now", rust: "nextrs-docs" },
+  { label: "A todo app", detail: "small \u00b7 typed API + React Query", rust: "react-todos", next: "nextjs-todos" },
+  { label: "A booking app", detail: "medium \u00b7 auth, Postgres, admin management", rust: "hhh-rs", next: "hhh-nextjs" },
+];
+
+function pick(apps: AppStats[], app: string, target: string) {
+  return apps.find((a) => a.app === app && a.target === target);
+}
+
+function cell(v: number | null | undefined) {
+  return v == null ? "\u2014" : `${v} ms`;
+}
+
 function LiveColdstarts() {
   const { data, isLoading, isError } = useGetColdstartStats({
     query: { refetchInterval: 60_000 },
   });
   const stats = data && data.status === 200 ? data.data : undefined;
-  if (isLoading) return <p className="live-note">Loading live numbers…</p>;
+  if (isLoading) return <p className="live-note">Loading live numbers\u2026</p>;
   if (isError || !stats) return <p className="live-note">Telemetry temporarily unavailable.</p>;
   if (stats.total_samples === 0)
-    return <p className="live-note">Collecting first samples — check back shortly.</p>;
-  const rows = stats.apps.filter((a: AppStats) => a.target !== "" && a.cold + a.warm > 0);
+    return <p className="live-note">Collecting first samples \u2014 check back shortly.</p>;
+
+  const rows: {
+    group: string;
+    detail: string;
+    framework: string;
+    isRust: boolean;
+    page: number | null | undefined;
+    api: number | null | undefined;
+    cold: number | null | undefined;
+  }[] = [];
+  for (const c of COMPARISONS) {
+    for (const [framework, app] of [["nextrs", c.rust], ["Next.js", c.next]] as const) {
+      if (!app) continue;
+      const pageStats = pick(stats.apps, app, "page");
+      const apiStats = pick(stats.apps, app, "api");
+      rows.push({
+        group: c.label,
+        detail: c.detail,
+        framework,
+        isRust: framework === "nextrs",
+        page: pageStats?.warm_p50_ms as number | null,
+        api: apiStats?.warm_p50_ms as number | null,
+        cold: (apiStats?.cold ? apiStats.cold_p50_ms : null) as number | null,
+      });
+    }
+  }
+
   return (
     <div>
-      <div className="stats-row" style={{ display: "flex", gap: 28, margin: "18px 0" }}>
-        <Stat value={String(rows.reduce((n: number, a: AppStats) => n + a.samples, 0))} label="samples collected" />
-        <Stat value={String(rows.reduce((n: number, a: AppStats) => n + a.cold, 0))} label="cold starts observed" />
-        <Stat value={String(rows.reduce((n: number, a: AppStats) => n + a.warm, 0))} label="warm responses" />
-      </div>
-      {rows.length > 0 && (
-        <div style={{ overflowX: "auto" }}>
-          <table className="live-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-            <thead>
-              <tr>
-                {["app", "target", "cold p50", "cold p95", "warm p50", "warm p95"].map((h) => (
-                  <th key={h} style={{ textAlign: "left", padding: "6px 10px", opacity: 0.6 }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {rows.map((a: AppStats) => (
-                <tr key={a.app + a.target} style={{ borderTop: "1px solid var(--line, #333)" }}>
-                  <td style={{ padding: "6px 10px" }}>{a.app}</td>
-                  <td style={{ padding: "6px 10px" }}>{a.target}</td>
-                  <td style={{ padding: "6px 10px" }}>{fmtMs(a.cold_p50_ms as number | null)}</td>
-                  <td style={{ padding: "6px 10px" }}>{fmtMs(a.cold_p95_ms as number | null)}</td>
-                  <td style={{ padding: "6px 10px" }}>{fmtMs(a.warm_p50_ms as number | null)}</td>
-                  <td style={{ padding: "6px 10px" }}>{fmtMs(a.warm_p95_ms as number | null)}</td>
-                </tr>
+      <div style={{ overflowX: "auto" }}>
+        <table className="live-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
+          <thead>
+            <tr>
+              {["", "", "typical page load", "typical API route", "cold start"].map((h, i) => (
+                <th key={i} style={{ textAlign: "left", padding: "6px 10px", opacity: 0.6, fontWeight: 600 }}>{h}</th>
               ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => {
+              const firstOfGroup = i === 0 || rows[i - 1].group !== r.group;
+              const groupSize = rows.filter((x) => x.group === r.group).length;
+              return (
+                <tr key={r.group + r.framework} style={{ borderTop: firstOfGroup ? "1px solid var(--line, #333)" : "none" }}>
+                  {firstOfGroup ? (
+                    <td rowSpan={groupSize} style={{ padding: "8px 10px", verticalAlign: "top" }}>
+                      <b>{r.group}</b>
+                      <div style={{ opacity: 0.55, fontSize: 12 }}>{r.detail}</div>
+                    </td>
+                  ) : null}
+                  <td style={{ padding: "6px 10px", fontWeight: r.isRust ? 700 : 400 }}>{r.framework}</td>
+                  <td style={{ padding: "6px 10px" }}>{cell(r.page)}</td>
+                  <td style={{ padding: "6px 10px" }}>{cell(r.api)}</td>
+                  <td style={{ padding: "6px 10px" }}>{cell(r.cold)}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
       <p className="live-note" style={{ opacity: 0.6, fontSize: 13, marginTop: 10 }}>
-        Cold = the response that paid its instance&apos;s first request
-        (<code>x-nextrs-cold</code>) on an instance under 10s old — first
-        requests landing on pre-provisioned idle instances are counted as warm,
-        not cold. Bursts of 20 concurrent requests per target, every ~2 h,
-        stored in Turso, aggregated by <code>/api/coldstarts</code> — the
-        endpoint this page is calling right now.
+        {stats.total_samples.toLocaleString()} samples and counting \u2014 real deployments
+        on Vercel, probed at randomized times every ~2 hours, measured from the same
+        place in the same minutes. Typical = median sequential request against a warm
+        instance (what a user clicking around experiences). Cold start = median first
+        request on a fresh instance, measured on API routes (Next.js pages can\u2019t
+        self-report instance temperature). Aggregated by <code>/api/coldstarts</code>,
+        the endpoint this page is calling right now.
       </p>
     </div>
   );

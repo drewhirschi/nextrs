@@ -248,6 +248,14 @@ async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libs
                     }
                     acc.warm.push(ms);
                 }
+                // Next.js pages can't stamp instance-temperature headers, so
+                // their samples come back "unknown". Sequential-phase hits
+                // land on burst-warmed instances, so their timings ARE the
+                // browser-like "typical" numbers — count them as warm.
+                Some("unknown") | None if phase == "seq" => {
+                    acc.seq_warm.push(ms);
+                    acc.warm.push(ms);
+                }
                 _ => {}
             }
         }
