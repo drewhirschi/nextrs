@@ -277,8 +277,8 @@ export default function Home() {
 ├─ page.tsx        `}
                 <span className="c-dim">→ /            (React, this page)</span>
                 {`
-├─ layout.html     `}
-                <span className="c-dim">→ shell + nav</span>
+├─ layout.tsx      `}
+                <span className="c-dim">→ shell + nav (stays mounted)</span>
                 {`
 ├─ `}
                 <span className="c-fn">prefetch.rs</span>

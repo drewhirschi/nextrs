@@ -264,8 +264,12 @@ pre {
 }
 
 .dot {
+  /* One span paints all three traffic lights: itself + two box-shadow
+     copies at 16px/32px. Reserve their width or they overlap the title. */
   width: 10px;
   height: 10px;
+  margin-right: 32px;
+  flex-shrink: 0;
   border-radius: 999px;
   background: var(--accent-2);
   box-shadow: 16px 0 var(--accent), 32px 0 var(--accent-3);
