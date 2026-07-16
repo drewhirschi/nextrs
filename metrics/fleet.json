@@ -1,5 +1,5 @@
 {
-  "comment": "Fleet registry for the cold-start pinger (.github/workflows/coldstart-pinger.yml). Per run, each app gets a concurrent burst of `burst` requests to its `page` path and `burst` to its `api` path \u2014 one batch captures both the cold start (the request that boots an instance) and warm behavior (the rest). Apps with `health: true` run nextrs >= 0.3.7, which stamps x-nextrs-cold/-boot-id/-uptime-ms on EVERY response, so page and api samples classify identically. Apps with `health: false` predate the headers; timing-only until they upgrade.",
+  "comment": "Fleet registry for the cold-start pinger (.github/workflows/coldstart-pinger.yml). Per run, each app gets a concurrent burst of `burst` requests to its `page` path and `burst` to its `api` path \u2014 one batch captures both the cold start (the request that boots an instance) and warm behavior (the rest). Apps with `health: true` run nextrs >= 0.3.7, which stamps x-nextrs-cold/-boot-id/-uptime-ms on EVERY response, so page and api samples classify identically. Apps with `health: false` predate the headers; timing-only until they upgrade. Apps come in Rust/Next.js pairs where a JS baseline exists (hhh-rs/hhh-nextjs, react-todos/nextjs-todos) \u2014 that pairing is the headline comparison.",
   "burst": 20,
   "apps": [
     {
@@ -25,11 +25,27 @@
       "note": "page 303s to auth \u2014 page samples are timing-only by status"
     },
     {
-      "name": "hhh-next",
+      "name": "hhh-rs",
       "url": "https://hhh-rs.vercel.app",
       "health": true,
       "page": "/",
       "api": "/__nx/health"
+    },
+    {
+      "name": "hhh-nextjs",
+      "url": "https://hhh-next.vercel.app",
+      "health": true,
+      "page": "/",
+      "api": "/api/health",
+      "note": "Next.js baseline of hhh (bench branch) \u2014 the Rust/JS comparison pair for hhh-rs"
+    },
+    {
+      "name": "nextjs-todos",
+      "url": "https://bench-nextjs-todos.vercel.app",
+      "health": true,
+      "page": "/",
+      "api": "/api/health",
+      "note": "Next.js todos comparator (benchmarks/apps/nextjs) \u2014 the pair for react-todos"
     }
   ]
 }
