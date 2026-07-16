@@ -124,11 +124,22 @@
           "cold",
           "warm",
           "prewarmed",
-          "errors"
+          "errors",
+          "burst_requests",
+          "burst_colds"
         ],
         "properties": {
           "app": {
             "type": "string"
+          },
+          "burst_colds": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "burst_requests": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Burst-phase totals (the concurrency probe): how many requests the\napp's instances absorbed, and how many required a fresh instance."
           },
           "cold": {
             "type": "integer",
