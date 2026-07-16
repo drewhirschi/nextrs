@@ -1,6 +1,7 @@
 // The docs-site landing page — a React (page.tsx) route, mounted client-side
 // into __nx_root__ by the bundle nextrs generates. This page dogfoods the
 // React track; the docs pages under /docs stay server-rendered.
+import * as React from "react";
 import { NextrsMark, useGetColdstartStats, type AppStats } from "@site/client";
 
 const PREFETCH_RS = `// app/prefetch.rs — runs on the server, streaming
@@ -53,12 +54,36 @@ const COMPARISONS: {
   { label: "A booking app", detail: "medium \u00b7 auth, Postgres, admin management", rust: "hhh-rs", next: "hhh-nextjs" },
 ];
 
-function pick(apps: AppStats[], app: string, target: string) {
-  return apps.find((a) => a.app === app && a.target === target);
+type Metric = { p50: number | null; p90: number | null };
+
+function pick(apps: AppStats[], app: string | undefined, target: string) {
+  return app ? apps.find((a) => a.app === app && a.target === target) : undefined;
 }
 
-function cell(v: number | null | undefined) {
-  return v == null ? "\u2014" : `${v} ms`;
+function MetricCell({ m, vs }: { m: Metric | null; vs?: Metric | null }) {
+  if (!m || m.p50 == null) return <td style={{ padding: "6px 10px" }}>{"\u2014"}</td>;
+  let diff: React.ReactNode = null;
+  if (vs?.p50 != null && vs.p50 > 0) {
+    const pctDiff = Math.round(((vs.p50 - m.p50) / vs.p50) * 100);
+    if (pctDiff > 0) {
+      diff = (
+        <span style={{ color: "var(--ok, #22c55e)", fontWeight: 600, fontSize: 12, marginLeft: 8 }}>
+          {pctDiff}% faster
+        </span>
+      );
+    } else if (pctDiff < 0) {
+      diff = (
+        <span style={{ color: "var(--warn, #f59e0b)", fontWeight: 600, fontSize: 12, marginLeft: 8 }}>
+          {-pctDiff}% slower
+        </span>
+      );
+    }
+  }
+  return (
+    <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
+      {m.p50} / {m.p90 ?? "\u2014"} ms{diff}
+    </td>
+  );
 }
 
 function LiveColdstarts() {
@@ -71,31 +96,14 @@ function LiveColdstarts() {
   if (stats.total_samples === 0)
     return <p className="live-note">Collecting first samples \u2014 check back shortly.</p>;
 
-  const rows: {
-    group: string;
-    detail: string;
-    framework: string;
-    isRust: boolean;
-    page: number | null | undefined;
-    api: number | null | undefined;
-    cold: number | null | undefined;
-  }[] = [];
-  for (const c of COMPARISONS) {
-    for (const [framework, app] of [["nextrs", c.rust], ["Next.js", c.next]] as const) {
-      if (!app) continue;
-      const pageStats = pick(stats.apps, app, "page");
-      const apiStats = pick(stats.apps, app, "api");
-      rows.push({
-        group: c.label,
-        detail: c.detail,
-        framework,
-        isRust: framework === "nextrs",
-        page: pageStats?.warm_p50_ms as number | null,
-        api: apiStats?.warm_p50_ms as number | null,
-        cold: (apiStats?.cold ? apiStats.cold_p50_ms : null) as number | null,
-      });
-    }
-  }
+  const metric = (app: string | undefined, target: string, kind: "warm" | "cold"): Metric | null => {
+    const a = pick(stats.apps, app, target);
+    if (!a) return null;
+    if (kind === "cold" && !a.cold) return null;
+    return kind === "warm"
+      ? { p50: (a.warm_p50_ms ?? null) as number | null, p90: (a.warm_p90_ms ?? null) as number | null }
+      : { p50: (a.cold_p50_ms ?? null) as number | null, p90: (a.cold_p90_ms ?? null) as number | null };
+  };
 
   return (
     <div>
@@ -104,27 +112,45 @@ function LiveColdstarts() {
           <thead>
             <tr>
               {["", "", "typical page load", "typical API route", "cold start"].map((h, i) => (
-                <th key={i} style={{ textAlign: "left", padding: "6px 10px", opacity: 0.6, fontWeight: 600 }}>{h}</th>
+                <th key={i} style={{ textAlign: "left", padding: "6px 10px", opacity: 0.6, fontWeight: 600 }}>
+                  {h}
+                  {i >= 2 ? <span style={{ fontWeight: 400 }}> \u00b7 p50 / p90</span> : null}
+                </th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {rows.map((r, i) => {
-              const firstOfGroup = i === 0 || rows[i - 1].group !== r.group;
-              const groupSize = rows.filter((x) => x.group === r.group).length;
-              return (
-                <tr key={r.group + r.framework} style={{ borderTop: firstOfGroup ? "1px solid var(--line, #333)" : "none" }}>
-                  {firstOfGroup ? (
-                    <td rowSpan={groupSize} style={{ padding: "8px 10px", verticalAlign: "top" }}>
-                      <b>{r.group}</b>
-                      <div style={{ opacity: 0.55, fontSize: 12 }}>{r.detail}</div>
+            {COMPARISONS.map((c) => {
+              const hasPair = !!c.next;
+              const rustRow = (
+                <tr key={c.label + "rs"} style={{ borderTop: hasPair ? "none" : "1px solid var(--line, #333)" }}>
+                  {!hasPair ? (
+                    <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
+                      <b>{c.label}</b>
+                      <div style={{ opacity: 0.55, fontSize: 12 }}>{c.detail}</div>
                     </td>
                   ) : null}
-                  <td style={{ padding: "6px 10px", fontWeight: r.isRust ? 700 : 400 }}>{r.framework}</td>
-                  <td style={{ padding: "6px 10px" }}>{cell(r.page)}</td>
-                  <td style={{ padding: "6px 10px" }}>{cell(r.api)}</td>
-                  <td style={{ padding: "6px 10px" }}>{cell(r.cold)}</td>
+                  <td style={{ padding: "6px 10px", fontWeight: 700 }}>nextrs</td>
+                  <MetricCell m={metric(c.rust, "page", "warm")} vs={metric(c.next, "page", "warm")} />
+                  <MetricCell m={metric(c.rust, "api", "warm")} vs={metric(c.next, "api", "warm")} />
+                  <MetricCell m={metric(c.rust, "api", "cold")} vs={metric(c.next, "api", "cold")} />
                 </tr>
+              );
+              if (!hasPair) return rustRow;
+              return (
+                <React.Fragment key={c.label}>
+                  <tr style={{ borderTop: "1px solid var(--line, #333)" }}>
+                    <td rowSpan={2} style={{ padding: "8px 10px", verticalAlign: "top" }}>
+                      <b>{c.label}</b>
+                      <div style={{ opacity: 0.55, fontSize: 12 }}>{c.detail}</div>
+                    </td>
+                    <td style={{ padding: "6px 10px" }}>Next.js</td>
+                    <MetricCell m={metric(c.next, "page", "warm")} />
+                    <MetricCell m={metric(c.next, "api", "warm")} />
+                    <MetricCell m={metric(c.next, "api", "cold")} />
+                  </tr>
+                  {rustRow}
+                </React.Fragment>
               );
             })}
           </tbody>
@@ -133,8 +159,8 @@ function LiveColdstarts() {
       <p className="live-note" style={{ opacity: 0.6, fontSize: 13, marginTop: 10 }}>
         {stats.total_samples.toLocaleString()} samples and counting \u2014 real deployments
         on Vercel, probed at randomized times every ~2 hours, measured from the same
-        place in the same minutes. Typical = median sequential request against a warm
-        instance (what a user clicking around experiences). Cold start = median first
+        place in the same minutes. Typical = sequential requests against a warm
+        instance (what a user clicking around experiences). Cold start = first
         request on a fresh instance, measured on API routes (Next.js pages can\u2019t
         self-report instance temperature). Aggregated by <code>/api/coldstarts</code>,
         the endpoint this page is calling right now.

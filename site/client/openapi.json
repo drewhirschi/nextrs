@@ -141,6 +141,13 @@
             ],
             "format": "int64"
           },
+          "cold_p90_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
           "cold_p95_ms": {
             "type": [
               "integer",
@@ -182,6 +189,13 @@
             "format": "int64"
           },
           "warm_p50_ms": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64"
+          },
+          "warm_p90_ms": {
             "type": [
               "integer",
               "null"
