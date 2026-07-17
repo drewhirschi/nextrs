@@ -177,7 +177,7 @@ crates/            the framework + tooling crates
   src/docs.rs           markdown docs + llms.txt pipeline (feature-gated `build`)
   src/bundle.rs         embedded rolldown bundling of .tsx pages → /dist (feature-gated `tsx`)
  nextrs-macros/    proc-macro crate (paired with nextrs)
- create-nextrs-app/ React-first app scaffolder (`create-nextrs-app`)
+ create-nextrs-app/ React-first app scaffolder (fresh apps, or `--adopt` into an existing repo)
  cargo-nextrs-dev/  the `cargo nextrs-dev` watcher generated apps (and site) use
 examples/react-todos  React .tsx + prefetch.rs + typed client demo app
 site/              self-contained docs/demo app — dev binary + Vercel deploy
@@ -219,7 +219,7 @@ cargo test --workspace --all-features
 - Typed React Query client generated from the build-time OpenAPI doc (orval) ✓
 - Native Speculation Rules navigation prefetch ✓
 - Build-time codegen (no hand-wired `#[path]` mods or `RouteEntry` constructors) ✓
-- `create-nextrs-app` scaffolder for React-first apps ✓
+- `create-nextrs-app` scaffolder for React-first apps — fresh apps or `--adopt` into an existing repo (skeleton only, never overwrites), both shipping an `AGENTS.md` agent contract ✓
 
 Future work lives in [ROADMAP.md](ROADMAP.md), including React HMR/Fast Refresh.
 

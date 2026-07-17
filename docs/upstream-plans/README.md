@@ -26,4 +26,5 @@ user docs.
 - [Static JS caching](static-js-caching.md)
 - [Build times and deploy reliability](build-times-and-deploy-reliability.md)
 - [Hover preload through the router, not /__nx/prefetch](hover-preload-route.md)
+- [Porting has no paved road](porting-paved-road.md)
 - [PrefetchConfig → SpeculationConfig rename, default off, React-route scoping](speculation-config-rename.md)
