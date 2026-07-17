@@ -2,7 +2,7 @@
 
 - **Reported-in:** a real-world port (hand-assembled, app unnamed)
 - **Date:** 2026-07-16
-- **Status:** open   <!-- open | fixed in <commit> | wontfix -->
+- **Status:** fixed in b40bb33 (docs guide) + 7bf1975 (AGENTS.md) + d7598fd (--adopt)
 
 ## Problem
 
