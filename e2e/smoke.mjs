@@ -18,13 +18,9 @@
 
 import { chromium } from "playwright";
 import { checkRoute } from "./check-route.mjs";
-import { spawn } from "node:child_process";
+import { repoRoot, startApp } from "./app-server.mjs";
 import { readFileSync, readdirSync, statSync } from "node:fs";
-import { createServer } from "node:net";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
-
-const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const config = JSON.parse(readFileSync(path.join(repoRoot, "e2e/apps.json"), "utf8"));
 const only = process.argv.slice(2);
 const apps = config.apps.filter((a) => only.length === 0 || only.includes(a.name));
@@ -57,50 +53,13 @@ function discoverRoutes(app) {
   return routes;
 }
 
-function freePort() {
-  return new Promise((resolve, reject) => {
-    const srv = createServer();
-    srv.listen(0, () => {
-      const { port } = srv.address();
-      srv.close(() => resolve(port));
-    });
-    srv.on("error", reject);
-  });
-}
-
-async function waitForServer(url, child, timeoutMs = 15000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null) throw new Error(`server exited early (code ${child.exitCode})`);
-    try {
-      await fetch(url, { signal: AbortSignal.timeout(1000) });
-      return;
-    } catch {
-      await new Promise((r) => setTimeout(r, 150));
-    }
-  }
-  throw new Error(`server at ${url} not up after ${timeoutMs}ms`);
-}
-
 async function smokeApp(browser, app) {
   const routes = discoverRoutes(app);
-  const port = await freePort();
-  const base = `http://127.0.0.1:${port}`;
-  console.log(`\n=== ${app.name} on :${port} — routes: ${routes.join(" ")}`);
-
-  const bin = path.join(repoRoot, "target/debug", app.binary);
-  const child = spawn(bin, {
-    cwd: path.join(repoRoot, app.appDir, ".."),
-    env: { ...process.env, PORT: String(port) },
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  let serverLog = "";
-  child.stdout.on("data", (d) => (serverLog += d));
-  child.stderr.on("data", (d) => (serverLog += d));
+  const { base, child, logTail } = await startApp(app);
+  console.log(`\n=== ${app.name} on ${base} — routes: ${routes.join(" ")}`);
 
   const failures = [];
   try {
-    await waitForServer(base, child);
     for (const route of routes) {
       const problems = await checkRoute(browser, base, route);
       if (problems.length) {
@@ -114,9 +73,9 @@ async function smokeApp(browser, app) {
   } finally {
     child.kill("SIGTERM");
   }
-  if (failures.length && serverLog) {
+  if (failures.length) {
     console.log(`  --- ${app.name} server log tail ---`);
-    console.log(serverLog.split("\n").slice(-15).join("\n"));
+    console.log(logTail());
   }
   return failures;
 }
