@@ -39,7 +39,7 @@ pub struct DiscoveredRoute {
     pub route: Option<PathBuf>,
     /// `prefetch.rs` (legacy name `props.rs`) — server data for a `page.tsx`
     /// (Rust-only; requires the page slot to be `.tsx`, enforced by codegen).
-    pub props: Option<PathBuf>,
+    pub prefetch: Option<PathBuf>,
 }
 
 /// Converts a directory name to a URL segment.
@@ -121,7 +121,7 @@ fn scan_dir(app_root: &Path, current: &Path, routes: &mut BTreeMap<String, Disco
     // `fn prefetch`) — the name reflects what it does (seed/prefetch the query
     // cache, not pass React props). Both are supported; the entry fn is chosen by
     // filename in build.rs codegen. `props.rs` wins if both somehow coexist.
-    let props =
+    let prefetch =
         optional_path(current, "props.rs").or_else(|| optional_path(current, "prefetch.rs"));
 
     if page.exists()
@@ -130,7 +130,7 @@ fn scan_dir(app_root: &Path, current: &Path, routes: &mut BTreeMap<String, Disco
         || not_found.exists()
         || middleware.is_some()
         || route.is_some()
-        || props.is_some()
+        || prefetch.is_some()
     {
         routes.insert(
             url_path.clone(),
@@ -143,7 +143,7 @@ fn scan_dir(app_root: &Path, current: &Path, routes: &mut BTreeMap<String, Disco
                 not_found,
                 middleware,
                 route,
-                props,
+                prefetch,
             },
         );
     }
@@ -242,7 +242,7 @@ mod tests {
         assert!(routes[0].loading.tsx.is_some());
         assert_eq!(routes[1].url_path, "/dashboard");
         assert!(routes[1].page.tsx.is_some());
-        assert!(routes[1].props.is_some());
+        assert!(routes[1].prefetch.is_some());
         assert!(routes[1].loading.tsx.is_some());
     }
 
@@ -391,7 +391,7 @@ mod tests {
         assert!(r.page.exists());
         assert!(r.page.tsx.is_some());
         assert!(r.page.rs.is_none());
-        assert!(r.props.is_some());
+        assert!(r.prefetch.is_some());
     }
 
     #[test]
@@ -401,7 +401,7 @@ mod tests {
         let routes = discover_routes(tmp.path());
         assert_eq!(routes.len(), 1);
         assert!(routes[0].page.tsx.is_some());
-        assert!(routes[0].props.is_none());
+        assert!(routes[0].prefetch.is_none());
     }
 
     #[test]

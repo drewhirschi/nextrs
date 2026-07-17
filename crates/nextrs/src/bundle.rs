@@ -1028,7 +1028,7 @@ fn app_shell_entry(routes: &[DiscoveredRoute], client_helper: &Path) -> String {
             out,
             "const route_{i} = createRoute({{ getParentRoute: () => {parent}, path: {path:?}, component: nxLeaf(() => import({page_path:?}))"
         );
-        if pg.props.is_some() {
+        if pg.prefetch.is_some() {
             let _ = write!(
                 out,
                 ", loader: ({{ location }}: {{ location: {{ href: string }} }}) => nxPrefetch(location.href)"

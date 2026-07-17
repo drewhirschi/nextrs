@@ -13,8 +13,9 @@
 //! ```
 //!
 //! Routes with dynamic segments also get params passed to their `prefetch.rs`:
-//! `pub async fn props(req, params: nextrs::Params) -> QuerySeed`. Paramless
-//! routes keep the one-argument `props(req)` form.
+//! `pub async fn prefetch(req, params: nextrs::Params) -> QuerySeed`. Paramless
+//! routes keep the one-argument `prefetch(req)` form. (The legacy `props.rs`
+//! convention exports `fn props` with the same shapes.)
 
 use axum::extract::{FromRequestParts, RawPathParams, Request};
 use std::collections::BTreeMap;
