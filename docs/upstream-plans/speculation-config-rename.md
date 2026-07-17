@@ -2,7 +2,7 @@
 
 - **Reported-in:** hand-assembled nextrs port (agent session)
 - **Date:** 2026-07-16
-- **Status:** open
+- **Status:** fixed in ba82894 (rename + default-off + React-route scoping; internal props rename in 3b2fe1c, site opt-in in ad612e6)
 
 ## Problem
 

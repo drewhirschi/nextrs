@@ -59,7 +59,7 @@ which only fire inside a subtree you already declared.
   `not-found.{rs,html,tsx}` is a discovery slot; the router installs a fallback
   that picks the deepest-ancestor not-found of the unmatched path, wraps it in
   that segment's layouts, and responds `404`. Works under `build_router`,
-  `build_router_with_prefetch`, and `build_router_with_public` (ServeDir miss →
+  `build_router_with_speculation`, and `build_router_with_public` (ServeDir miss →
   not-found). Tests across discovery/conventions/router/build/bundle. **Remaining:**
   no server-side `notFound()` escape hatch (trigger the surface from inside a
   page).
@@ -140,7 +140,7 @@ convention users most expect to "just work."
 
 - **Prefetch injection on the 404 surface.** `main`'s router injects
   speculation-rules into every full-document page response; the re-implementation
-  threads the same `PrefetchConfig` into `render_not_found` so a 404 wrapped in a
+  threads the same speculation config (now `SpeculationConfig`) into `render_not_found` so a 404 wrapped in a
   layout with a `<head>` behaves like any other full document. (The original
   predated the prefetch feature and didn't do this.)
 - **tsx shell reuses `tsx_page_shell`.** The original emitted a minimal mount-div
