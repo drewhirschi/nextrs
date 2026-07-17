@@ -26,7 +26,19 @@ async fn main() {
     // shipped copy of public/.
     let public_dir = std::env::var("NEXTRS_PUBLIC_DIR")
         .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/public").to_string());
-    let app = nextrs::router::build_router_with_public(generated_registry(), &public_dir)
+    // Document-level speculation is off by default (0.3.8); the docs pages
+    // (/docs, /docs/{slug}) are server-rendered — no app shell there — so we
+    // opt in: same-origin links get browser-native prefetch on hover, keeping
+    // docs navigation snappy. React app-shell routes (the / landing) are
+    // automatically excluded from the injected rules.
+    let app = nextrs::router::build_router_with_public_and_speculation(
+        generated_registry(),
+        &public_dir,
+        nextrs::SpeculationConfig {
+            mode: nextrs::SpeculationMode::Prefetch,
+            eagerness: nextrs::Eagerness::Moderate,
+        },
+    )
         // Serve the OpenAPI document at /openapi.json. It's built from the
         // #[utoipa::path]-annotated route.rs handlers and drives the generated
         // TypeScript / React Query client (see site/client/).
