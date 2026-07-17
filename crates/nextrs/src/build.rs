@@ -489,7 +489,7 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
                 )
             );
         }
-        if route.props.is_some() && route.page.tsx.is_none() {
+        if route.prefetch.is_some() && route.page.tsx.is_none() {
             let _ = writeln!(
                 out,
                 "::core::compile_error!({:?});",
@@ -521,8 +521,8 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
         if let Some(p) = &route.route {
             emit_path_mod(&mut out, &mod_name(i, "route"), p);
         }
-        if let Some(p) = &route.props {
-            emit_path_mod(&mut out, &mod_name(i, "props"), p);
+        if let Some(p) = &route.prefetch {
+            emit_path_mod(&mut out, &mod_name(i, "prefetch"), p);
         }
     }
 
@@ -542,6 +542,20 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
         emit_methods(&mut out, i, route);
         emit_prefetch_slot(&mut out, i, route);
         out.push_str("    });\n");
+    }
+
+    // React app-shell routes (page.tsx — same predicate as the shell's
+    // NX_APP_ROUTES in bundle.rs): recorded so the router excludes them from
+    // any injected Speculation Rules. The shell soft-navigates these URLs, so
+    // a speculatively fetched document for them would never be used.
+    for route in routes.iter() {
+        if route.page.tsx.is_some() {
+            let _ = writeln!(
+                out,
+                "    registry.mark_react_page({:?});",
+                route.url_path
+            );
+        }
     }
 
     for (i, route) in routes.iter().enumerate() {
@@ -678,27 +692,27 @@ fn client_status(routes: &[DiscoveredRoute]) -> Vec<ClientStatus> {
     out
 }
 
-fn has_props_backed_tsx_page(route: &DiscoveredRoute) -> bool {
-    route.page.tsx.is_some() && route.props.is_some()
+fn has_prefetch_backed_tsx_page(route: &DiscoveredRoute) -> bool {
+    route.page.tsx.is_some() && route.prefetch.is_some()
 }
 
-fn loading_tsx_applies_to_any_props_route(
+fn loading_tsx_applies_to_any_prefetch_route(
     routes: &[DiscoveredRoute],
     loading_route: &DiscoveredRoute,
 ) -> bool {
     routes.iter().any(|route| {
-        has_props_backed_tsx_page(route)
+        has_prefetch_backed_tsx_page(route)
             && entry_applies_to_path(&loading_route.url_path, &route.url_path)
     })
 }
 
-/// Warn when a `loading.tsx` cannot affect any props-backed React route. A
+/// Warn when a `loading.tsx` cannot affect any prefetch-backed React route. A
 /// parent `app/loading.tsx` is valid when any descendant has `prefetch.rs`.
 fn print_loading_warnings(routes: &[DiscoveredRoute]) {
     for route in routes.iter().filter(|route| route.loading.tsx.is_some()) {
-        if !loading_tsx_applies_to_any_props_route(routes, route) {
+        if !loading_tsx_applies_to_any_prefetch_route(routes, route) {
             println!(
-                "cargo:warning=nextrs: {} has loading.tsx but no props-backed page.tsx route uses it",
+                "cargo:warning=nextrs: {} has loading.tsx but no prefetch-backed page.tsx route uses it",
                 route.url_path
             );
         }
@@ -1096,12 +1110,12 @@ fn emit_methods(out: &mut String, idx: usize, route: &DiscoveredRoute) {
 /// hard load would stream. Dynamic routes extract params from the request the
 /// same way the page handler does; both conventions' fn names are honored.
 fn emit_prefetch_slot(out: &mut String, idx: usize, route: &DiscoveredRoute) {
-    let Some(props_path) = &route.props else {
+    let Some(prefetch_path) = &route.prefetch else {
         out.push_str("        prefetch: None,\n");
         return;
     };
-    let props_mod = mod_name(idx, "props");
-    let entry_fn = if props_path
+    let prefetch_mod = mod_name(idx, "prefetch");
+    let entry_fn = if prefetch_path
         .file_name()
         .and_then(|n| n.to_str())
         .is_some_and(|n| n == "prefetch.rs")
@@ -1117,13 +1131,13 @@ fn emit_prefetch_slot(out: &mut String, idx: usize, route: &DiscoveredRoute) {
              let (params, req) = ::nextrs::params::extract_params(req).await;\n            \
              {}::{}(req, params).await\n        \
              }}))),",
-            props_mod, entry_fn
+            prefetch_mod, entry_fn
         );
     } else {
         let _ = writeln!(
             out,
             "        prefetch: Some(Box::new(|req| Box::pin({}::{}(req)))),",
-            props_mod, entry_fn
+            prefetch_mod, entry_fn
         );
     }
 }
@@ -1177,11 +1191,11 @@ fn emit_page_slot(out: &mut String, idx: usize, route: &DiscoveredRoute) {
     // params: stream them as a JSON tag ahead of the mount div, and hand them
     // to the prefetch/props fn (which takes `(req, params)` on dynamic routes).
     let is_dynamic = route.url_path.contains('{');
-    if let Some(props_path) = &route.props {
-        let props_mod = mod_name(idx, "props");
+    if let Some(prefetch_path) = &route.prefetch {
+        let prefetch_mod = mod_name(idx, "prefetch");
         // `prefetch.rs` exports `fn prefetch`; the legacy `props.rs` exports
         // `fn props`. Pick the entry fn by filename so both conventions work.
-        let entry_fn = if props_path
+        let entry_fn = if prefetch_path
             .file_name()
             .and_then(|n| n.to_str())
             .is_some_and(|n| n == "prefetch.rs")
@@ -1198,7 +1212,7 @@ fn emit_page_slot(out: &mut String, idx: usize, route: &DiscoveredRoute) {
                  let seeds = {}::{}(req, params.clone()).await;\n            \
                  format!(\"{{}}{{}}{{}}\", params.to_script_tag(), seeds.to_script_tag(), {})\n        \
                  }}))),",
-                props_mod, entry_fn, shell
+                prefetch_mod, entry_fn, shell
             );
         } else {
             let _ = writeln!(
@@ -1207,7 +1221,7 @@ fn emit_page_slot(out: &mut String, idx: usize, route: &DiscoveredRoute) {
                  let seeds = {}::{}(req).await;\n            \
                  format!(\"{{}}{{}}\", seeds.to_script_tag(), {})\n        \
                  }}))),",
-                props_mod, entry_fn, shell
+                prefetch_mod, entry_fn, shell
             );
         }
     } else if is_dynamic {
@@ -1335,7 +1349,7 @@ fn emit_loading_slot(
         return;
     }
 
-    if has_props_backed_tsx_page(route) {
+    if has_prefetch_backed_tsx_page(route) {
         if let Some(loading_route) = nearest_tsx_loading(routes, &route.url_path) {
             let shell = tsx_loading_shell(loading_route);
             let _ = writeln!(
@@ -1865,6 +1879,25 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
     }
 
     #[test]
+    fn tsx_pages_are_marked_react_for_speculation_exclusion() {
+        // page.tsx routes are recorded on the registry so injected Speculation
+        // Rules exclude them (the app shell soft-navigates those URLs).
+        let tmp = setup_app(&[("", &["page.rs"]), ("todos", &["page.tsx"])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+        assert!(
+            code.contains(r#"registry.mark_react_page("/todos");"#),
+            "expected react-page marker:\n{}",
+            code
+        );
+        assert!(
+            !code.contains(r#"registry.mark_react_page("/");"#),
+            "page.rs route must not be marked react:\n{}",
+            code
+        );
+    }
+
+    #[test]
     fn tsx_loading_shell_includes_stylesheet_before_mount() {
         let tmp = setup_app(&[("", &["loading.tsx"]), ("todos", &["page.tsx", "props.rs"])]);
         let routes = discover_routes(tmp.path());
@@ -1927,12 +1960,12 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
         let code = generate_code(&routes);
 
         assert!(
-            code.contains("mod __nextrs_route_0_props;"),
+            code.contains("mod __nextrs_route_0_prefetch;"),
             "expected props mod declaration:\n{}",
             code
         );
         assert!(
-            code.contains("__nextrs_route_0_props::props(req).await"),
+            code.contains("__nextrs_route_0_prefetch::props(req).await"),
             "expected props await in shell handler:\n{}",
             code
         );
@@ -1962,7 +1995,7 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
         let code = generate_code(&discover_routes(tmp.path()));
         assert!(
             code.contains(
-                "prefetch: Some(Box::new(|req| Box::pin(__nextrs_route_0_props::prefetch(req))))"
+                "prefetch: Some(Box::new(|req| Box::pin(__nextrs_route_0_prefetch::prefetch(req))))"
             ),
             "{code}"
         );
@@ -1975,7 +2008,7 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
             "{code}"
         );
         assert!(
-            code.contains("__nextrs_route_0_props::prefetch(req, params).await"),
+            code.contains("__nextrs_route_0_prefetch::prefetch(req, params).await"),
             "{code}"
         );
 
@@ -1983,7 +2016,7 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
         let tmp = setup_app(&[("todos", &["page.tsx", "props.rs"])]);
         let code = generate_code(&discover_routes(tmp.path()));
         assert!(
-            code.contains("Box::pin(__nextrs_route_0_props::props(req))"),
+            code.contains("Box::pin(__nextrs_route_0_prefetch::props(req))"),
             "{code}"
         );
 
@@ -2005,7 +2038,7 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
             code
         );
         assert!(
-            code.contains("__nextrs_route_0_props::props(req, params.clone()).await"),
+            code.contains("__nextrs_route_0_prefetch::props(req, params.clone()).await"),
             "expected props(req, params) call:\n{}",
             code
         );
@@ -2051,7 +2084,7 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
     }
 
     #[test]
-    fn loading_tsx_is_inherited_by_props_backed_tsx_pages() {
+    fn loading_tsx_is_inherited_by_prefetch_backed_tsx_pages() {
         let tmp = setup_app(&[
             ("", &["loading.tsx"]),
             ("dashboard", &["page.tsx", "props.rs"]),
@@ -2085,12 +2118,12 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
     }
 
     #[test]
-    fn loading_tsx_without_props_backed_descendant_is_detected() {
+    fn loading_tsx_without_prefetch_backed_descendant_is_detected() {
         let tmp = setup_app(&[("", &["loading.tsx"]), ("about", &["page.tsx"])]);
         let routes = discover_routes(tmp.path());
         let root = routes.iter().find(|route| route.url_path == "/").unwrap();
 
-        assert!(!loading_tsx_applies_to_any_props_route(&routes, root));
+        assert!(!loading_tsx_applies_to_any_prefetch_route(&routes, root));
     }
 
     #[test]

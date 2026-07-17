@@ -3,11 +3,23 @@ pub mod health;
 pub mod discovery;
 pub mod openapi;
 pub mod params;
-pub mod prefetch;
 pub mod router;
 pub mod seed;
+pub mod speculation;
 
-pub use prefetch::{Eagerness, PrefetchConfig, SpeculationMode};
+/// Deprecated path for [`speculation`] — kept for one release. This module
+/// only ever controlled document-level Speculation Rules; the data-prefetch
+/// convention (`prefetch.rs`, `/__nx/prefetch`) lives elsewhere and the old
+/// name conflated the two.
+#[deprecated(note = "renamed to `nextrs::speculation` — this only controls document-level Speculation Rules, not data prefetch")]
+pub mod prefetch {
+    #[allow(deprecated)]
+    pub use crate::speculation::*;
+}
+
+pub use speculation::{Eagerness, SpeculationConfig, SpeculationMode};
+#[allow(deprecated)]
+pub use speculation::PrefetchConfig;
 
 pub use axum;
 pub use http;

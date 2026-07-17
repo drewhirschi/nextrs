@@ -111,6 +111,14 @@ pub struct RouteRegistry {
     pub entries: Vec<RouteEntry>,
     /// Subtree-scoped 404 surfaces, installed as the router's fallback.
     pub not_found: Vec<NotFoundEntry>,
+    /// URL paths (axum pattern syntax, e.g. `"/todos"`, `"/source/{id}"`) of
+    /// routes whose page is a React (`page.tsx`) app-shell route. The app
+    /// shell intercepts same-origin clicks to these URLs (soft navigation), so
+    /// the router excludes them from any injected Speculation Rules — a
+    /// speculatively fetched document for them would never be used. Populated
+    /// by codegen via [`Self::mark_react_page`]; same discovery source as the
+    /// shell's `NX_APP_ROUTES`.
+    pub react_pages: Vec<String>,
 }
 
 impl RouteRegistry {
@@ -118,11 +126,18 @@ impl RouteRegistry {
         Self {
             entries: Vec::new(),
             not_found: Vec::new(),
+            react_pages: Vec::new(),
         }
     }
 
     pub fn add(&mut self, entry: RouteEntry) {
         self.entries.push(entry);
+    }
+
+    /// Record that `path` is served by the React app shell (a `page.tsx`
+    /// route), so document-level speculation skips it. See [`Self::react_pages`].
+    pub fn mark_react_page(&mut self, path: impl Into<String>) {
+        self.react_pages.push(path.into());
     }
 
     /// Register a `not-found` surface for the subtree rooted at `path`.

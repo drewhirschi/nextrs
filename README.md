@@ -168,8 +168,8 @@ crates/            the framework + tooling crates
   src/lib.rs
   src/conventions.rs    PageFn / LayoutFn / LoadingFn / MiddlewareFn types + static helpers
   src/discovery.rs      scans app/ → DiscoveredRoute list (page/layout/loading {rs,html,tsx}, prefetch.rs)
-  src/router.rs         build_router(_with_public/_with_prefetch)(registry) → axum::Router; streaming
-  src/prefetch.rs       Speculation Rules navigation prefetch (PrefetchConfig → <script>)
+  src/router.rs         build_router(_with_public/_with_speculation)(registry) → axum::Router; streaming
+  src/speculation.rs    document-level Speculation Rules (SpeculationConfig → <script>; opt-in, off by default)
   src/seed.rs           QuerySeed / SeedEntry / seed_key — prefetch.rs React Query cache seeding
   src/openapi.rs        spec_router — serves the build-time OpenAPI doc
   src/vercel.rs         StreamingVercelLayer  (feature-gated `vercel`)
