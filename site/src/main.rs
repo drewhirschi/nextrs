@@ -26,7 +26,7 @@ async fn main() {
     // shipped copy of public/.
     let public_dir = std::env::var("NEXTRS_PUBLIC_DIR")
         .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/public").to_string());
-    // Document-level speculation is off by default (0.3.8); the docs pages
+    // Document-level speculation is off by default (0.4.0); the docs pages
     // (/docs, /docs/{slug}) are server-rendered — no app shell there — so we
     // opt in: same-origin links get browser-native prefetch on hover, keeping
     // docs navigation snappy. React app-shell routes (the / landing) are

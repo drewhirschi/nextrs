@@ -236,7 +236,7 @@ async fn declare_utf8_charset(mut resp: Response) -> Response {
 }
 
 /// Build an Axum router from a [`RouteRegistry`]. Document-level speculation
-/// is off by default (changed in 0.3.8) — see [`build_router_with_speculation`]
+/// is off by default (changed in 0.4.0) — see [`build_router_with_speculation`]
 /// to opt a server-rendered app in.
 pub fn build_router(registry: RouteRegistry) -> Router {
     build_router_with_speculation(registry, SpeculationConfig::default())
@@ -1880,7 +1880,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_speculation_off_by_default() {
-        // Behavior change in 0.3.8: build_router injects nothing unless the
+        // Behavior change in 0.4.0: build_router injects nothing unless the
         // app opts in via build_router_with_speculation.
         let mut registry = RouteRegistry::new();
         registry.add(RouteEntry {
@@ -1905,7 +1905,7 @@ mod tests {
         assert_eq!(body, "<html><head></head><body><h1>Home</h1></body></html>");
     }
 
-    // The pre-0.3.8 names keep compiling for one release. Deprecation warnings
+    // The pre-0.4.0 names keep compiling for one release. Deprecation warnings
     // here are expected and deliberately not silenced.
     #[tokio::test]
     async fn test_deprecated_router_names_still_compile() {

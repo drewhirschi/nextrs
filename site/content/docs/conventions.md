@@ -75,7 +75,7 @@ nextrs has three ahead-of-time mechanisms, named to match the ecosystem (Next.js
 | **Preload** | A React route's *JS chunk* | The app shell's router, on link hover (intent) | Automatic for every `page.tsx` route — nothing to configure |
 | **Speculation** | The *next full document*, browser-natively | The browser, per its injected Speculation Rules (hover by default) | Opt-in: `build_router_with_speculation(registry, SpeculationConfig { mode: SpeculationMode::Prefetch, eagerness: Eagerness::Moderate })` (or the `..._with_public_and_speculation` variant) |
 
-React (`page.tsx`) routes get prefetch + preload automatically and don't need speculation — the app shell soft-navigates them. Speculation is for **server-rendered pages** (`page.rs` / `page.html`), where every click is a full-document navigation; this docs site enables it for exactly that reason. It's off by default (since 0.3.8), and when enabled the injected rules automatically exclude React app-shell routes, whose speculated documents would be discarded by the soft-nav interceptor. A link can opt out with `data-no-prefetch` (for e.g. destructive GETs like `/logout`).
+React (`page.tsx`) routes get prefetch + preload automatically and don't need speculation — the app shell soft-navigates them. Speculation is for **server-rendered pages** (`page.rs` / `page.html`), where every click is a full-document navigation; this docs site enables it for exactly that reason. It's off by default (since 0.4.0), and when enabled the injected rules automatically exclude React app-shell routes, whose speculated documents would be discarded by the soft-nav interceptor. A link can opt out with `data-no-prefetch` (for e.g. destructive GETs like `/logout`).
 
 ## Middleware
 

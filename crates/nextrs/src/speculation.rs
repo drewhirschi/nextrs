@@ -42,10 +42,10 @@
 //! There is **no JavaScript** — it's a browser-native hint. Browsers without
 //! support ignore it and navigate normally.
 //!
-//! ## Behavior change in 0.3.8
+//! ## Behavior change in 0.4.0
 //!
 //! Through 0.3.7 this was on by default (as `PrefetchConfig`, injected into
-//! every full-document response). Since 0.3.8 the default is
+//! every full-document response). Since 0.4.0 the default is
 //! [`SpeculationMode::Off`]: for React-routed apps the prefetched documents
 //! were pure waste (a full server render per hover, discarded by the soft-nav
 //! interceptor), and server-rendered apps opt in deliberately as above.
@@ -138,7 +138,7 @@ pub struct SpeculationConfig {
 pub type PrefetchConfig = SpeculationConfig;
 
 impl Default for SpeculationConfig {
-    /// Off — speculation is an opt-in (changed in 0.3.8; see the module docs).
+    /// Off — speculation is an opt-in (changed in 0.4.0; see the module docs).
     fn default() -> Self {
         Self::OFF
     }
@@ -278,7 +278,7 @@ mod tests {
 
     #[test]
     fn default_is_off() {
-        // Behavior change in 0.3.8: speculation is opt-in.
+        // Behavior change in 0.4.0: speculation is opt-in.
         let cfg = SpeculationConfig::default();
         assert_eq!(cfg.mode, SpeculationMode::Off);
         assert!(cfg.script().is_none());
