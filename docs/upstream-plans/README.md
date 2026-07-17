@@ -25,3 +25,4 @@ user docs.
 - [Stale committed dist — prod build skew](stale-committed-dist-build-skew.md)
 - [Static JS caching](static-js-caching.md)
 - [Build times and deploy reliability](build-times-and-deploy-reliability.md)
+- [Hover preload through the router, not /__nx/prefetch](hover-preload-route.md)

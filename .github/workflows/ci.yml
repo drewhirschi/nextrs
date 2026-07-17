@@ -57,6 +57,12 @@ jobs:
       - name: Browser smoke over every route
         run: node e2e/smoke.mjs
 
+      # Nothing in the smoke hovers — the /__nx/prefetch-404-on-hover and
+      # missing-chunk-preload bugs shipped invisibly until a real app hit
+      # them (docs/upstream-plans/hover-preload-route.md).
+      - name: Hover preload regression
+        run: node e2e/hover.mjs
+
   # After a push to main, Vercel deploys the docs site. Verify the LIVE page
   # actually runs — the layer whose absence let the dead landing sit in prod.
   prod-smoke:

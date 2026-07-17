@@ -949,19 +949,25 @@ fn app_shell_entry(routes: &[DiscoveredRoute], client_helper: &Path) -> String {
     out.push_str(
         "function nxLeaf(load: () => Promise<any>) {\n\
            const Lazy = lazyRouteComponent(load);\n\
-           return function NxPage() {\n\
+           function NxPage() {\n\
              const params = useParams({ strict: false });\n\
              return <Lazy params={params} />;\n\
-           };\n\
+           }\n\
+           // Chunk preload: router.preloadRoute (the hover handler) warms\n\
+           // route.options.component.preload() — forward the lazy loader so\n\
+           // the page's JS chunk downloads on hover, not at click time.\n\
+           (NxPage as any).preload = Lazy.preload;\n\
+           return NxPage;\n\
          }\n\n",
     );
     // Soft-nav data prefetch: routes with a prefetch.rs get a loader that
     // asks the server for the same entries a hard load would stream
-    // (GET /__nx/prefetch?path=...), hydrating the query cache. With
-    // preload:"intent" this runs on hover, so by click time the leaf paints
-    // seeded. Bounded: a slow prefetch aborts at 1s and the page falls back
-    // to fetch-on-mount. The very first loader run is the document we just
-    // hard-loaded — its seeds are already in the cache, skip the request.
+    // (GET /__nx/prefetch?path=...), hydrating the query cache. The hover
+    // handler below runs this loader via router.preloadRoute, so by click
+    // time the leaf paints seeded. Bounded: a slow prefetch aborts at 1s and
+    // the page falls back to fetch-on-mount. The very first loader run is the
+    // document we just hard-loaded — its seeds are already in the cache, skip
+    // the request.
     out.push_str(
         "// The document we hard-loaded already carried its seeds — skip one\n\
          // redundant self-prefetch for it. In-flight prefetches are shared, so\n\
@@ -1098,21 +1104,30 @@ fn app_shell_entry(routes: &[DiscoveredRoute], client_helper: &Path) -> String {
            router.navigate({ href: url.pathname + url.search + url.hash });\n\
          });\n\
          // Hover = intent: plain anchors have no TanStack <Link> machinery, so\n\
-         // defaultPreload:\"intent\" never sees them — warm the DATA here (the\n\
-         // in-flight map in nxPrefetch dedups against the loader at click time).\n\
+         // defaultPreload:\"intent\" never sees them — drive the preload here.\n\
+         // preloadRoute warms the destination route's lazy CHUNK and runs its\n\
+         // loader, and loaders exist only on prefetch-backed routes — so\n\
+         // /__nx/prefetch is only hit where the server actually mounts it.\n\
+         // NOTE: preloadRoute takes NavigateOptions (to/search), NOT { href } —\n\
+         // buildLocation ignores href and would preload the current route.\n\
          document.addEventListener(\"mouseover\", (e) => {\n\
            const url = nxAppUrl(e);\n\
-           if (url) nxPrefetch(url.pathname + url.search);\n\
+           if (!url) return;\n\
+           router\n\
+             .preloadRoute({ to: url.pathname, search: Object.fromEntries(url.searchParams) })\n\
+             .catch(() => {});\n\
          });\n\n",
     );
 
     out.push_str(
         "createRoot(document.getElementById(\"__nx_root__\")!).render(<RouterProvider router={router} />);\n",
     );
-    // Note: the real "load the next page's React ahead of time" is TanStack's
-    // defaultPreload:"intent" above (preloads the target route's chunk on hover).
-    // The server's document-level speculation rules (now Prefetch, not Prerender)
-    // are a light bonus for hard loads and are left in place.
+    // Note: the "load the next page's React ahead of time" is the mouseover
+    // handler's router.preloadRoute above — defaultPreload:"intent" alone
+    // never fires here because plain <a> tags bypass TanStack's <Link>
+    // machinery (it's kept for any app code that does use <Link>).
+    // The server's document-level speculation rules (now Prefetch, not
+    // Prerender) are a light bonus for hard loads and are left in place.
     out
 }
 
@@ -1747,6 +1762,18 @@ mod tests {
         assert!(s.contains("/__nx/prefetch?path="));
         // Exactly one loader (the prefetch-backed leaf).
         assert_eq!(s.matches("loader: ({ location }").count(), 1, "{s}");
+        // Hover goes through the router (chunk preload + conditional loader),
+        // never straight to the endpoint — a direct nxPrefetch on hover 404s
+        // on routes without a prefetch.rs and skips chunk preload entirely.
+        assert!(
+            s.contains(
+                ".preloadRoute({ to: url.pathname, search: Object.fromEntries(url.searchParams) })"
+            ),
+            "{s}"
+        );
+        assert!(!s.contains("nxPrefetch(url.pathname"), "{s}");
+        // nxPrefetch is reached only via the loader (definition + loader call).
+        assert_eq!(s.matches("nxPrefetch(").count(), 2, "{s}");
         // Hydration respects freshness and matches the seed envelope.
         assert!(s.contains(
             "qc.setQueryData(e.key, { data: e.data, status: 200, headers: new Headers() })"
@@ -1767,6 +1794,9 @@ mod tests {
         assert!(s.contains("useParams({ strict: false })"));
         assert!(s.contains("<Lazy params={params} />"));
         assert!(s.contains("component: nxLeaf(() => import("));
+        // preloadRoute warms the chunk through component.preload — nxLeaf
+        // must forward the lazy loader or hover preloads nothing.
+        assert!(s.contains("(NxPage as any).preload = Lazy.preload;"));
     }
 
     #[test]
