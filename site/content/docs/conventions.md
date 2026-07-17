@@ -65,6 +65,18 @@ Components import their typed data hooks from the generated client in the `clien
 
 A sibling `prefetch.rs` warms that client's React Query cache from the server. It returns a `nextrs::QuerySeed` whose entries are keyed with `nextrs::seed_key(...)`; the framework streams them as a JSON `<script id="__nx_seeds__">` tag and the client loads them into the cache before mount, so the first paint has data without a mount-time round-trip. `prefetch.rs` requires a `page.tsx` sibling — a `prefetch.rs` next to a Rust page is a compile error, since Rust pages fetch their own data. The legacy filename `props.rs` (exporting `fn props`) still works, but new code should use `prefetch.rs`. Full walkthrough in [React Pages & Server Prefetch](/docs/react-server-props).
 
+## Prefetch vs preload vs speculation
+
+nextrs has three ahead-of-time mechanisms, named to match the ecosystem (Next.js calls data warming "prefetch"; TanStack Router calls route-code warming "preload"; the browser spec is "Speculation Rules"). They warm different things and are configured in different places:
+
+| Mechanism | What it warms | Who triggers it | Where configured |
+|---|---|---|---|
+| **Prefetch** | A React page's *data* (React Query cache entries) | The server on hard loads (streamed `__nx_seeds__`); the app shell on hover/soft-nav (`/__nx/prefetch`) | `prefetch.rs` beside a `page.tsx` |
+| **Preload** | A React route's *JS chunk* | The app shell's router, on link hover (intent) | Automatic for every `page.tsx` route — nothing to configure |
+| **Speculation** | The *next full document*, browser-natively | The browser, per its injected Speculation Rules (hover by default) | Opt-in: `build_router_with_speculation(registry, SpeculationConfig { mode: SpeculationMode::Prefetch, eagerness: Eagerness::Moderate })` (or the `..._with_public_and_speculation` variant) |
+
+React (`page.tsx`) routes get prefetch + preload automatically and don't need speculation — the app shell soft-navigates them. Speculation is for **server-rendered pages** (`page.rs` / `page.html`), where every click is a full-document navigation; this docs site enables it for exactly that reason. It's off by default (since 0.3.8), and when enabled the injected rules automatically exclude React app-shell routes, whose speculated documents would be discarded by the soft-nav interceptor. A link can opt out with `data-no-prefetch` (for e.g. destructive GETs like `/logout`).
+
 ## Middleware
 
 `middleware.rs` files compose root-to-leaf along the matched path and run **before** layouts, loading, pages, and API handlers:
