@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::conventions::{
     LayoutFn, MiddlewareFn, MiddlewareResult, NotFoundEntry, RouteEntry, RouteRegistry,
 };
-use crate::prefetch::PrefetchConfig;
+use crate::speculation::{ResolvedSpeculation, SpeculationConfig};
 
 /// Internal sentinel that gets substituted into composed layouts so we can
 /// split the result into the "before children" and "after children" halves.
@@ -133,22 +133,34 @@ pub fn build_router_with_public(
     registry: RouteRegistry,
     public_dir: impl AsRef<std::path::Path>,
 ) -> Router {
-    return build_router_with_public_inner(registry, public_dir)
+    build_router_with_public_and_speculation(registry, public_dir, SpeculationConfig::default())
+}
+
+/// [`build_router_with_public`] with an explicit [`SpeculationConfig`] — the
+/// opt-in for server-rendered apps that also serve a `public/` directory. See
+/// [`build_router_with_speculation`] for what the config controls.
+pub fn build_router_with_public_and_speculation(
+    registry: RouteRegistry,
+    public_dir: impl AsRef<std::path::Path>,
+    speculation: SpeculationConfig,
+) -> Router {
+    return build_router_with_public_inner(registry, public_dir, speculation)
         .layer(axum::middleware::map_response(crate::health::stamp));
 }
 
 fn build_router_with_public_inner(
     registry: RouteRegistry,
     public_dir: impl AsRef<std::path::Path>,
+    speculation: SpeculationConfig,
 ) -> Router {
     use axum::handler::HandlerWithoutStateExt;
 
-    // Mirror `build_router`'s default: prefetch on. Build the route table on its
-    // own so the not-found surfaces can be wired as the fallback below.
-    let prefetch = Arc::new(PrefetchConfig::default());
+    // Build the route table on its own so the not-found surfaces can be wired
+    // as the fallback below.
+    let speculation = Arc::new(speculation.resolve(&registry.react_pages));
     let entries = Arc::new(registry.entries);
     let not_found = Arc::new(registry.not_found);
-    let router = build_route_table(Arc::clone(&entries), Arc::clone(&prefetch));
+    let router = build_route_table(Arc::clone(&entries), Arc::clone(&speculation));
     let path = public_dir.as_ref();
 
     let router = if path.is_dir() {
@@ -161,12 +173,12 @@ fn build_router_with_public_inner(
         } else {
             let nf_entries = Arc::clone(&entries);
             let nf_list = Arc::clone(&not_found);
-            let nf_prefetch = Arc::clone(&prefetch);
+            let nf_speculation = Arc::clone(&speculation);
             let nf_handler = move |req: Request| {
                 let entries = Arc::clone(&nf_entries);
                 let not_found = Arc::clone(&nf_list);
-                let prefetch = Arc::clone(&nf_prefetch);
-                async move { render_not_found(&entries, &not_found, &prefetch, req).await }
+                let speculation = Arc::clone(&nf_speculation);
+                async move { render_not_found(&entries, &not_found, &speculation, req).await }
             };
             let serve = tower_http::services::ServeDir::new(path)
                 .not_found_service(nf_handler.into_service());
@@ -175,7 +187,7 @@ fn build_router_with_public_inner(
                 .layer(axum::middleware::map_response(declare_utf8_charset))
         }
     } else {
-        with_not_found_fallback(router, entries, not_found, prefetch)
+        with_not_found_fallback(router, entries, not_found, speculation)
     };
 
     router.layer(axum::middleware::from_fn(generated_asset_cache))
@@ -223,27 +235,41 @@ async fn declare_utf8_charset(mut resp: Response) -> Response {
     resp
 }
 
-/// Build an Axum router from a [`RouteRegistry`], with speculative-navigation
-/// (prefetch) injection on by default. See [`build_router_with_prefetch`] to
-/// customize or disable it.
+/// Build an Axum router from a [`RouteRegistry`]. Document-level speculation
+/// is off by default (changed in 0.3.8) — see [`build_router_with_speculation`]
+/// to opt a server-rendered app in.
 pub fn build_router(registry: RouteRegistry) -> Router {
-    build_router_with_prefetch(registry, PrefetchConfig::default())
+    build_router_with_speculation(registry, SpeculationConfig::default())
 }
 
 /// Build an Axum router from a [`RouteRegistry`] with an explicit
-/// [`PrefetchConfig`].
+/// [`SpeculationConfig`].
 ///
-/// The framework injects a `<script type="speculationrules">` into the `<head>`
-/// of every full-document page response so same-origin links are speculatively
-/// fetched (or prerendered) by the browser — no client-side JS. Pass
-/// [`PrefetchConfig::OFF`] to disable.
-pub fn build_router_with_prefetch(registry: RouteRegistry, prefetch: PrefetchConfig) -> Router {
+/// When enabled, the framework injects a `<script type="speculationrules">`
+/// into the `<head>` of every full-document page response so same-origin links
+/// are speculatively fetched (or prerendered) by the browser — no client-side
+/// JS. React app-shell routes ([`RouteRegistry::react_pages`]) are excluded
+/// from the rules: the shell soft-navigates them, so a speculated document
+/// would never be used. See [`crate::speculation`] for the full picture
+/// (prefetch vs preload vs speculation).
+pub fn build_router_with_speculation(
+    registry: RouteRegistry,
+    speculation: SpeculationConfig,
+) -> Router {
+    let speculation = Arc::new(speculation.resolve(&registry.react_pages));
     let entries = Arc::new(registry.entries);
     let not_found = Arc::new(registry.not_found);
-    let prefetch = Arc::new(prefetch);
-    let router = build_route_table(Arc::clone(&entries), Arc::clone(&prefetch));
-    with_not_found_fallback(router, entries, not_found, prefetch)
+    let router = build_route_table(Arc::clone(&entries), Arc::clone(&speculation));
+    with_not_found_fallback(router, entries, not_found, speculation)
         .layer(axum::middleware::map_response(crate::health::stamp))
+}
+
+/// Deprecated name for [`build_router_with_speculation`].
+#[deprecated(
+    note = "renamed to build_router_with_speculation — this only controls document-level Speculation Rules, not data prefetch"
+)]
+pub fn build_router_with_prefetch(registry: RouteRegistry, prefetch: SpeculationConfig) -> Router {
+    build_router_with_speculation(registry, prefetch)
 }
 
 /// Reserved path of the soft-nav data-prefetch endpoint. The generated app
@@ -323,8 +349,8 @@ fn build_prefetch_endpoint(entries: Arc<Vec<RouteEntry>>) -> Router {
 }
 
 /// Build just the route table (matched routes, no fallback) from the registry's
-/// entries, with the given prefetch config threaded into page rendering.
-fn build_route_table(entries: Arc<Vec<RouteEntry>>, prefetch: Arc<PrefetchConfig>) -> Router {
+/// entries, with the resolved speculation script threaded into page rendering.
+fn build_route_table(entries: Arc<Vec<RouteEntry>>, speculation: Arc<ResolvedSpeculation>) -> Router {
     let mut router = Router::new();
 
     for i in 0..entries.len() {
@@ -336,7 +362,7 @@ fn build_route_table(entries: Arc<Vec<RouteEntry>>, prefetch: Arc<PrefetchConfig
 
         if has_page {
             let entries_for_get = Arc::clone(&entries_clone);
-            let prefetch_for_get = Arc::clone(&prefetch);
+            let speculation_for_get = Arc::clone(&speculation);
             let path_for_get = path.clone();
             let idx = i;
 
@@ -344,9 +370,9 @@ fn build_route_table(entries: Arc<Vec<RouteEntry>>, prefetch: Arc<PrefetchConfig
                 &path,
                 get(move |req: Request| {
                     let entries = Arc::clone(&entries_for_get);
-                    let prefetch = Arc::clone(&prefetch_for_get);
+                    let speculation = Arc::clone(&speculation_for_get);
                     let path = path_for_get.clone();
-                    async move { render_route(entries, prefetch, idx, path, req).await }
+                    async move { render_route(entries, speculation, idx, path, req).await }
                 }),
             );
         }
@@ -393,7 +419,7 @@ fn with_not_found_fallback(
     router: Router,
     entries: Arc<Vec<RouteEntry>>,
     not_found: Arc<Vec<NotFoundEntry>>,
-    prefetch: Arc<PrefetchConfig>,
+    speculation: Arc<ResolvedSpeculation>,
 ) -> Router {
     if not_found.is_empty() {
         return router;
@@ -401,8 +427,8 @@ fn with_not_found_fallback(
     router.fallback(move |req: Request| {
         let entries = Arc::clone(&entries);
         let not_found = Arc::clone(&not_found);
-        let prefetch = Arc::clone(&prefetch);
-        async move { render_not_found(&entries, &not_found, &prefetch, req).await }
+        let speculation = Arc::clone(&speculation);
+        async move { render_not_found(&entries, &not_found, &speculation, req).await }
     })
 }
 
@@ -417,7 +443,7 @@ fn with_not_found_fallback(
 async fn render_not_found(
     entries: &[RouteEntry],
     not_found: &[NotFoundEntry],
-    prefetch: &PrefetchConfig,
+    speculation: &ResolvedSpeculation,
     req: Request,
 ) -> Response {
     let path = req.uri().path().to_string();
@@ -433,8 +459,8 @@ async fn render_not_found(
     let layouts = collect_layouts_for_path(entries, &nf.path);
     let (before, after) = layout_shell(&layouts);
     // Same speculation-rules injection as a normal page response (no-op for
-    // head-less fragments / when prefetch is off).
-    let before = prefetch.inject_into_head(before);
+    // head-less fragments / when speculation is off).
+    let before = speculation.inject_into_head(before);
     let body = (nf.render)(req).await;
     let full = format!("{}{}{}", before, body, after);
 
@@ -443,7 +469,7 @@ async fn render_not_found(
 
 async fn render_route(
     entries: Arc<Vec<RouteEntry>>,
-    prefetch: Arc<PrefetchConfig>,
+    speculation: Arc<ResolvedSpeculation>,
     idx: usize,
     path: String,
     req: Request,
@@ -456,9 +482,9 @@ async fn render_route(
     let layouts = collect_layouts_for_path(&entries, &path);
     let (before, after) = layout_shell(&layouts);
     // Inject the speculation-rules <script> into <head>. A no-op for head-less
-    // fragments and when prefetch is off, so both the streaming and
+    // fragments and when speculation is off, so both the streaming and
     // non-streaming branches below can use `before` directly.
-    let before = prefetch.inject_into_head(before);
+    let before = speculation.inject_into_head(before);
 
     let has_loading = entries[idx].loading.is_some();
 
@@ -1580,9 +1606,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_not_found_surface_gets_prefetch_in_head() {
+    async fn test_not_found_surface_gets_speculation_in_head() {
         // A not-found wrapped in a layout with a <head> is a full document, so
-        // it gets the speculation-rules script just like a normal page.
+        // (with speculation enabled) it gets the speculation-rules script just
+        // like a normal page.
         let mut registry = RouteRegistry::new();
         registry.add(RouteEntry {
             path: "/".to_string(),
@@ -1597,7 +1624,7 @@ mod tests {
         });
         registry.add_not_found("/", static_page("missing"));
 
-        let app = build_router(registry);
+        let app = build_router_with_speculation(registry, speculation_on());
         let resp = app
             .oneshot(Request::builder().uri("/nope").body(Body::empty()).unwrap())
             .await
@@ -1785,10 +1812,17 @@ mod tests {
         assert!(!handler_called.load(Ordering::SeqCst));
     }
 
-    // -- Prefetch / speculation rules -----------------------------------------
+    // -- Speculation rules -----------------------------------------------------
+
+    fn speculation_on() -> SpeculationConfig {
+        SpeculationConfig {
+            mode: crate::speculation::SpeculationMode::Prefetch,
+            eagerness: crate::speculation::Eagerness::Moderate,
+        }
+    }
 
     #[tokio::test]
-    async fn test_prefetch_injected_into_full_document_head() {
+    async fn test_speculation_injected_into_full_document_head() {
         let mut registry = RouteRegistry::new();
         registry.add(RouteEntry {
             path: "/".to_string(),
@@ -1802,8 +1836,7 @@ mod tests {
             prefetch: None,
         });
 
-        // Default config has prefetch ON.
-        let app = build_router(registry);
+        let app = build_router_with_speculation(registry, speculation_on());
         let resp = app
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
             .await
@@ -1821,8 +1854,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_prefetch_not_injected_into_headless_fragment() {
-        // No <head> → a fragment; output stays byte-identical to no-prefetch.
+    async fn test_speculation_not_injected_into_headless_fragment() {
+        // No <head> → a fragment; even with speculation enabled the output
+        // stays byte-identical to speculation-off.
         let mut registry = RouteRegistry::new();
         registry.add(RouteEntry {
             path: "/".to_string(),
@@ -1834,7 +1868,7 @@ mod tests {
             prefetch: None,
         });
 
-        let app = build_router(registry);
+        let app = build_router_with_speculation(registry, speculation_on());
         let resp = app
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
             .await
@@ -1845,7 +1879,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_prefetch_off_emits_no_script() {
+    async fn test_speculation_off_by_default() {
+        // Behavior change in 0.3.8: build_router injects nothing unless the
+        // app opts in via build_router_with_speculation.
         let mut registry = RouteRegistry::new();
         registry.add(RouteEntry {
             path: "/".to_string(),
@@ -1859,7 +1895,7 @@ mod tests {
             prefetch: None,
         });
 
-        let app = build_router_with_prefetch(registry, PrefetchConfig::OFF);
+        let app = build_router(registry);
         let resp = app
             .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
             .await
@@ -1869,8 +1905,97 @@ mod tests {
         assert_eq!(body, "<html><head></head><body><h1>Home</h1></body></html>");
     }
 
+    // The pre-0.3.8 names keep compiling for one release. Deprecation warnings
+    // here are expected and deliberately not silenced.
     #[tokio::test]
-    async fn test_prefetch_injected_in_streaming_path() {
+    async fn test_deprecated_router_names_still_compile() {
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/".to_string(),
+            page: Some(dyn_page("<h1>Home</h1>")),
+            layout: Some(static_layout(
+                "<html><head></head><body>{{children}}</body></html>",
+            )),
+            loading: None,
+            middleware: None,
+            methods: vec![],
+            prefetch: None,
+        });
+
+        let app = build_router_with_prefetch(registry, crate::PrefetchConfig::OFF);
+        let resp = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let body = body_to_string(resp.into_body()).await;
+        assert!(!body.contains("speculationrules"));
+    }
+
+    #[tokio::test]
+    async fn test_speculation_rules_exclude_react_app_shell_routes() {
+        // Mixed app: server-rendered /docs pages plus React app-shell routes
+        // at / and /source/{id}. With speculation enabled, the injected rules
+        // must exclude the React URLs (the shell soft-navigates them; a
+        // prefetched document would be discarded) while still covering the
+        // server routes via the broad match.
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/docs".to_string(),
+            page: Some(dyn_page("<h1>Docs</h1>")),
+            layout: Some(static_layout(
+                "<html><head></head><body>{{children}}</body></html>",
+            )),
+            loading: None,
+            middleware: None,
+            methods: vec![],
+            prefetch: None,
+        });
+        registry.add(RouteEntry {
+            path: "/".to_string(),
+            page: Some(dyn_page("react shell")),
+            layout: None,
+            loading: None,
+            middleware: None,
+            methods: vec![],
+            prefetch: None,
+        });
+        registry.add(RouteEntry {
+            path: "/source/{id}".to_string(),
+            page: Some(dyn_page("react shell")),
+            layout: None,
+            loading: None,
+            middleware: None,
+            methods: vec![],
+            prefetch: None,
+        });
+        registry.mark_react_page("/");
+        registry.mark_react_page("/source/{id}");
+
+        let app = build_router_with_speculation(registry, speculation_on());
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/docs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let body = body_to_string(resp.into_body()).await;
+
+        // Rules present (server page), broad same-origin match intact...
+        assert!(body.contains(r#"type="speculationrules""#));
+        assert!(body.contains(r#""href_matches":"/*""#));
+        // ...but the React routes are excluded, with the dynamic segment
+        // converted to URL Pattern syntax.
+        assert!(
+            body.contains(r#""not":{"href_matches":["/","/source/:id"]}"#),
+            "expected React-route exclusion clause in:\n{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_speculation_injected_in_streaming_path() {
         let mut registry = RouteRegistry::new();
         registry.add(RouteEntry {
             path: "/dashboard".to_string(),
@@ -1884,7 +2009,7 @@ mod tests {
             prefetch: None,
         });
 
-        let app = build_router(registry);
+        let app = build_router_with_speculation(registry, speculation_on());
         let resp = app
             .oneshot(
                 Request::builder()

@@ -544,6 +544,20 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
         out.push_str("    });\n");
     }
 
+    // React app-shell routes (page.tsx — same predicate as the shell's
+    // NX_APP_ROUTES in bundle.rs): recorded so the router excludes them from
+    // any injected Speculation Rules. The shell soft-navigates these URLs, so
+    // a speculatively fetched document for them would never be used.
+    for route in routes.iter() {
+        if route.page.tsx.is_some() {
+            let _ = writeln!(
+                out,
+                "    registry.mark_react_page({:?});",
+                route.url_path
+            );
+        }
+    }
+
     for (i, route) in routes.iter().enumerate() {
         emit_not_found(&mut out, i, route);
     }
@@ -1862,6 +1876,25 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
             code
         );
         assert!(!code.contains("compile_error!"), "{}", code);
+    }
+
+    #[test]
+    fn tsx_pages_are_marked_react_for_speculation_exclusion() {
+        // page.tsx routes are recorded on the registry so injected Speculation
+        // Rules exclude them (the app shell soft-navigates those URLs).
+        let tmp = setup_app(&[("", &["page.rs"]), ("todos", &["page.tsx"])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+        assert!(
+            code.contains(r#"registry.mark_react_page("/todos");"#),
+            "expected react-page marker:\n{}",
+            code
+        );
+        assert!(
+            !code.contains(r#"registry.mark_react_page("/");"#),
+            "page.rs route must not be marked react:\n{}",
+            code
+        );
     }
 
     #[test]
