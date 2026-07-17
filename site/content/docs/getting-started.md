@@ -143,7 +143,7 @@ pub async fn prefetch(_req: http::Request<axum::body::Body>) -> nextrs::QuerySee
 
 The framework streams the entries as a JSON `<script id="__nx_seeds__">` tag and the client loads them into the React Query cache before mount, so the page renders with the data already in place. Keys built with `seed_key` match the generated client's query keys exactly, so a seeded entry behaves like a fetched one (mutations and `invalidateQueries` reach it the same way).
 
-`create-nextrs-app` scaffolds this whole track for you — `app/page.tsx`, a `/slow` route with `prefetch.rs` + `loading.tsx`, an `/api/ping` handler, and the `client/` orval package — so it's the fastest way to start a React-first app.
+`create-nextrs-app` scaffolds this whole track for you — `app/page.tsx`, a `/slow` route with `prefetch.rs` + `loading.tsx`, an `/api/ping` handler, the `client/` orval package, and an `AGENTS.md` contract for coding agents — so it's the fastest way to start a React-first app. Bringing an existing app instead? `create-nextrs-app --adopt` grafts the same skeleton into a non-empty repo without overwriting anything — see [Porting an Existing App](/docs/porting).
 
 ## The dev loop
 

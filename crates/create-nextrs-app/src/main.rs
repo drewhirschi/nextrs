@@ -19,13 +19,17 @@ fn run() -> io::Result<()> {
         None => prompt_project_path()?,
     };
 
-    scaffold(&target, options.nextrs_path.as_deref())?;
+    if options.adopt {
+        adopt(&target, options.nextrs_path.as_deref())?;
+    } else {
+        scaffold(&target, options.nextrs_path.as_deref())?;
+    }
     Ok(())
 }
 
 fn print_help() {
     println!(
-        "create-nextrs-app\n\nUSAGE:\n    create-nextrs-app <path> [--nextrs-path <path>]\n    create-nextrs-app --here [--nextrs-path <path>]\n\nCreates a React-first nextrs app with /, /api/ping, and /slow.\n\nOPTIONS:\n    --here                Create the app in the current directory\n    --nextrs-path <path>  Use a local nextrs checkout instead of nextrs = \"0.3\""
+        "create-nextrs-app\n\nUSAGE:\n    create-nextrs-app <path> [--nextrs-path <path>]\n    create-nextrs-app --here [--nextrs-path <path>]\n    create-nextrs-app --adopt [<path> | --here] [--nextrs-path <path>]\n\nCreates a React-first nextrs app with /, /api/ping, and /slow.\n\nWith --adopt, generates the nextrs skeleton into an EXISTING repo instead:\nminimal content (one page, no demo routes), existing files are never\noverwritten (skipped and reported), an existing src/main.rs gets a\nsrc/main.rs.example beside it, and an existing Cargo.toml is left alone\nwith the dependency lines to merge printed instead.\n\nOPTIONS:\n    --here                Create the app in the current directory\n    --adopt               Graft the skeleton into an existing directory; never overwrite\n    --nextrs-path <path>  Use a local nextrs checkout instead of nextrs = \"0.3\""
     );
 }
 
@@ -34,6 +38,7 @@ struct Options {
     target: Option<PathBuf>,
     nextrs_path: Option<PathBuf>,
     here: bool,
+    adopt: bool,
 }
 
 fn parse_args(args: impl IntoIterator<Item = String>) -> io::Result<Options> {
@@ -47,6 +52,9 @@ fn parse_args(args: impl IntoIterator<Item = String>) -> io::Result<Options> {
             }
             "--here" => {
                 options.here = true;
+            }
+            "--adopt" => {
+                options.adopt = true;
             }
             "--nextrs-path" => {
                 let Some(path) = args.next() else {
@@ -142,6 +150,192 @@ fn scaffold(target: &Path, nextrs_path: Option<&Path>) -> io::Result<()> {
     println!("  /api/ping  Rust API route");
 
     Ok(())
+}
+
+/// What `--adopt` did with one template file.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum AdoptStatus {
+    Created,
+    SkippedExists,
+}
+
+/// Decide where (and whether) one adopt-mode template lands. Never overwrites:
+/// an existing file is skipped, except `src/main.rs`, which falls back to
+/// `src/main.rs.example` so the nextrs entrypoint is still available to merge.
+fn plan_adopt_file(target: &Path, rel: &str) -> (String, AdoptStatus) {
+    let rel = if rel == "src/main.rs" && target.join(rel).exists() {
+        "src/main.rs.example".to_string()
+    } else {
+        rel.to_string()
+    };
+    let status = if target.join(&rel).exists() {
+        AdoptStatus::SkippedExists
+    } else {
+        AdoptStatus::Created
+    };
+    (rel, status)
+}
+
+fn adopt(target: &Path, nextrs_path: Option<&Path>) -> io::Result<()> {
+    std::fs::create_dir_all(target)?;
+
+    let crate_name = crate_name_from_path(target);
+    let client_alias = format!("@{crate_name}/client");
+    let dep = DependencySource::new(nextrs_path);
+    let files = adopt_template_files(&crate_name, &client_alias, &dep);
+
+    let mut report: Vec<(String, AdoptStatus)> = Vec::new();
+    for (rel, body) in &files {
+        let (write_rel, status) = plan_adopt_file(target, rel);
+        if status == AdoptStatus::Created {
+            let path = target.join(&write_rel);
+            if let Some(parent) = path.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&path, body)?;
+            #[cfg(unix)]
+            if path.extension().is_some_and(|e| e == "sh") {
+                use std::os::unix::fs::PermissionsExt;
+                std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755))?;
+            }
+        }
+        report.push((write_rel, status));
+    }
+
+    print_adopt_report(target, &report, &crate_name, &dep);
+    Ok(())
+}
+
+fn print_adopt_report(
+    target: &Path,
+    report: &[(String, AdoptStatus)],
+    crate_name: &str,
+    dep: &DependencySource,
+) {
+    println!("Adopted nextrs into {}", target.display());
+    println!();
+    println!("Per-file report:");
+    for (rel, status) in report {
+        match status {
+            AdoptStatus::Created => println!("  created         {rel}"),
+            AdoptStatus::SkippedExists => println!("  skipped-exists  {rel}"),
+        }
+    }
+
+    let skipped = |name: &str| {
+        report
+            .iter()
+            .any(|(rel, status)| rel == name && *status == AdoptStatus::SkippedExists)
+    };
+    let created = |name: &str| {
+        report
+            .iter()
+            .any(|(rel, status)| rel == name && *status == AdoptStatus::Created)
+    };
+
+    println!();
+    println!("Next steps:");
+
+    if skipped("Cargo.toml") {
+        println!();
+        println!("  Your Cargo.toml was left untouched. Merge these sections by hand:");
+        println!();
+        println!("    [[bin]]");
+        println!("    name = \"{crate_name}\"   # or your existing binary; set default-run to it");
+        println!("    path = \"src/main.rs\"");
+        println!();
+        println!("    [[bin]]");
+        println!("    name = \"index\"          # the Vercel function entry (api/index.rs)");
+        println!("    path = \"api/index.rs\"");
+        println!();
+        println!("    [build-dependencies]");
+        println!("    nextrs = {}", dep.build_dependency());
+        println!();
+        println!("    [dependencies]");
+        println!("    nextrs = {}", dep.runtime_dependency());
+        println!("    axum = \"0.8\"");
+        println!("    dotenvy = \"0.15\"");
+        println!("    tokio = {{ version = \"1\", features = [\"full\"] }}");
+        println!("    tower = \"0.5\"");
+        println!("    vercel_runtime = {{ version = \"2\", features = [\"axum\"] }}");
+        println!("    http = \"1\"");
+        println!("    serde = {{ version = \"1\", features = [\"derive\"] }}");
+        println!("    tower-livereload = \"0.9\"");
+        println!("    utoipa = \"5\"");
+    }
+    if created("src/main.rs.example") {
+        println!();
+        println!("  src/main.rs already exists — the nextrs entrypoint was written to");
+        println!("  src/main.rs.example. Merge it into your main.rs: the two required");
+        println!("  pieces are the include!(...nextrs_routes.rs) line and serving the");
+        println!("  router from generated_registry().");
+    } else if skipped("src/main.rs.example") {
+        println!();
+        println!("  Both src/main.rs and src/main.rs.example already exist — nothing was");
+        println!("  written for the entrypoint. See a fresh `create-nextrs-app` app for");
+        println!("  the reference main.rs.");
+    }
+    if skipped(".gitignore") {
+        println!();
+        println!("  .gitignore was left untouched — make sure it covers:");
+        println!("  /target  /public/dist  /node_modules  /client/node_modules  .env");
+    }
+
+    println!();
+    println!("  Then, in order:");
+    println!("    cargo install cargo-nextrs-dev              # the `cargo dev` runner");
+    println!("    cd client && npm install && cd ..           # bundler resolves imports from client/node_modules");
+    println!("    cargo dev                                   # build + run with live reload");
+    println!();
+    println!("  Add API routes as app/**/route.rs with #[nextrs::api], then generate the");
+    println!("  typed client: cd client && npm run gen");
+    println!();
+    println!("  Porting guide (strangler pattern, conventions, gotchas):");
+    println!("    https://nextrs-docs.vercel.app/docs/porting");
+}
+
+/// The `--adopt` template set: the fresh-app wiring minus the demo content —
+/// no /slow route, no /api/ping, no demo stylesheet; one minimal page that
+/// imports nothing, so the app builds before the typed client is generated.
+fn adopt_template_files(
+    crate_name: &str,
+    client_alias: &str,
+    dep: &DependencySource,
+) -> Vec<(&'static str, String)> {
+    template_files(crate_name, client_alias, dep)
+        .into_iter()
+        .filter(|(rel, _)| {
+            !matches!(
+                *rel,
+                "app/layout.tsx"
+                    | "app/page.tsx"
+                    | "app/slow/page.tsx"
+                    | "app/slow/loading.tsx"
+                    | "app/slow/prefetch.rs"
+                    | "app/api/ping/route.rs"
+                    | "public/style.css"
+            )
+        })
+        .chain([("app/page.tsx", adopt_page_tsx())])
+        .collect()
+}
+
+fn adopt_page_tsx() -> String {
+    r#"export default function Page() {
+  return (
+    <main>
+      <h1>nextrs is wired up.</h1>
+      <p>
+        Replace this page, then graft your app in: pages under{" "}
+        <code>app/**/page.tsx</code>, API handlers in <code>app/**/route.rs</code>,
+        auth in <code>middleware.rs</code>. See AGENTS.md and{" "}
+        <a href="https://nextrs-docs.vercel.app/docs/porting">the porting guide</a>.
+      </p>
+    </main>
+  );
+}
+"#
+    .into()
 }
 
 fn is_current_dir(path: &Path) -> bool {
@@ -1173,6 +1367,127 @@ mod tests {
         assert!(agents.contains("scripts/deploy-prebuilt.sh"));
         assert!(agents.contains("https://nextrs-docs.vercel.app/docs/porting"));
         assert!(agents.contains("@demo/client"));
+    }
+
+    #[test]
+    fn adopt_flag_parses_with_path_and_here() {
+        let opts = parse_args(["--adopt".to_string(), "demo".to_string()]).unwrap();
+        assert!(opts.adopt);
+        assert_eq!(opts.target, Some(PathBuf::from("demo")));
+
+        let opts = parse_args(["--adopt".to_string(), "--here".to_string()]).unwrap();
+        assert!(opts.adopt);
+        assert!(opts.here);
+    }
+
+    #[test]
+    fn adopt_templates_are_fresh_wiring_minus_demo_content() {
+        let dep = DependencySource::Version;
+        let fresh = template_files("demo", "@demo/client", &dep);
+        let adopt = adopt_template_files("demo", "@demo/client", &dep);
+        let names: Vec<_> = adopt.iter().map(|(name, _)| *name).collect();
+
+        // No demo routes, no demo stylesheet — one minimal page.
+        assert!(!names.iter().any(|n| n.starts_with("app/slow")));
+        assert!(!names.contains(&"app/api/ping/route.rs"));
+        assert!(!names.contains(&"public/style.css"));
+        assert!(!names.contains(&"app/layout.tsx"));
+        assert!(names.contains(&"app/page.tsx"));
+        assert!(names.contains(&"AGENTS.md"));
+        assert!(names.contains(&"scripts/deploy-prebuilt.sh"));
+        assert!(names.contains(&"vercel.json"));
+
+        // The minimal page must build before any typed client exists.
+        let page = &adopt.iter().find(|(n, _)| *n == "app/page.tsx").unwrap().1;
+        assert!(!page.contains("import"));
+
+        // Everything shared with the fresh scaffold is byte-identical to it.
+        for (name, body) in &adopt {
+            if *name == "app/page.tsx" {
+                continue;
+            }
+            let fresh_body = &fresh
+                .iter()
+                .find(|(n, _)| n == name)
+                .unwrap_or_else(|| panic!("{name} missing from fresh templates"))
+                .1;
+            assert_eq!(body, fresh_body, "{name} diverged from the fresh template");
+        }
+    }
+
+    #[test]
+    fn plan_adopt_file_skips_existing_and_falls_back_for_main_rs() {
+        let dir = std::env::temp_dir().join(format!("nextrs-plan-adopt-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+
+        // Nothing exists: everything is created under its own name.
+        assert_eq!(
+            plan_adopt_file(&dir, "Cargo.toml"),
+            ("Cargo.toml".to_string(), AdoptStatus::Created)
+        );
+        assert_eq!(
+            plan_adopt_file(&dir, "src/main.rs"),
+            ("src/main.rs".to_string(), AdoptStatus::Created)
+        );
+
+        // Existing files are skipped; an existing main.rs redirects to .example.
+        std::fs::write(dir.join("Cargo.toml"), "x").unwrap();
+        std::fs::write(dir.join("src/main.rs"), "x").unwrap();
+        assert_eq!(
+            plan_adopt_file(&dir, "Cargo.toml"),
+            ("Cargo.toml".to_string(), AdoptStatus::SkippedExists)
+        );
+        assert_eq!(
+            plan_adopt_file(&dir, "src/main.rs"),
+            ("src/main.rs.example".to_string(), AdoptStatus::Created)
+        );
+        std::fs::write(dir.join("src/main.rs.example"), "x").unwrap();
+        assert_eq!(
+            plan_adopt_file(&dir, "src/main.rs"),
+            ("src/main.rs.example".to_string(), AdoptStatus::SkippedExists)
+        );
+
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn adopt_never_overwrites_existing_files() {
+        let dir = std::env::temp_dir().join(format!("nextrs-adopt-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("Cargo.toml"), "# preexisting manifest\n").unwrap();
+        std::fs::write(dir.join("src/main.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(dir.join("notes.txt"), "stray file\n").unwrap();
+
+        adopt(&dir, None).unwrap();
+
+        // Pre-seeded files are byte-for-byte untouched.
+        assert_eq!(
+            std::fs::read_to_string(dir.join("Cargo.toml")).unwrap(),
+            "# preexisting manifest\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("src/main.rs")).unwrap(),
+            "fn main() {}\n"
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("notes.txt")).unwrap(),
+            "stray file\n"
+        );
+
+        // The entrypoint landed beside the existing main.rs instead.
+        assert_eq!(
+            std::fs::read_to_string(dir.join("src/main.rs.example")).unwrap(),
+            main_rs()
+        );
+        assert!(dir.join("AGENTS.md").exists());
+        assert!(dir.join("app/page.tsx").exists());
+        assert!(dir.join("build.rs").exists());
+        assert!(!dir.join("app/slow").exists());
+        assert!(!dir.join("app/api").exists());
+
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]
