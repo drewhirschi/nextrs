@@ -2,7 +2,7 @@
 
 - **Reported-in:** hand-assembled nextrs port (agent session)
 - **Date:** 2026-07-16
-- **Status:** open   <!-- open | fixed in <commit> | wontfix -->
+- **Status:** fixed in f24251c (e2e coverage in f964d96)   <!-- open | fixed in <commit> | wontfix -->
 
 ## Problem
 
