@@ -18,6 +18,10 @@ export default function Layout({ children }: { children: ReactNode }) {
         </a>
         <span className="nav-tag">react-todos</span>
         <span className="muted"> · plain anchors, soft navigation</span>
+        {/* Unseeded route (no prefetch.rs): hover preloads its chunk only. */}
+        <a className="muted" href="/about">
+          about
+        </a>
       </nav>
       {children}
     </main>
