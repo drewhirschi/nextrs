@@ -8,7 +8,23 @@ import { Shell } from "./shell";
 // CSR-shell architecture so the page-throughput comparison is server-to-server.
 export const dynamic = "force-dynamic";
 
+const PAGE_BOOT = Date.now();
+const PAGE_BOOT_ID = crypto.randomUUID().replaceAll("-", "").slice(0, 16);
+let pageServed = false;
+
 export default async function Page() {
+  const first = !pageServed;
+  pageServed = true;
   const initial = list(true);
-  return <Shell initial={initial} />;
+  return (
+    <>
+      <span
+        hidden
+        data-nextrs-cold={first ? "1" : "0"}
+        data-nextrs-uptime-ms={Date.now() - PAGE_BOOT}
+        data-nextrs-boot-id={PAGE_BOOT_ID}
+      />
+      <Shell initial={initial} />
+    </>
+  );
 }

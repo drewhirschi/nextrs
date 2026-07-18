@@ -23,6 +23,14 @@ The performance story compares the *same app built two ways*, at two sizes:
 See [`../benchmarks/README.md`](../benchmarks/README.md) and
 [`../benchmarks/methodology.md`](../benchmarks/methodology.md) for what's measured.
 
+## Function region
+
+All benchmark functions must run in **`pdx1`**. This is both the product's
+preferred West Coast region and a fairness control: the telemetry aggregator
+rejects both sides of a comparison batch unless every function hop reports
+`pdx1` in `x-vercel-id`. Configure the region in each Vercel project's
+Settings → Functions and redeploy after changing it.
+
 ## Git connection
 
 Goal: no floating projects — every project auto-deploys from a connected repo.

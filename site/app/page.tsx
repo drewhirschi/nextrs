@@ -50,8 +50,18 @@ const COMPARISONS: {
   next?: string;
 }[] = [
   { label: "This docs site", detail: "the site you’re reading right now", rust: "nextrs-docs" },
-  { label: "A todo app", detail: "small · typed API + React Query", rust: "react-todos", next: "nextjs-todos" },
-  { label: "A booking app", detail: "medium · auth, Postgres, admin management", rust: "hhh-rs", next: "hhh-nextjs" },
+  {
+    label: "A todo app",
+    detail: "small · typed API + React Query",
+    rust: "react-todos",
+    next: "nextjs-todos",
+  },
+  {
+    label: "A booking app",
+    detail: "medium · auth, Postgres, admin management",
+    rust: "hhh-rs",
+    next: "hhh-nextjs",
+  },
 ];
 
 type Metric = { p50: number | null; p90: number | null };
@@ -60,24 +70,56 @@ function pick(apps: AppStats[], app: string | undefined, target: string) {
   return app ? apps.find((a) => a.app === app && a.target === target) : undefined;
 }
 
-function MetricCell({ m, vs }: { m: Metric | null; vs?: Metric | null }) {
-  if (!m || m.p50 == null) return <td style={{ padding: "6px 10px" }}>{"—"}</td>;
+function MetricCell({
+  m,
+  vs,
+  missingLabel = "—",
+}: {
+  m: Metric | null;
+  vs?: Metric | null;
+  missingLabel?: string;
+}) {
+  if (!m || m.p50 == null)
+    return (
+      <td style={{ padding: "6px 10px", whiteSpace: "nowrap", opacity: missingLabel === "—" ? 1 : 0.65 }}>
+        {missingLabel}
+      </td>
+    );
   let diff: React.ReactNode = null;
   if (vs?.p50 != null && vs.p50 > 0) {
-    const pctDiff = Math.round(((vs.p50 - m.p50) / vs.p50) * 100);
-    if (pctDiff > 0) {
-      diff = (
-        <span style={{ color: "var(--ok, #22c55e)", fontWeight: 600, fontSize: 12, marginLeft: 8 }}>
-          {pctDiff}% faster
-        </span>
-      );
-    } else if (pctDiff < 0) {
-      diff = (
-        <span style={{ color: "var(--warn, #f59e0b)", fontWeight: 600, fontSize: 12, marginLeft: 8 }}>
-          {-pctDiff}% slower
-        </span>
-      );
-    }
+    const deltas = [
+      { label: "p50", mine: m.p50, base: vs.p50 },
+      ...(m.p90 != null && vs.p90 != null && vs.p90 > 0
+        ? [{ label: "p90", mine: m.p90, base: vs.p90 }]
+        : []),
+    ];
+    diff = (
+      <span style={{ display: "inline-flex", gap: 8, marginLeft: 8 }}>
+        {deltas.map((d) => {
+          const ratio = d.mine / d.base;
+          const pctDiff = Math.round(Math.abs(ratio - 1) * 100);
+          const direction = ratio < 1 ? "lower" : ratio > 1 ? "higher" : "equal";
+          return (
+            <span
+              key={d.label}
+              title={`${d.label}: ${d.mine} ms / ${d.base} ms = ${ratio.toFixed(3)}`}
+              style={{
+                color:
+                  ratio < 1
+                    ? "var(--ok, #22c55e)"
+                    : ratio > 1
+                      ? "var(--warn, #f59e0b)"
+                      : "inherit",
+                fontWeight: 600,
+                fontSize: 12,
+              }}
+            >
+              {d.label} {ratio.toFixed(2)}× · {pctDiff}% {direction}
+            </span>
+          );
+        })}
+      </span>
+    );
   }
   return (
     <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
@@ -105,13 +147,50 @@ function LiveColdstarts() {
       : { p50: (a.cold_p50_ms ?? null) as number | null, p90: (a.cold_p90_ms ?? null) as number | null };
   };
 
+  const delivery = (a: AppStats | undefined) => {
+    if (!a) return "unknown";
+    if (a.cdn_hits > 0 && a.cdn_misses === 0) return "cdn";
+    if (a.cdn_hits > 0 && a.cdn_misses > 0) return "mixed";
+    return a.function_regions.length > 0 ? "function" : "unknown";
+  };
+
+  const comparable = (c: (typeof COMPARISONS)[number], target: "page" | "api") => {
+    const rust = pick(stats.apps, c.rust, target);
+    const next = pick(stats.apps, c.next, target);
+    if (!rust || !next) return false;
+    if (rust.samples - rust.errors !== next.samples - next.errors) return false;
+    if (delivery(rust) !== "function" || delivery(next) !== "function") return false;
+    if (rust.function_regions.length !== 1 || next.function_regions.length !== 1) return false;
+    if (rust.function_regions[0] !== next.function_regions[0]) return false;
+    const expected = new Set([...rust.expected_regions, ...next.expected_regions]);
+    return expected.size === 1 && expected.has(rust.function_regions[0]);
+  };
+
+  const comparisonStatus = (c: (typeof COMPARISONS)[number], target: "page" | "api") => {
+    const rust = pick(stats.apps, c.rust, target);
+    const next = pick(stats.apps, c.next, target);
+    if (!rust || !next) return `${target}: collecting routing metadata`;
+    const rustDelivery = delivery(rust);
+    const nextDelivery = delivery(next);
+    if (rustDelivery !== nextDelivery) return `${target}: ${rustDelivery} vs ${nextDelivery} — ratios paused`;
+    const rustRegions = rust.function_regions.join(", ") || "no function region";
+    const nextRegions = next.function_regions.join(", ") || "no function region";
+    if (!comparable(c, target)) return `${target}: ${rustRegions} vs ${nextRegions} — ratios paused`;
+    return `${target}: matched in ${rustRegions}`;
+  };
+
+  const coldPageMissingLabel = (app: string | undefined) => {
+    const a = pick(stats.apps, app, "page");
+    return delivery(a) === "cdn" ? "N/A · CDN cached" : "not instrumented";
+  };
+
   return (
     <div>
       <div style={{ overflowX: "auto" }}>
         <table className="live-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
           <thead>
             <tr>
-              {["", "", "warm page load", "cold page load", "warm API route", "cold API route"].map((h, i) => (
+              {["", "", "warm page load", "cold page load (burst)", "warm API route", "cold API route (burst)"].map((h, i) => (
                 <th key={i} style={{ textAlign: "left", padding: "6px 10px", opacity: 0.6, fontWeight: 600 }}>
                   {h}
                   {i >= 2 ? <span style={{ fontWeight: 400, opacity: 0.7 }}> · p50/p90</span> : null}
@@ -131,10 +210,22 @@ function LiveColdstarts() {
                     </td>
                   ) : null}
                   <td style={{ padding: "6px 10px", fontWeight: 700 }}>nextrs</td>
-                  <MetricCell m={metric(c.rust, "page", "warm")} vs={metric(c.next, "page", "warm")} />
-                  <MetricCell m={metric(c.rust, "page", "cold")} vs={metric(c.next, "page", "cold")} />
-                  <MetricCell m={metric(c.rust, "api", "warm")} vs={metric(c.next, "api", "warm")} />
-                  <MetricCell m={metric(c.rust, "api", "cold")} vs={metric(c.next, "api", "cold")} />
+                  <MetricCell
+                    m={metric(c.rust, "page", "warm")}
+                    vs={comparable(c, "page") ? metric(c.next, "page", "warm") : null}
+                  />
+                  <MetricCell
+                    m={metric(c.rust, "page", "cold")}
+                    vs={comparable(c, "page") ? metric(c.next, "page", "cold") : null}
+                  />
+                  <MetricCell
+                    m={metric(c.rust, "api", "warm")}
+                    vs={comparable(c, "api") ? metric(c.next, "api", "warm") : null}
+                  />
+                  <MetricCell
+                    m={metric(c.rust, "api", "cold")}
+                    vs={comparable(c, "api") ? metric(c.next, "api", "cold") : null}
+                  />
                 </tr>
               );
               if (!hasPair) return rustRow;
@@ -147,7 +238,7 @@ function LiveColdstarts() {
                     </td>
                     <td style={{ padding: "6px 10px" }}>Next.js</td>
                     <MetricCell m={metric(c.next, "page", "warm")} />
-                    <MetricCell m={metric(c.next, "page", "cold")} />
+                    <MetricCell m={metric(c.next, "page", "cold")} missingLabel={coldPageMissingLabel(c.next)} />
                     <MetricCell m={metric(c.next, "api", "warm")} />
                     <MetricCell m={metric(c.next, "api", "cold")} />
                   </tr>
@@ -158,16 +249,28 @@ function LiveColdstarts() {
           </tbody>
         </table>
       </div>
+      <p className="live-note" style={{ opacity: 0.7, fontSize: 13, marginTop: 10, marginBottom: 0 }}>
+        Comparison labels appear only when both observations used the same
+        function region, that region matches the fleet configuration, and both
+        requests used the same delivery path. Current checks:{" "}
+        {COMPARISONS.filter((c) => c.next).map((c, i) => (
+          <React.Fragment key={c.label + "status"}>
+            {i ? " · " : ""}<b>{c.label}:</b>{" "}
+            {comparisonStatus(c, "page")}; {comparisonStatus(c, "api")}
+          </React.Fragment>
+        ))}
+      </p>
       <h3 style={{ marginTop: 28, marginBottom: 4 }}>How often does a request pay a cold start?</h3>
       <p className="live-note" style={{ opacity: 0.7, fontSize: 14, marginTop: 0, marginBottom: 8 }}>
-        Each probe fires 20 concurrent API requests. An instance that handles more of
-        the burst means fewer cold starts for the same traffic.
+        Each probe fires 20 concurrent API requests. This normalizes observed
+        first requests by successful burst traffic; it does not infer how many
+        requests any one instance served.
       </p>
       <div style={{ overflowX: "auto" }}>
         <table className="live-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
           <thead>
             <tr>
-              {["", "", "burst requests served", "cold starts paid", "requests per cold start"].map((h, i) => (
+              {["", "", "successful burst requests", "fresh instances observed", "requests per observed cold"].map((h, i) => (
                 <th key={i} style={{ textAlign: "left", padding: "6px 10px", opacity: 0.6, fontWeight: 600 }}>{h}</th>
               ))}
             </tr>
@@ -183,9 +286,14 @@ function LiveColdstarts() {
               const jsRpc = rpc(rows[0].a);
               return rows.map((r, i) => {
                 const mine = rpc(r.a);
-                const ratio =
+                const coldRateRatio =
+                  comparable(c, "api") &&
                   r.framework === "nextrs" && mine != null && jsRpc != null && jsRpc > 0
-                    ? mine / jsRpc
+                    ? jsRpc / mine
+                    : null;
+                const pctChange =
+                  coldRateRatio != null
+                    ? Math.round(Math.abs(coldRateRatio - 1) * 100)
                     : null;
                 return (
                   <tr key={c.label + r.framework} style={{ borderTop: i === 0 ? "1px solid var(--line, #333)" : "none" }}>
@@ -199,9 +307,16 @@ function LiveColdstarts() {
                     <td style={{ padding: "6px 10px" }}>{r.a?.burst_colds ?? "—"}</td>
                     <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
                       {mine == null ? "—" : `1 per ${mine.toFixed(1)}`}
-                      {ratio != null && ratio > 1.15 ? (
-                        <span style={{ color: "var(--ok, #22c55e)", fontWeight: 600, fontSize: 12, marginLeft: 8 }}>
-                          {ratio.toFixed(1)}× fewer cold starts
+                      {coldRateRatio != null && pctChange != null && pctChange >= 15 ? (
+                        <span
+                          style={{
+                            color: coldRateRatio < 1 ? "var(--ok, #22c55e)" : "var(--warn, #f59e0b)",
+                            fontWeight: 600,
+                            fontSize: 12,
+                            marginLeft: 8,
+                          }}
+                        >
+                          {coldRateRatio.toFixed(2)}× cold rate · {pctChange}% {coldRateRatio < 1 ? "lower" : "higher"}
                         </span>
                       ) : null}
                     </td>
@@ -213,13 +328,14 @@ function LiveColdstarts() {
         </table>
       </div>
       <p className="live-note" style={{ opacity: 0.6, fontSize: 13, marginTop: 10 }}>
-        {stats.total_samples.toLocaleString()} samples and counting — real deployments
-        on Vercel, probed at randomized times every ~2 hours, measured from the same
-        place in the same minutes. Typical = sequential requests against a warm
-        instance (what a user clicking around experiences). Cold = first
-        request on a fresh instance. Next.js page functions can’t self-report
-        instance temperature, so their cold-page cells stay “—” (their API
-        routes can, and do). Aggregated by <code>/api/coldstarts</code>,
+        {stats.total_samples.toLocaleString()} methodology-v{stats.telemetry_version} samples since the clean reset —
+        real deployments on Vercel, probed at randomized times every ~2 hours,
+        measured from the same runner in the same moments. Warm = sequential requests against a warm
+        instance (what a user clicking around experiences). Cold = a request
+        that started a fresh instance during a 20-request concurrent burst, so
+        it includes real scale-out provisioning and burst contention. A cold-page value requires page-level
+        instrumentation; a CDN-cached page has no function cold start.
+        Aggregated by <code>/api/coldstarts</code>,
         the endpoint this page is calling right now.
       </p>
     </div>
