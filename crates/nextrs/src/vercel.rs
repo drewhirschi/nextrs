@@ -32,6 +32,11 @@
 //! Drop-in replacement for `vercel_runtime::axum::VercelLayer` when you want
 //! HTML streaming. Non-streaming responses are unaffected — they just arrive
 //! as a single frame, identical to the upstream behavior.
+//!
+//! The layer also installs a [`WaitUntil`](crate::WaitUntil) request extension
+//! backed by the runtime's `AppState::wait_until`, so handlers extracting
+//! `nextrs::WaitUntil` get Vercel's shutdown-drained background-work semantics
+//! (the upstream `VercelLayer` discards the `AppState` entirely).
 
 use std::convert::Infallible;
 use std::future::Future;
@@ -44,7 +49,7 @@ use axum::response::Response as AxumResponse;
 use http_body_util::BodyExt;
 use tower::{Layer, Service, ServiceExt};
 use vercel_runtime::axum::StreamingUtils;
-use vercel_runtime::{AppState, Error as VercelError, Request as VercelRequest, ResponseBody};
+use vercel_runtime::{AppState, Error as VercelError, ResponseBody};
 
 /// A [`tower::Layer`] that wraps an axum router for `vercel_runtime::run` while
 /// preserving HTML response streaming.
@@ -78,13 +83,20 @@ pub struct StreamingVercelService<S> {
     inner: S,
 }
 
-impl<S> Service<(AppState, VercelRequest)> for StreamingVercelService<S>
+// Generic over the request body rather than hardcoding `VercelRequest`
+// (= `hyper::Request<hyper::body::Incoming>`): `Incoming` can't be constructed
+// outside a real hyper connection, and the generic form lets tests drive the
+// full service. Production still resolves to `B = Incoming`.
+impl<S, B> Service<(AppState, hyper::Request<B>)> for StreamingVercelService<S>
 where
     S: Service<AxumRequest<AxumBody>, Response = AxumResponse<AxumBody>, Error = Infallible>
         + Send
         + Clone
         + 'static,
     S::Future: Send + 'static,
+    B: hyper::body::Body + Send + 'static,
+    B::Data: Send,
+    B::Error: std::error::Error + Send + Sync + 'static,
 {
     type Response = hyper::Response<ResponseBody>;
     type Error = VercelError;
@@ -98,7 +110,7 @@ where
         }
     }
 
-    fn call(&mut self, (_state, req): (AppState, VercelRequest)) -> Self::Future {
+    fn call(&mut self, (state, req): (AppState, hyper::Request<B>)) -> Self::Future {
         let mut service = self.inner.clone();
         Box::pin(async move {
             let (parts, body) = req.into_parts();
@@ -106,7 +118,14 @@ where
                 .await
                 .map_err(|e| Box::new(e) as VercelError)?
                 .to_bytes();
-            let axum_req = AxumRequest::from_parts(parts, AxumBody::from(body_bytes));
+            let mut axum_req = AxumRequest::from_parts(parts, AxumBody::from(body_bytes));
+            // Back the `WaitUntil` extractor with the runtime's shutdown-drained
+            // awaiter, so background work survives the invocation ending.
+            axum_req
+                .extensions_mut()
+                .insert(crate::WaitUntil::from_scheduler(move |fut| {
+                    state.wait_until(fut)
+                }));
 
             let ready = ServiceExt::ready(&mut service)
                 .await
@@ -136,5 +155,41 @@ mod tests {
     fn layer_composes_with_axum_router() {
         let _: StreamingVercelService<Router> =
             StreamingVercelLayer::new().layer(Router::new().route("/", get(|| async { "ok" })));
+    }
+
+    /// A handler behind the layer extracts `WaitUntil` and its background
+    /// future is scheduled through the `AppState` awaiter (i.e., it actually
+    /// runs — the awaiter spawns immediately, drain only happens at shutdown).
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn injects_wait_until_backed_by_app_state() {
+        use vercel_runtime::LogContext;
+
+        let (tx, rx) = tokio::sync::oneshot::channel::<&'static str>();
+        let tx = std::sync::Arc::new(std::sync::Mutex::new(Some(tx)));
+        let router = Router::new().route(
+            "/",
+            get(move |wait: crate::WaitUntil| {
+                let tx = tx.clone();
+                async move {
+                    wait.wait_until(async move {
+                        if let Some(tx) = tx.lock().unwrap().take() {
+                            let _ = tx.send("ran");
+                        }
+                    });
+                    "ok"
+                }
+            }),
+        );
+        let mut service = StreamingVercelLayer::new().layer(router);
+
+        let state = AppState::new(LogContext::new(None, None, None));
+        let req = hyper::Request::builder()
+            .uri("/")
+            .body(AxumBody::empty())
+            .unwrap();
+        let resp = Service::call(&mut service, (state, req)).await.unwrap();
+        assert!(resp.status().is_success());
+        assert_eq!(rx.await.unwrap(), "ran");
     }
 }

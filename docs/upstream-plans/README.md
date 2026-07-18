@@ -28,3 +28,4 @@ user docs.
 - [Hover preload through the router, not /__nx/prefetch](hover-preload-route.md)
 - [Porting has no paved road](porting-paved-road.md)
 - [PrefetchConfig → SpeculationConfig rename, default off, React-route scoping](speculation-config-rename.md)
+- [waitUntil — background work after the response](vercel-wait-until.md)
