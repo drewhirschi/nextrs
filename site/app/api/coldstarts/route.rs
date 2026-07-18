@@ -87,6 +87,15 @@ pub struct AppStats {
     /// app's instances absorbed, and how many required a fresh instance.
     pub burst_requests: i64,
     pub burst_colds: i64,
+    /// Edge POPs that received the requests in this aggregate window.
+    pub edge_regions: Vec<String>,
+    /// Function regions parsed from x-vercel-id. Empty means no function hop
+    /// was reported (normally a CDN response) or legacy telemetry.
+    pub function_regions: Vec<String>,
+    /// Region configured as the fair-comparison target in metrics/fleet.json.
+    pub expected_regions: Vec<String>,
+    pub cdn_hits: i64,
+    pub cdn_misses: i64,
     pub first_ts: Option<String>,
     pub last_ts: Option<String>,
 }
@@ -95,7 +104,12 @@ pub struct AppStats {
 pub struct ColdstartStats {
     pub apps: Vec<AppStats>,
     pub total_samples: i64,
+    /// Bumped whenever methodology changes invalidate the old population.
+    /// Existing raw rows remain recoverable but are excluded from aggregates.
+    pub telemetry_version: i64,
 }
+
+const TELEMETRY_VERSION: i64 = 2;
 
 static DB: OnceCell<Option<libsql::Database>> = OnceCell::const_new();
 
@@ -189,8 +203,18 @@ fn pct(sorted: &[i64], p: f64) -> Option<i64> {
     if sorted.is_empty() {
         return None;
     }
-    let idx = ((sorted.len() as f64) * p).floor() as usize;
-    Some(sorted[idx.min(sorted.len() - 1)])
+    // Linear interpolation on the zero-based (n - 1) rank, matching the
+    // checked-in benchmark scripts. The old floor(n * p) rule made p50 the
+    // upper middle value and made p90 the maximum for ten-sample windows.
+    let rank = (sorted.len() - 1) as f64 * p;
+    let lower = rank.floor() as usize;
+    let upper = rank.ceil() as usize;
+    let value = if lower == upper {
+        sorted[lower] as f64
+    } else {
+        sorted[lower] as f64 + (sorted[upper] - sorted[lower]) as f64 * (rank - lower as f64)
+    };
+    Some(value.round() as i64)
 }
 
 /// A "cold" flag is only a real cold start if the instance was actually
@@ -201,12 +225,13 @@ const REAL_COLD_MAX_UPTIME_MS: i64 = 10_000;
 async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libsql::Error> {
     let mut rows = conn
         .query(
-            "SELECT app, temp, ms, ok, error IS NOT NULL, ts, COALESCE(target, ''), uptime_ms, COALESCE(phase, '') FROM coldstarts",
+            "SELECT app, temp, ms, ok, error IS NOT NULL, ts, COALESCE(target, ''), uptime_ms, COALESCE(phase, ''), extra
+             FROM coldstarts",
             (),
         )
         .await?;
 
-    use std::collections::BTreeMap;
+    use std::collections::{BTreeMap, BTreeSet};
     #[derive(Default)]
     struct Acc {
         cold: Vec<i64>,
@@ -215,6 +240,11 @@ async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libs
         prewarmed: i64,
         burst_reqs: i64,
         burst_colds: i64,
+        edge_regions: BTreeSet<String>,
+        function_regions: BTreeSet<String>,
+        expected_regions: BTreeSet<String>,
+        cdn_hits: i64,
+        cdn_misses: i64,
         errors: i64,
         samples: i64,
         first: Option<String>,
@@ -232,13 +262,57 @@ async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libs
         let target: String = row.get(6).unwrap_or_default();
         let uptime: Option<i64> = row.get(7).ok();
         let phase: String = row.get(8).unwrap_or_default();
+        let extra: Option<String> = row.get(9).ok();
+        let extra = extra
+            .as_deref()
+            .and_then(|value| serde_json::from_str::<serde_json::Value>(value).ok());
+        // Version 2 is a deliberate clean slate after the original live table
+        // mixed regions, delivery modes, sample windows, and sequential probe
+        // times. Preserve the raw history, but never blend it into new claims.
+        if extra
+            .as_ref()
+            .and_then(|value| value.get("telemetry_version"))
+            .and_then(|value| value.as_i64())
+            != Some(TELEMETRY_VERSION)
+        {
+            continue;
+        }
+        // For comparison pairs, a wrong region invalidates the whole pair's
+        // target in that batch (the pinger stamps both sides false). This
+        // keeps their sample windows aligned while a deployment is being
+        // moved; the rejected rows remain available in the raw table.
+        if extra
+            .as_ref()
+            .and_then(|value| value.get("pair_region_match"))
+            .and_then(|value| value.as_bool())
+            == Some(false)
+        {
+            continue;
+        }
         let acc = by_app.entry((app, target)).or_default();
+        if let Some(extra) = extra {
+            let remember = |field: &str, values: &mut BTreeSet<String>| {
+                if let Some(value) = extra.get(field).and_then(|v| v.as_str()) {
+                    if !value.is_empty() {
+                        values.insert(value.to_owned());
+                    }
+                }
+            };
+            remember("edge_region", &mut acc.edge_regions);
+            remember("function_region", &mut acc.function_regions);
+            remember("expected_region", &mut acc.expected_regions);
+            match extra.get("vercel_cache").and_then(|v| v.as_str()) {
+                Some("HIT") => acc.cdn_hits += 1,
+                Some("MISS") => acc.cdn_misses += 1,
+                _ => {}
+            }
+        }
         acc.samples += 1;
         total += 1;
         if phase == "burst" && ok == 1 && errored == 0 {
             acc.burst_reqs += 1;
             if temp.as_deref() == Some("cold")
-                && uptime.unwrap_or(0) <= REAL_COLD_MAX_UPTIME_MS
+                && uptime.is_some_and(|value| value <= REAL_COLD_MAX_UPTIME_MS)
             {
                 acc.burst_colds += 1;
             }
@@ -247,7 +321,7 @@ async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libs
             acc.errors += 1;
         } else if let Some(ms) = ms {
             match temp.as_deref() {
-                Some("cold") if uptime.unwrap_or(0) <= REAL_COLD_MAX_UPTIME_MS => {
+                Some("cold") if uptime.is_some_and(|value| value <= REAL_COLD_MAX_UPTIME_MS) => {
                     acc.cold.push(ms)
                 }
                 Some("cold") => {
@@ -291,7 +365,11 @@ async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libs
             a.seq_warm.sort_unstable();
             // Browser-like warm numbers when we have them; spike warms as
             // fallback for apps that predate the sequential phase.
-            let warm_src = if a.seq_warm.is_empty() { &a.warm } else { &a.seq_warm };
+            let warm_src = if a.seq_warm.is_empty() {
+                &a.warm
+            } else {
+                &a.seq_warm
+            };
             AppStats {
                 app,
                 target,
@@ -308,6 +386,11 @@ async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libs
                 warm_p95_ms: pct(warm_src, 0.95),
                 burst_requests: a.burst_reqs,
                 burst_colds: a.burst_colds,
+                edge_regions: a.edge_regions.into_iter().collect(),
+                function_regions: a.function_regions.into_iter().collect(),
+                expected_regions: a.expected_regions.into_iter().collect(),
+                cdn_hits: a.cdn_hits,
+                cdn_misses: a.cdn_misses,
                 first_ts: a.first,
                 last_ts: a.last,
             }
@@ -317,7 +400,21 @@ async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libs
     Ok(ColdstartStats {
         apps,
         total_samples: total,
+        telemetry_version: TELEMETRY_VERSION,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::pct;
+
+    #[test]
+    fn percentile_uses_interpolated_rank() {
+        assert_eq!(pct(&[], 0.5), None);
+        assert_eq!(pct(&[10], 0.9), Some(10));
+        assert_eq!(pct(&[10, 20], 0.5), Some(15));
+        assert_eq!(pct(&[0, 10, 20, 30], 0.9), Some(27));
+    }
 }
 
 /// Recompute aggregates and persist them as a single snapshot row, so GET is
@@ -355,6 +452,7 @@ pub async fn get() -> Result<Json<ColdstartStats>, StatusCode> {
         return Ok(Json(ColdstartStats {
             apps: vec![],
             total_samples: 0,
+            telemetry_version: TELEMETRY_VERSION,
         }));
     };
     let conn = database

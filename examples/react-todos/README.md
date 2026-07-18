@@ -83,7 +83,7 @@ vercel deploy --prod
 ### Gotchas worth remembering
 
 - **First build is slow (~8–15 min)** — Vercel compiles rolldown + oxc (~50 crates) from scratch. It's cached after that, so incremental redeploys are ~40 s.
-- **Function region is a project setting, not `vercel.json`.** `"regions": [...]` in `vercel.json` is ignored; set the region via the dashboard (Settings → Functions) or the API (`PATCH /v9/projects/{id}` with `{"serverlessFunctionRegion":"sfo1"}`), then redeploy.
+- **Function region is a project setting, not `vercel.json`.** `"regions": [...]` in `vercel.json` is ignored; set the region via the dashboard (Settings → Functions) or the API (`PATCH /v9/projects/{id}` with `{"serverlessFunctionRegion":"pdx1"}`), then redeploy. The benchmark fleet expects `pdx1` for both to-do apps so they serve West Coast users from the same location.
 - **The bundle must be rebuilt before deploy** if you changed `page.tsx` — the committed `public/dist/` is what Vercel serves (it won't re-bundle).
 - **Cold-start instrumentation:** `api/index.rs` adds an `x-cold` / `x-init-ms` header on each response so cold vs warm can be measured (Vercel exposes no native signal). See `benchmarks/scripts/bench-cold.sh`.
 

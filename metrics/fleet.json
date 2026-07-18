@@ -1,18 +1,21 @@
 {
-  "comment": "Fleet registry for the cold-start pinger (.github/workflows/coldstart-pinger.yml). Per run, each app gets a concurrent burst of `burst` requests to its `page` path and `burst` to its `api` path \u2014 one batch captures both the cold start (the request that boots an instance) and warm behavior (the rest). Apps with `health: true` run nextrs >= 0.3.7, which stamps x-nextrs-cold/-boot-id/-uptime-ms on EVERY response, so page and api samples classify identically. Apps with `health: false` predate the headers; timing-only until they upgrade. Apps come in Rust/Next.js pairs where a JS baseline exists (hhh-rs/hhh-nextjs, react-todos/nextjs-todos) \u2014 that pairing is the headline comparison.",
+  "comment": "Fleet registry for the cold-start pinger (.github/workflows/coldstart-pinger.yml). Per run, each app gets a concurrent burst followed by side-by-side warm rounds. Every observation stores the edge POP, function region, expected region, CDN status, runner identity, batch ID, response size, and temperature evidence. Rust apps stamp temperature headers on every response; a Next.js page needs an HTML telemetry marker, while a CDN-cached page has no function cold start. Rust/Next.js pairs are hhh-rs/hhh-nextjs and react-todos/nextjs-todos.",
   "burst": 20,
   "apps": [
     {
       "name": "nextrs-docs",
       "url": "https://nextrs-docs.vercel.app",
       "health": true,
+      "expected_region": "pdx1",
       "page": "/",
       "api": "/__nx/health"
     },
     {
       "name": "react-todos",
+      "pair": "todos",
       "url": "https://nextrs-react-todos.vercel.app",
       "health": true,
+      "expected_region": "pdx1",
       "page": "/",
       "api": "/__nx/health"
     },
@@ -20,29 +23,36 @@
       "name": "onenote-extractor",
       "url": "https://onenote-extractor.vercel.app",
       "health": true,
+      "expected_region": "pdx1",
       "page": "/",
       "api": "/__nx/health",
       "note": "page 303s to auth \u2014 page samples are timing-only by status"
     },
     {
       "name": "hhh-rs",
+      "pair": "booking",
       "url": "https://hhh-rs.vercel.app",
       "health": true,
+      "expected_region": "pdx1",
       "page": "/",
       "api": "/__nx/health"
     },
     {
       "name": "hhh-nextjs",
+      "pair": "booking",
       "url": "https://hhh-next.vercel.app",
       "health": true,
+      "expected_region": "pdx1",
       "page": "/",
       "api": "/api/health",
       "note": "Next.js baseline of hhh (bench branch) \u2014 the Rust/JS comparison pair for hhh-rs"
     },
     {
       "name": "nextjs-todos",
+      "pair": "todos",
       "url": "https://bench-nextjs-todos.vercel.app",
       "health": true,
+      "expected_region": "pdx1",
       "page": "/",
       "api": "/api/health",
       "note": "Next.js todos comparator (benchmarks/apps/nextjs) \u2014 the pair for react-todos"

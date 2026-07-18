@@ -126,7 +126,12 @@
           "prewarmed",
           "errors",
           "burst_requests",
-          "burst_colds"
+          "burst_colds",
+          "edge_regions",
+          "function_regions",
+          "expected_regions",
+          "cdn_hits",
+          "cdn_misses"
         ],
         "properties": {
           "app": {
@@ -140,6 +145,14 @@
             "type": "integer",
             "format": "int64",
             "description": "Burst-phase totals (the concurrency probe): how many requests the\napp's instances absorbed, and how many required a fresh instance."
+          },
+          "cdn_hits": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "cdn_misses": {
+            "type": "integer",
+            "format": "int64"
           },
           "cold": {
             "type": "integer",
@@ -166,15 +179,36 @@
             ],
             "format": "int64"
           },
+          "edge_regions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Edge POPs that received the requests in this aggregate window."
+          },
           "errors": {
             "type": "integer",
             "format": "int64"
+          },
+          "expected_regions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Region configured as the fair-comparison target in metrics/fleet.json."
           },
           "first_ts": {
             "type": [
               "string",
               "null"
             ]
+          },
+          "function_regions": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Function regions parsed from x-vercel-id. Empty means no function hop\nwas reported (normally a CDN response) or legacy telemetry."
           },
           "last_ts": {
             "type": [
@@ -317,7 +351,8 @@
         "type": "object",
         "required": [
           "apps",
-          "total_samples"
+          "total_samples",
+          "telemetry_version"
         ],
         "properties": {
           "apps": {
@@ -325,6 +360,11 @@
             "items": {
               "$ref": "#/components/schemas/AppStats"
             }
+          },
+          "telemetry_version": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Bumped whenever methodology changes invalidate the old population.\nExisting raw rows remain recoverable but are excluded from aggregates."
           },
           "total_samples": {
             "type": "integer",
