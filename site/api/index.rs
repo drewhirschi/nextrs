@@ -17,8 +17,16 @@ include!(concat!(env!("OUT_DIR"), "/nextrs_routes.rs"));
 async fn main() -> Result<(), vercel_runtime::Error> {
     init_tracing();
 
-    let router = nextrs::router::build_router(generated_registry())
-        .merge(nextrs::openapi::spec_router(generated_openapi()));
+    // Speculation opt-in must mirror src/main.rs — this bin is what Vercel
+    // runs; dev-only wiring in main.rs never reaches production.
+    let router = nextrs::router::build_router_with_speculation(
+        generated_registry(),
+        nextrs::SpeculationConfig {
+            mode: nextrs::SpeculationMode::Prefetch,
+            eagerness: nextrs::Eagerness::Moderate,
+        },
+    )
+    .merge(nextrs::openapi::spec_router(generated_openapi()));
     let app = ServiceBuilder::new()
         .layer(StreamingVercelLayer::new())
         .service(router);
