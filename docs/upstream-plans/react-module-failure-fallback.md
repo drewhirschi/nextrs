@@ -1,11 +1,27 @@
 # React Module Failure Fallback
 
+- **Reported-in:** hand-assembled nextrs port; docs-site local dev (2026-07-18)
+- **Status:** open — inline shell fallback shipped (incl. resource-load
+  failures, see below); the React error boundary for post-mount render
+  errors is still to do.
+
 ## Problem
 
 If a generated TSX page module fails before React mounts, the browser can render
 a blank page. One observed case was an unresolved browser import such as
 `@/components/ui/badge`; the module failed before `createRoot(...).render(...)`,
 leaving `#__nx_root__` empty.
+
+**Second observed case (2026-07-18, docs-site local dev):** the app-shell
+script itself 404s because the server binary and `public/dist` were produced
+by different builds (a release/deploy build rewrote dist under a running
+debug binary — content hashes differ per profile). The inline fallback that
+already existed did NOT fire: resource load errors dispatch on the element
+and never bubble to `window`, so a non-capture `window.addEventListener("error")`
+never sees them. Fixed by listening in the capture phase and branching on
+`event.target.src/href` to render a "Failed to load script: <url>" panel that
+names the binary/dist-skew cause and the remedy. Regression test:
+`tsx_shell_error_fallback_catches_resource_load_failures` in build.rs.
 
 ## Proposed Direction
 

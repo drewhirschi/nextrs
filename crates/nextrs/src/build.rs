@@ -1283,9 +1283,23 @@ window.process || (window.process = {{ env: {{}} }});
     wrap.append(h, pre);
     root.append(wrap);
   }};
+  // capture: true — resource load failures (script/css 404s) fire on the
+  // element and never bubble to window; without capture the page just goes
+  // blank when an asset is missing (e.g. the server binary and public/dist
+  // were produced by different builds).
   window.addEventListener("error", (event) => {{
+    const t = event.target;
+    if (t && t !== window && (t.src || t.href)) {{
+      renderError(
+        "Failed to load " + (t.tagName === "SCRIPT" ? "script: " : "asset: ") + (t.src || t.href),
+        "The server referenced an asset that did not load (404 or network failure).\n" +
+        "Most common cause: the server binary and public/dist were produced by different\n" +
+        "builds — e.g. a release/deploy build rewrote dist after this binary was built.\n" +
+        "Rebuild the app and restart the server.");
+      return;
+    }}
     renderError("Client-side page error", event.error?.stack || event.message || String(event));
-  }});
+  }}, true);
   window.addEventListener("unhandledrejection", (event) => {{
     const reason = event.reason;
     renderError("Client-side async error", reason?.stack || reason?.message || String(reason));
@@ -1936,6 +1950,23 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
             "stylesheet must precede the React mount: {source}"
         );
         assert!(!source.contains("/style.css?v="), "{source}");
+    }
+
+    #[test]
+    fn tsx_shell_error_fallback_catches_resource_load_failures() {
+        let shell = tsx_shell_with_src("/dist/__app_shell__-abc123.js", None);
+        // Resource errors (script/css 404) fire on the element and don't
+        // bubble — the listener must be capture-phase or a missing asset
+        // renders a silent blank page instead of the diagnostic panel.
+        assert!(shell.contains("}, true);"), "error listener must use capture: {shell}");
+        assert!(shell.contains("Failed to load "), "{shell}");
+        assert!(
+            shell.contains("produced by different"),
+            "resource-failure hint must name the binary/dist skew cause: {shell}"
+        );
+        // The runtime-error path stays intact.
+        assert!(shell.contains("Client-side page error"), "{shell}");
+        assert!(shell.contains("unhandledrejection"), "{shell}");
     }
 
     #[test]
