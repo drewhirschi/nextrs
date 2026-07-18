@@ -49,16 +49,15 @@ const COMPARISONS: {
   rust: string;
   next?: string;
 }[] = [
-  { label: "This docs site", detail: "the site you’re reading right now", rust: "nextrs-docs" },
   {
-    label: "A todo app",
-    detail: "small · typed API + React Query",
+    label: "Small app",
+    detail: "a todo app",
     rust: "react-todos",
     next: "nextjs-todos",
   },
   {
-    label: "A booking app",
-    detail: "medium · auth, Postgres, admin management",
+    label: "Medium app",
+    detail: "a booking app",
     rust: "hhh-rs",
     next: "hhh-nextjs",
   },
@@ -70,61 +69,82 @@ function pick(apps: AppStats[], app: string | undefined, target: string) {
   return app ? apps.find((a) => a.app === app && a.target === target) : undefined;
 }
 
+// One percentile per line: "p50  1373 ms  56% faster". The green delta only
+// renders when a comparison baseline is passed (i.e. the pair is comparable).
 function MetricCell({
   m,
   vs,
   missingLabel = "—",
+  heat = false,
 }: {
   m: Metric | null;
   vs?: Metric | null;
   missingLabel?: string;
+  /** Color the value itself by how painful it is (amber >= 1s, red >= 3s). */
+  heat?: boolean;
 }) {
   if (!m || m.p50 == null)
     return (
-      <td style={{ padding: "6px 10px", whiteSpace: "nowrap", opacity: missingLabel === "—" ? 1 : 0.65 }}>
+      <td style={{ padding: "8px 12px", whiteSpace: "nowrap", opacity: missingLabel === "—" ? 1 : 0.65, fontSize: 13 }}>
         {missingLabel}
       </td>
     );
-  let diff: React.ReactNode = null;
-  if (vs?.p50 != null && vs.p50 > 0) {
-    const deltas = [
-      { label: "p50", mine: m.p50, base: vs.p50 },
-      ...(m.p90 != null && vs.p90 != null && vs.p90 > 0
-        ? [{ label: "p90", mine: m.p90, base: vs.p90 }]
-        : []),
-    ];
-    diff = (
-      <span style={{ display: "inline-flex", gap: 8, marginLeft: 8 }}>
-        {deltas.map((d) => {
-          const ratio = d.mine / d.base;
-          const pctDiff = Math.round(Math.abs(ratio - 1) * 100);
-          const direction = ratio < 1 ? "lower" : ratio > 1 ? "higher" : "equal";
-          return (
-            <span
-              key={d.label}
-              title={`${d.label}: ${d.mine} ms / ${d.base} ms = ${ratio.toFixed(3)}`}
-              style={{
-                color:
-                  ratio < 1
-                    ? "var(--ok, #22c55e)"
-                    : ratio > 1
-                      ? "var(--warn, #f59e0b)"
-                      : "inherit",
-                fontWeight: 600,
-                fontSize: 12,
-              }}
-            >
-              {d.label} {ratio.toFixed(2)}× · {pctDiff}% {direction}
-            </span>
-          );
-        })}
-      </span>
+  const line = (label: string, mine: number | null, base: number | null | undefined) => {
+    if (mine == null) return null;
+    let diff: React.ReactNode = null;
+    if (base != null && base > 0) {
+      const ratio = mine / base;
+      const pct = Math.round(Math.abs(ratio - 1) * 100);
+      if (pct >= 1)
+        diff = (
+          <span
+            title={`${label}: ${mine} ms vs ${base} ms = ${ratio.toFixed(3)}`}
+            style={{
+              color: ratio < 1 ? "var(--ok, #22c55e)" : "var(--warn, #f59e0b)",
+              fontWeight: 600,
+              fontSize: 12,
+              marginLeft: 8,
+            }}
+          >
+            {pct}% {ratio < 1 ? "faster" : "slower"}
+          </span>
+        );
+    }
+    const heatColor = heat
+      ? mine >= 3000
+        ? "var(--bad, #ef4444)"
+        : mine >= 1000
+          ? "var(--warn, #f59e0b)"
+          : undefined
+      : undefined;
+    return (
+      <div style={{ whiteSpace: "nowrap", lineHeight: 1.7 }}>
+        <span style={{ opacity: 0.5, fontSize: 11, display: "inline-block", width: 28 }}>{label}</span>
+        <span style={heatColor ? { color: heatColor, fontWeight: 600 } : undefined}>{mine} ms</span>
+        {diff}
+      </div>
     );
-  }
+  };
   return (
-    <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
-      {m.p50} / {m.p90 ?? "—"} ms{diff}
+    <td style={{ padding: "8px 12px", verticalAlign: "top" }}>
+      {line("p50", m.p50, vs?.p50)}
+      {line("p90", m.p90, vs?.p90)}
     </td>
+  );
+}
+
+// Fine print folded behind a small toggle — the numbers stay front and
+// center, the methodology is one click away.
+function InfoNote({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <details style={{ marginTop: 8 }}>
+      <summary
+        style={{ cursor: "pointer", opacity: 0.5, fontSize: 12, userSelect: "none", width: "fit-content" }}
+      >
+        ⓘ {label}
+      </summary>
+      <div style={{ opacity: 0.7, fontSize: 13, marginTop: 6 }}>{children}</div>
+    </details>
   );
 }
 
@@ -179,9 +199,30 @@ function LiveColdstarts() {
     return `${target}: matched in ${rustRegions}`;
   };
 
-  const coldPageMissingLabel = (app: string | undefined) => {
-    const a = pick(stats.apps, app, "page");
-    return delivery(a) === "cdn" ? "N/A · CDN cached" : "not instrumented";
+  // Page and API timings track each other closely, so the table shows one
+  // combined number per temperature: the mean of the targets that are
+  // comparable for the pair (same region, both on the function path). Where a
+  // framework serves its page from the CDN (no function -> no cold start
+  // exists), the pair is compared on the API route alone.
+  const combine = (ms: (Metric | null)[]): Metric | null => {
+    const xs = ms.filter((m): m is Metric => !!m && m.p50 != null);
+    if (!xs.length) return null;
+    const avg = (sel: (m: Metric) => number | null) => {
+      const vs = xs.map(sel).filter((v): v is number => v != null);
+      return vs.length ? Math.round(vs.reduce((a, b) => a + b, 0) / vs.length) : null;
+    };
+    return { p50: avg((m) => m.p50), p90: avg((m) => m.p90) };
+  };
+  const comparableTargets = (c: (typeof COMPARISONS)[number]) =>
+    (["page", "api"] as const).filter((t) => comparable(c, t));
+  const combinedMetric = (
+    c: (typeof COMPARISONS)[number],
+    app: string | undefined,
+    kind: "warm" | "cold",
+  ): Metric | null => {
+    const ts = comparableTargets(c);
+    const use = ts.length ? ts : (["page", "api"] as const);
+    return combine(use.map((t) => metric(app, t, kind)));
   };
 
   return (
@@ -190,57 +231,40 @@ function LiveColdstarts() {
         <table className="live-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
           <thead>
             <tr>
-              {["", "", "warm page load", "cold page load (burst)", "warm API route", "cold API route (burst)"].map((h, i) => (
-                <th key={i} style={{ textAlign: "left", padding: "6px 10px", opacity: 0.6, fontWeight: 600 }}>
+              {["", "", "cold start", "warm response"].map((h, i) => (
+                <th key={i} style={{ textAlign: "left", padding: "8px 12px", opacity: 0.6, fontWeight: 600 }}>
                   {h}
-                  {i >= 2 ? <span style={{ fontWeight: 400, opacity: 0.7 }}> · p50/p90</span> : null}
                 </th>
               ))}
             </tr>
           </thead>
           <tbody>
             {COMPARISONS.map((c) => {
-              const hasPair = !!c.next;
+              const hasComparison = comparableTargets(c).length > 0;
               const rustRow = (
-                <tr key={c.label + "rs"} style={{ borderTop: hasPair ? "none" : "1px solid var(--line, #333)" }}>
-                  {!hasPair ? (
-                    <td style={{ padding: "8px 10px", verticalAlign: "top" }}>
-                      <b>{c.label}</b>
-                      <div style={{ opacity: 0.55, fontSize: 12 }}>{c.detail}</div>
-                    </td>
-                  ) : null}
-                  <td style={{ padding: "6px 10px", fontWeight: 700 }}>nextrs</td>
+                <tr key={c.label + "rs"}>
+                  <td style={{ padding: "8px 12px", fontWeight: 700 }}>nextrs</td>
                   <MetricCell
-                    m={metric(c.rust, "page", "warm")}
-                    vs={comparable(c, "page") ? metric(c.next, "page", "warm") : null}
+                    m={combinedMetric(c, c.rust, "cold")}
+                    vs={hasComparison ? combinedMetric(c, c.next, "cold") : null}
                   />
                   <MetricCell
-                    m={metric(c.rust, "page", "cold")}
-                    vs={comparable(c, "page") ? metric(c.next, "page", "cold") : null}
-                  />
-                  <MetricCell
-                    m={metric(c.rust, "api", "warm")}
-                    vs={comparable(c, "api") ? metric(c.next, "api", "warm") : null}
-                  />
-                  <MetricCell
-                    m={metric(c.rust, "api", "cold")}
-                    vs={comparable(c, "api") ? metric(c.next, "api", "cold") : null}
+                    m={combinedMetric(c, c.rust, "warm")}
+                    vs={hasComparison ? combinedMetric(c, c.next, "warm") : null}
                   />
                 </tr>
               );
-              if (!hasPair) return rustRow;
+              if (!c.next) return rustRow;
               return (
                 <React.Fragment key={c.label}>
                   <tr style={{ borderTop: "1px solid var(--line, #333)" }}>
-                    <td rowSpan={2} style={{ padding: "8px 10px", verticalAlign: "top" }}>
+                    <td rowSpan={2} style={{ padding: "8px 12px", verticalAlign: "top" }}>
                       <b>{c.label}</b>
                       <div style={{ opacity: 0.55, fontSize: 12 }}>{c.detail}</div>
                     </td>
-                    <td style={{ padding: "6px 10px" }}>Next.js</td>
-                    <MetricCell m={metric(c.next, "page", "warm")} />
-                    <MetricCell m={metric(c.next, "page", "cold")} missingLabel={coldPageMissingLabel(c.next)} />
-                    <MetricCell m={metric(c.next, "api", "warm")} />
-                    <MetricCell m={metric(c.next, "api", "cold")} />
+                    <td style={{ padding: "8px 12px" }}>Next.js</td>
+                    <MetricCell m={combinedMetric(c, c.next, "cold")} heat />
+                    <MetricCell m={combinedMetric(c, c.next, "warm")} />
                   </tr>
                   {rustRow}
                 </React.Fragment>
@@ -249,95 +273,78 @@ function LiveColdstarts() {
           </tbody>
         </table>
       </div>
-      <p className="live-note" style={{ opacity: 0.7, fontSize: 13, marginTop: 10, marginBottom: 0 }}>
-        Comparison labels appear only when both observations used the same
-        function region, that region matches the fleet configuration, and both
-        requests used the same delivery path. Current checks:{" "}
-        {COMPARISONS.filter((c) => c.next).map((c, i) => (
-          <React.Fragment key={c.label + "status"}>
-            {i ? " · " : ""}<b>{c.label}:</b>{" "}
-            {comparisonStatus(c, "page")}; {comparisonStatus(c, "api")}
-          </React.Fragment>
-        ))}
-      </p>
-      <h3 style={{ marginTop: 28, marginBottom: 4 }}>How often does a request pay a cold start?</h3>
-      <p className="live-note" style={{ opacity: 0.7, fontSize: 14, marginTop: 0, marginBottom: 8 }}>
-        Each probe fires 20 concurrent API requests. This normalizes observed
-        first requests by successful burst traffic; it does not infer how many
-        requests any one instance served.
-      </p>
-      <div style={{ overflowX: "auto" }}>
-        <table className="live-table" style={{ width: "100%", borderCollapse: "collapse", fontSize: 14 }}>
-          <thead>
-            <tr>
-              {["", "", "successful burst requests", "fresh instances observed", "requests per observed cold"].map((h, i) => (
-                <th key={i} style={{ textAlign: "left", padding: "6px 10px", opacity: 0.6, fontWeight: 600 }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {COMPARISONS.filter((c) => c.next).map((c) => {
-              const rows = [
-                { framework: "Next.js", a: pick(stats.apps, c.next, "api") },
-                { framework: "nextrs", a: pick(stats.apps, c.rust, "api") },
-              ];
-              const rpc = (a?: AppStats) =>
-                a && a.burst_colds > 0 ? a.burst_requests / a.burst_colds : null;
-              const jsRpc = rpc(rows[0].a);
-              return rows.map((r, i) => {
-                const mine = rpc(r.a);
-                const coldRateRatio =
-                  comparable(c, "api") &&
-                  r.framework === "nextrs" && mine != null && jsRpc != null && jsRpc > 0
-                    ? jsRpc / mine
-                    : null;
-                const pctChange =
-                  coldRateRatio != null
-                    ? Math.round(Math.abs(coldRateRatio - 1) * 100)
-                    : null;
-                return (
-                  <tr key={c.label + r.framework} style={{ borderTop: i === 0 ? "1px solid var(--line, #333)" : "none" }}>
-                    {i === 0 ? (
-                      <td rowSpan={2} style={{ padding: "8px 10px", verticalAlign: "top" }}>
-                        <b>{c.label}</b>
-                      </td>
-                    ) : null}
-                    <td style={{ padding: "6px 10px", fontWeight: r.framework === "nextrs" ? 700 : 400 }}>{r.framework}</td>
-                    <td style={{ padding: "6px 10px" }}>{r.a?.burst_requests ?? "—"}</td>
-                    <td style={{ padding: "6px 10px" }}>{r.a?.burst_colds ?? "—"}</td>
-                    <td style={{ padding: "6px 10px", whiteSpace: "nowrap" }}>
-                      {mine == null ? "—" : `1 per ${mine.toFixed(1)}`}
-                      {coldRateRatio != null && pctChange != null && pctChange >= 15 ? (
-                        <span
-                          style={{
-                            color: coldRateRatio < 1 ? "var(--ok, #22c55e)" : "var(--warn, #f59e0b)",
-                            fontWeight: 600,
-                            fontSize: 12,
-                            marginLeft: 8,
-                          }}
-                        >
-                          {coldRateRatio.toFixed(2)}× cold rate · {pctChange}% {coldRateRatio < 1 ? "lower" : "higher"}
-                        </span>
-                      ) : null}
-                    </td>
-                  </tr>
-                );
-              });
-            })}
-          </tbody>
-        </table>
-      </div>
-      <p className="live-note" style={{ opacity: 0.6, fontSize: 13, marginTop: 10 }}>
-        {stats.total_samples.toLocaleString()} methodology-v{stats.telemetry_version} samples since the clean reset —
-        real deployments on Vercel, probed at randomized times every ~2 hours,
-        measured from the same runner in the same moments. Warm = sequential requests against a warm
-        instance (what a user clicking around experiences). Cold = a request
-        that started a fresh instance during a 20-request concurrent burst, so
-        it includes real scale-out provisioning and burst contention. A cold-page value requires page-level
-        instrumentation; a CDN-cached page has no function cold start.
-        Aggregated by <code>/api/coldstarts</code>,
-        the endpoint this page is calling right now.
-      </p>
+      <h2 style={{ marginTop: 32, marginBottom: 10, fontSize: 26 }}>How often do you pay a cold start?</h2>
+      {COMPARISONS.filter((c) => c.next).map((c) => {
+        const js = pick(stats.apps, c.next, "api");
+        const rust = pick(stats.apps, c.rust, "api");
+        const rate = (a?: AppStats) =>
+          a && a.burst_requests > 0 ? a.burst_colds / a.burst_requests : null;
+        const jsRate = rate(js);
+        const rustRate = rate(rust);
+        const ok = comparable(c, "api") && jsRate != null && rustRate != null && jsRate > 0;
+        let body: React.ReactNode = "collecting comparable data…";
+        if (ok) {
+          const ratio = rustRate / jsRate;
+          const pct = Math.round(Math.abs(1 - ratio) * 100);
+          const better = ratio < 1;
+          body = (
+            <>
+              nextrs hits a cold start{" "}
+              <span
+                style={{
+                  color: better ? "var(--ok, #22c55e)" : "var(--warn, #f59e0b)",
+                  fontWeight: 600,
+                }}
+              >
+                {pct}% {better ? "less" : "more"} often
+              </span>{" "}
+              under the same burst load — {Math.round(jsRate * 100)} cold starts per 100
+              requests for Next.js vs {Math.round(rustRate * 100)} for nextrs.
+            </>
+          );
+        }
+        return (
+          <p key={c.label} className="live-note" style={{ fontSize: 17, lineHeight: 1.6, margin: "8px 0" }}>
+            <b>{c.label}:</b> {body}
+          </p>
+        );
+      })}
+      <InfoNote label="how these numbers are measured">
+        <p style={{ margin: "0 0 8px" }}>
+          Each app is the same product built twice — once with Next.js, once with
+          nextrs — deployed to Vercel and probed identically at randomized times
+          every ~2 hours, from the same runner in the same moments. The{" "}
+          <b>small app</b> is a todo list: React 19 + TanStack Query over a typed
+          JSON API. The <b>medium app</b> is a booking system: sessions/auth,
+          Postgres, and an admin backend.
+        </p>
+        <p style={{ margin: "0 0 8px" }}>
+          Probes hit each app&apos;s page <i>and</i> an API route; the timings track
+          each other closely, so each cell combines the two. <b>Warm</b> =
+          sequential requests against a warm instance (what a user clicking
+          around experiences). <b>Cold</b> = a request that started a fresh
+          instance during a 20-request concurrent burst, so it includes real
+          scale-out provisioning and burst contention. Cold-start frequency is
+          fresh instances per successful burst request; it does not infer how
+          many requests any one instance served. Where a framework serves its
+          page from the CDN (no function runs, so no cold start exists), the
+          pair is compared on the API route alone.
+        </p>
+        <p style={{ margin: 0 }}>
+          Green/amber ratios appear only when both sides ran in the same
+          function region, that region matches the fleet configuration, and both
+          used the same delivery path. Current checks:{" "}
+          {COMPARISONS.filter((c) => c.next).map((c, i) => (
+            <React.Fragment key={c.label + "status"}>
+              {i ? " · " : ""}<b>{c.label}:</b>{" "}
+              {comparisonStatus(c, "page")}; {comparisonStatus(c, "api")}
+            </React.Fragment>
+          ))}{" "}
+          — {stats.total_samples.toLocaleString()} methodology-v{stats.telemetry_version}{" "}
+          samples since the clean reset, aggregated by <code>/api/coldstarts</code>,
+          the endpoint this page is calling right now.
+        </p>
+      </InfoNote>
     </div>
   );
 }

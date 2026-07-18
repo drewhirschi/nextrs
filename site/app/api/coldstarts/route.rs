@@ -109,7 +109,12 @@ pub struct ColdstartStats {
     pub telemetry_version: i64,
 }
 
-const TELEMETRY_VERSION: i64 = 2;
+// v3: the medium pair became symmetric — hhh-nextjs's landing went
+// force-dynamic (it was CDN-served, so its function saw half the burst
+// concurrency of hhh-rs's, inflating the Rust side's cold-start frequency
+// and contention-loaded cold latencies). v2 rows stay in the raw table but
+// are excluded from aggregates, same policy as the v1->v2 reset.
+const TELEMETRY_VERSION: i64 = 3;
 
 static DB: OnceCell<Option<libsql::Database>> = OnceCell::const_new();
 

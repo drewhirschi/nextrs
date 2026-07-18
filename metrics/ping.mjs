@@ -36,7 +36,7 @@ async function one(app, target, targetPath, i, phase) {
     extra: {
       i,
       burst: BURST,
-      telemetry_version: 2,
+      telemetry_version: 3,
       batch_id: BATCH_ID,
       pair: app.pair ?? null,
       expected_region: app.expected_region ?? null,
