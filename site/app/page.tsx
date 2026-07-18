@@ -63,7 +63,12 @@ const COMPARISONS: {
   },
 ];
 
-type Metric = { p50: number | null; p90: number | null };
+// n = size of the sample pool the percentiles come from. Deltas are
+// suppressed below MIN_POOL: right after a telemetry reset a p90 over five
+// requests is one straggler, not a trend.
+type Metric = { p50: number | null; p90: number | null; n: number };
+const MIN_POOL = 20;
+const MIN_BURSTS = 100;
 
 function pick(apps: AppStats[], app: string | undefined, target: string) {
   return app ? apps.find((a) => a.app === app && a.target === target) : undefined;
@@ -163,8 +168,16 @@ function LiveColdstarts() {
     if (!a) return null;
     if (kind === "cold" && !a.cold) return null;
     return kind === "warm"
-      ? { p50: (a.warm_p50_ms ?? null) as number | null, p90: (a.warm_p90_ms ?? null) as number | null }
-      : { p50: (a.cold_p50_ms ?? null) as number | null, p90: (a.cold_p90_ms ?? null) as number | null };
+      ? {
+          p50: (a.warm_p50_ms ?? null) as number | null,
+          p90: (a.warm_p90_ms ?? null) as number | null,
+          n: a.warm_pool ?? 0,
+        }
+      : {
+          p50: (a.cold_p50_ms ?? null) as number | null,
+          p90: (a.cold_p90_ms ?? null) as number | null,
+          n: a.cold_pool ?? 0,
+        };
   };
 
   const delivery = (a: AppStats | undefined) => {
@@ -211,7 +224,7 @@ function LiveColdstarts() {
       const vs = xs.map(sel).filter((v): v is number => v != null);
       return vs.length ? Math.round(vs.reduce((a, b) => a + b, 0) / vs.length) : null;
     };
-    return { p50: avg((m) => m.p50), p90: avg((m) => m.p90) };
+    return { p50: avg((m) => m.p50), p90: avg((m) => m.p90), n: Math.min(...xs.map((m) => m.n)) };
   };
   const comparableTargets = (c: (typeof COMPARISONS)[number]) =>
     (["page", "api"] as const).filter((t) => comparable(c, t));
@@ -241,17 +254,19 @@ function LiveColdstarts() {
           <tbody>
             {COMPARISONS.map((c) => {
               const hasComparison = comparableTargets(c).length > 0;
+              // Deltas render only when BOTH sides' percentile pools have
+              // matured past MIN_POOL — the values themselves always show.
+              const baseline = (kind: "warm" | "cold") => {
+                if (!hasComparison) return null;
+                const mine = combinedMetric(c, c.rust, kind);
+                const base = combinedMetric(c, c.next, kind);
+                return mine && base && mine.n >= MIN_POOL && base.n >= MIN_POOL ? base : null;
+              };
               const rustRow = (
                 <tr key={c.label + "rs"}>
                   <td style={{ padding: "8px 12px", fontWeight: 700 }}>nextrs</td>
-                  <MetricCell
-                    m={combinedMetric(c, c.rust, "cold")}
-                    vs={hasComparison ? combinedMetric(c, c.next, "cold") : null}
-                  />
-                  <MetricCell
-                    m={combinedMetric(c, c.rust, "warm")}
-                    vs={hasComparison ? combinedMetric(c, c.next, "warm") : null}
-                  />
+                  <MetricCell m={combinedMetric(c, c.rust, "cold")} vs={baseline("cold")} />
+                  <MetricCell m={combinedMetric(c, c.rust, "warm")} vs={baseline("warm")} />
                 </tr>
               );
               if (!c.next) return rustRow;
@@ -281,7 +296,13 @@ function LiveColdstarts() {
           a && a.burst_requests > 0 ? a.burst_colds / a.burst_requests : null;
         const jsRate = rate(js);
         const rustRate = rate(rust);
-        const ok = comparable(c, "api") && jsRate != null && rustRate != null && jsRate > 0;
+        const ok =
+          comparable(c, "api") &&
+          jsRate != null &&
+          rustRate != null &&
+          jsRate > 0 &&
+          (js?.burst_requests ?? 0) >= MIN_BURSTS &&
+          (rust?.burst_requests ?? 0) >= MIN_BURSTS;
         let body: React.ReactNode = "collecting comparable data…";
         if (ok) {
           const ratio = rustRate / jsRate;

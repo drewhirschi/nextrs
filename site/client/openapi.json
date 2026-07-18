@@ -179,6 +179,11 @@
             ],
             "format": "int64"
           },
+          "cold_pool": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Sizes of the pools the displayed percentiles are computed from\n(warm = sequential-phase samples when available). Consumers should\ntreat percentiles from tiny pools as provisional — right after a\ntelemetry reset, a p90 over n=5 is one straggler, not a trend."
+          },
           "edge_regions": {
             "type": "array",
             "items": {
@@ -252,6 +257,10 @@
               "integer",
               "null"
             ],
+            "format": "int64"
+          },
+          "warm_pool": {
+            "type": "integer",
             "format": "int64"
           }
         }

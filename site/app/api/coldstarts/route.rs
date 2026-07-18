@@ -83,6 +83,14 @@ pub struct AppStats {
     pub warm_p50_ms: Option<i64>,
     pub warm_p90_ms: Option<i64>,
     pub warm_p95_ms: Option<i64>,
+    /// Sizes of the pools the displayed percentiles are computed from
+    /// (warm = sequential-phase samples when available). Consumers should
+    /// treat percentiles from tiny pools as provisional — right after a
+    /// telemetry reset, a p90 over n=5 is one straggler, not a trend.
+    #[serde(default)]
+    pub cold_pool: i64,
+    #[serde(default)]
+    pub warm_pool: i64,
     /// Burst-phase totals (the concurrency probe): how many requests the
     /// app's instances absorbed, and how many required a fresh instance.
     pub burst_requests: i64,
@@ -389,6 +397,8 @@ async fn compute_stats(conn: &libsql::Connection) -> Result<ColdstartStats, libs
                 warm_p50_ms: pct(warm_src, 0.50),
                 warm_p90_ms: pct(warm_src, 0.90),
                 warm_p95_ms: pct(warm_src, 0.95),
+                cold_pool: a.cold.len() as i64,
+                warm_pool: warm_src.len() as i64,
                 burst_requests: a.burst_reqs,
                 burst_colds: a.burst_colds,
                 edge_regions: a.edge_regions.into_iter().collect(),
