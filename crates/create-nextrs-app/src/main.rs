@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-const VERSION: &str = "0.3";
+const VERSION: &str = "0.4";
 
 fn main() {
     if let Err(err) = run() {
@@ -29,7 +29,7 @@ fn run() -> io::Result<()> {
 
 fn print_help() {
     println!(
-        "create-nextrs-app\n\nUSAGE:\n    create-nextrs-app <path> [--nextrs-path <path>]\n    create-nextrs-app --here [--nextrs-path <path>]\n    create-nextrs-app --adopt [<path> | --here] [--nextrs-path <path>]\n\nCreates a React-first nextrs app with /, /api/ping, and /slow.\n\nWith --adopt, generates the nextrs skeleton into an EXISTING repo instead:\nminimal content (one page, no demo routes), existing files are never\noverwritten (skipped and reported), an existing src/main.rs gets a\nsrc/main.rs.example beside it, and an existing Cargo.toml is left alone\nwith the dependency lines to merge printed instead.\n\nOPTIONS:\n    --here                Create the app in the current directory\n    --adopt               Graft the skeleton into an existing directory; never overwrite\n    --nextrs-path <path>  Use a local nextrs checkout instead of nextrs = \"0.3\""
+        "create-nextrs-app\n\nUSAGE:\n    create-nextrs-app <path> [--nextrs-path <path>]\n    create-nextrs-app --here [--nextrs-path <path>]\n    create-nextrs-app --adopt [<path> | --here] [--nextrs-path <path>]\n\nCreates a React-first nextrs app with /, /api/ping, and /slow.\n\nWith --adopt, generates the nextrs skeleton into an EXISTING repo instead:\nminimal content (one page, no demo routes), existing files are never\noverwritten (skipped and reported), an existing src/main.rs gets a\nsrc/main.rs.example beside it, and an existing Cargo.toml is left alone\nwith the dependency lines to merge printed instead.\n\nOPTIONS:\n    --here                Create the app in the current directory\n    --adopt               Graft the skeleton into an existing directory; never overwrite\n    --nextrs-path <path>  Use a local nextrs checkout instead of the published nextrs"
     );
 }
 
