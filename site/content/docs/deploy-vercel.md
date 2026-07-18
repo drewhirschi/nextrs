@@ -110,6 +110,26 @@ The stock `vercel_runtime::axum::VercelLayer` only streams responses whose conte
 
 `nextrs::vercel::StreamingVercelLayer` (behind the `vercel` cargo feature) is a drop-in replacement that streams unconditionally. Non-streaming responses are unaffected. If you ever see `TTFB ≈ total` on a deployed streaming route, check that you're using it.
 
+## Background work after the response (`waitUntil`)
+
+`tokio::spawn` is not safe for post-response work on Vercel — once the invocation ends the instance may be frozen or terminated, and detached tasks silently die. Extract `nextrs::WaitUntil` in any handler (or `from_fn` middleware) instead:
+
+```rust
+use nextrs::WaitUntil;
+
+pub async fn post(wait: WaitUntil, Json(req): Json<AddTodoRequest>) -> Json<Todo> {
+    let todo = add(req.title).await;
+    wait.wait_until(async move {
+        audit_log(&todo).await;   // runs after the response is sent
+    });
+    Json(todo)
+}
+```
+
+Behind `StreamingVercelLayer` this registers the future with the Vercel runtime's `waitUntil` awaiter: it starts immediately, never delays the response, and at instance shutdown the runtime drains anything still in flight instead of killing it. Anywhere else (local dev, Docker, self-hosted) the extractor falls back to a plain `tokio::spawn` — same handler code in both environments, no cfg flags.
+
+Two things to know: the future's output is discarded, so surface failures by logging inside it; and adding `WaitUntil` (like any extractor beyond `Path`/`Query`) to a GET handler opts that handler out of the `#[nextrs::api]` seed companion — typical `waitUntil` consumers are mutation handlers, where seeding doesn't apply.
+
 ## Static assets on the CDN
 
 Vercel serves files from a root-level `public/` directory at root URL paths **before** applying rewrites, with edge caching. Since your assets live next to your app at `site/public/`, mirror them at build time from the workspace root's `build.rs`:

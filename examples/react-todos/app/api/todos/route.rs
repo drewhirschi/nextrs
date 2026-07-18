@@ -64,6 +64,14 @@ pub async fn get(Query(f): Query<TodosFilter>) -> Json<Vec<Todo>> {
     operation_id = "addTodo",
     responses((status = 200, description = "The created todo", body = Todo)),
 )]
-pub async fn post(Json(req): Json<AddTodoRequest>) -> Json<Todo> {
-    Json(react_todos::core::todos::add(req.title).await.into())
+pub async fn post(wait: nextrs::WaitUntil, Json(req): Json<AddTodoRequest>) -> Json<Todo> {
+    let todo: Todo = react_todos::core::todos::add(req.title).await.into();
+    // Background work after the response: locally this is a plain spawn; on
+    // Vercel (behind StreamingVercelLayer) it's registered with the runtime's
+    // waitUntil so it isn't killed when the invocation ends.
+    let title = todo.title.clone();
+    wait.wait_until(async move {
+        tracing::info!(title, "audit: todo created (ran after the response)");
+    });
+    Json(todo)
 }
