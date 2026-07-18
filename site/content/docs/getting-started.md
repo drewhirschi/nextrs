@@ -30,7 +30,7 @@ mysite/
 
 ```toml
 [dependencies]
-nextrs = "0.3"
+nextrs = "0.4"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 askama = "0.15"

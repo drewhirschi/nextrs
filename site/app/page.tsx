@@ -499,7 +499,7 @@ export default function Home() {
       <section className="section">
         <div className="shell">
           <div className="cta-band">
-            <span className="eyebrow">Beta · v0.3</span>
+            <span className="eyebrow">Beta · v0.4</span>
             <h2>Build the next thing in Rust.</h2>
             <p>
               Scaffold an app, write React, deploy a single function. The docs walk

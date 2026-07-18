@@ -1,5 +1,6 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
+  "regions": ["pdx1"],
   "installCommand": "cd client && npm ci",
   "buildCommand": "cd client && npx orval --config ./orval.config.ts && cd .. && cargo build --release -p react-todos",
   "functions": {

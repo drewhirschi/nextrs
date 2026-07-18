@@ -79,7 +79,7 @@ Scaffolded apps ship `scripts/deploy-prebuilt.sh` and a `vercel.json` with git a
 
 ## Gotchas
 
-- **`PrefetchConfig` is about link prefetching, not data seeding.** `PrefetchConfig` controls exactly one thing: the document-level `<script type="speculationrules">` tag that tells the *browser* which links to prefetch. It has nothing to do with the `/__nx/prefetch` data-seeding endpoint or with hover preloading. (A rename to `SpeculationConfig` is planned to make this unambiguous; the current name is `PrefetchConfig`.)
+- **`SpeculationConfig` is about document speculation, not data seeding.** `SpeculationConfig` (named `PrefetchConfig` before 0.4.0; the old name still compiles with a deprecation warning) controls exactly one thing: the document-level `<script type="speculationrules">` tag that tells the *browser* which links to prefetch. It has nothing to do with the `/__nx/prefetch` data-seeding endpoint or with hover preloading — those are automatic. Since 0.4.0 speculation is **off by default**; opt in via `build_router_with_speculation` for server-rendered pages.
 - **You never call `/__nx/prefetch` yourself.** Route chunk preloading and data prefetch on hover are automatic: the generated app shell preloads the target route's seeds through that endpoint on link intent. If you find yourself fetching `/__nx/prefetch` from app code, you're rebuilding a feature that's already on.
 - **`prefetch.rs` needs a `page.tsx` sibling.** Next to a Rust page it's a compile error — Rust pages fetch their own data.
 - **Askama layouts must use `{{ children|safe }}`** — without `|safe` the children are HTML-escaped and both your markup and the framework's streaming marker break.
