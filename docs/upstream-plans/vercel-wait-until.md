@@ -2,7 +2,7 @@
 
 - **Reported-in:** finstream
 - **Date:** 2026-07-18
-- **Status:** open
+- **Status:** fixed in 2ff2c63 (demo/docs in 91807e7)
 
 ## Problem
 
