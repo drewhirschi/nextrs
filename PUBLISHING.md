@@ -4,8 +4,8 @@ Status (2026-07-18): **all four crates are live on crates.io.**
 
 | crate | published |
 | --- | --- |
-| `nextrs` | **0.4.1** (WaitUntil / Vercel waitUntil) |
-| `nextrs-macros` | **0.1.4** |
+| `nextrs` | **0.4.2** (Extension/WaitUntil-aware seed companions) |
+| `nextrs-macros` | **0.1.5** |
 | `cargo-nextrs-dev` | **0.1.0** |
 | `create-nextrs-app` | **0.1.2** (emits `nextrs = "0.4"`) |
 

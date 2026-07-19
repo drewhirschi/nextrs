@@ -2,7 +2,7 @@
 
 - **Reported-in:** onenote-extractor (boundary found while widening fallible seeding); re-raised by finstream (`Extension<AppContext>` GETs lose their companions)
 - **Date:** 2026-07-03 (design 2026-07-18)
-- **Status:** open — designed, ready to implement
+- **Status:** fixed in 26e18cc (demo/docs in a8432b2; shipped as nextrs 0.4.2 / nextrs-macros 0.1.5)
 
 ## Problem
 
