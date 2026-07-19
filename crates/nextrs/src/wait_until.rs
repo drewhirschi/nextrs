@@ -28,10 +28,11 @@
 //! }
 //! ```
 //!
-//! Note for seeded GET handlers: adding any extractor beyond `Path`/`Query`
-//! opts a GET handler out of the `#[nextrs::api]` seed companion (it still
-//! routes normally). `waitUntil` consumers are typically mutation handlers,
-//! where this doesn't apply.
+//! Seeded GET handlers keep their `#[nextrs::api]` seed companion: the
+//! companion sources the `WaitUntil` from the request extensions during
+//! prefetch (falling back to the detached form when absent), so background
+//! work registered while seeding gets the same guarantees as in a normal
+//! request.
 
 use std::convert::Infallible;
 use std::future::Future;

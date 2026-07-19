@@ -309,12 +309,13 @@ fn url_snake(url: &str) -> String {
 }
 
 /// Textual mirror of the macro's seed-companion eligibility: `get`'s args are
-/// empty, or at most one `Path<...>` and one `Query<...>` extractor, and it
-/// returns `Json<...>` or `Result<Json<...>, E>`. Kept deliberately simple —
-/// a false positive means a clear "cannot find __nextrs_seed_get" error at
-/// the `pub use`, not silent misrouting. The return check is a normalized
-/// prefix match (NOT `contains("Json")`) so `Result<T, Json<E>>` or a type
-/// named `JsonLines` can't sneak an alias past the macro.
+/// empty, or at most one `Path<...>` and one `Query<...>` plus any number of
+/// `Extension<...>` / `WaitUntil` args, and it returns `Json<...>` or
+/// `Result<Json<...>, E>`. Kept deliberately simple — a false positive means
+/// a clear "cannot find __nextrs_seed_get" error at the `pub use`, not silent
+/// misrouting. The return check is a normalized prefix match (NOT
+/// `contains("Json")`) so `Result<T, Json<E>>` or a type named `JsonLines`
+/// can't sneak an alias past the macro.
 fn get_is_seed_eligible(source: &str) -> bool {
     let Some(start) = source.find("pub async fn get") else {
         return false;
@@ -352,30 +353,46 @@ fn get_is_seed_eligible(source: &str) -> bool {
     if !ret_is_seedable(ret) {
         return false;
     }
-    let top_level_commas = {
-        let mut depth = 0i32;
-        let mut count = 0;
-        for c in args.chars() {
-            match c {
-                '(' | '<' | '[' => depth += 1,
-                ')' | '>' | ']' => depth -= 1,
-                ',' if depth == 0 => count += 1,
-                _ => {}
-            }
-        }
-        count
-    };
     if args.trim().is_empty() {
         return true;
     }
-    // Every top-level arg must be a Path or Query extractor, at most one of
-    // each — the shapes the macro's seed companion handles.
-    let extractorish = args.contains("Query") || args.contains("Path");
-    let arg_count = top_level_commas + 1;
-    extractorish
-        && arg_count <= 2
-        && (arg_count == 1
-            || (args.matches("Query").count() >= 1 && args.matches("Path").count() >= 1))
+    // Split at top-level commas and classify each arg the way the macro does:
+    // at most one Path, one Query; any number of Extension / WaitUntil
+    // (sourced from `_ext`); anything else disqualifies. Checked on the type
+    // side of each `pattern: Type` pair; Extension/WaitUntil are matched
+    // first so `Extension<QueryConfig>` doesn't read as a Query.
+    let mut pieces = Vec::new();
+    {
+        let mut depth = 0i32;
+        let mut start = 0usize;
+        for (i, c) in args.char_indices() {
+            match c {
+                '(' | '<' | '[' => depth += 1,
+                ')' | '>' | ']' => depth -= 1,
+                ',' if depth == 0 => {
+                    pieces.push(&args[start..i]);
+                    start = i + 1;
+                }
+                _ => {}
+            }
+        }
+        pieces.push(&args[start..]);
+    }
+    let mut path_count = 0usize;
+    let mut query_count = 0usize;
+    for piece in pieces {
+        let ty = piece.split_once(':').map(|(_, t)| t).unwrap_or(piece);
+        if ty.contains("Extension") || ty.contains("WaitUntil") {
+            continue;
+        } else if ty.contains("Query") {
+            query_count += 1;
+        } else if ty.contains("Path") {
+            path_count += 1;
+        } else {
+            return false;
+        }
+    }
+    path_count <= 1 && query_count <= 1
 }
 
 /// Whether the signature's return region (from the args' closing paren on)
@@ -2315,6 +2332,35 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
         // Path + non-extractor second arg: not eligible.
         assert!(!get_is_seed_eligible(
             "pub async fn get(Path(id): Path<i64>, headers: HeaderMap) -> Json<X> { todo!() }"
+        ));
+        // Extension args: eligible, alone or mixed, any order.
+        assert!(get_is_seed_eligible(
+            "pub async fn get(Extension(ctx): Extension<AppCtx>) -> Json<X> { todo!() }"
+        ));
+        assert!(get_is_seed_eligible(
+            "pub async fn get(Extension(ctx): Extension<AppCtx>, Path(id): Path<i64>, Query(f): Query<F>) -> Json<X> { todo!() }"
+        ));
+        assert!(get_is_seed_eligible(
+            "pub async fn get(Query(f): Query<F>, Extension(a): Extension<A>, Extension(b): Extension<B>) -> Result<Json<X>, E> { todo!() }"
+        ));
+        // WaitUntil: eligible.
+        assert!(get_is_seed_eligible(
+            "pub async fn get(wait: WaitUntil, Query(f): Query<F>) -> Json<X> { todo!() }"
+        ));
+        assert!(get_is_seed_eligible(
+            "pub async fn get(wait: nextrs::WaitUntil) -> Json<X> { todo!() }"
+        ));
+        // Extension of a Query-named inner type is still an Extension.
+        assert!(get_is_seed_eligible(
+            "pub async fn get(Extension(q): Extension<QueryConfig>) -> Json<X> { todo!() }"
+        ));
+        // Two Paths / two Queries: not eligible (mirrors the macro).
+        assert!(!get_is_seed_eligible(
+            "pub async fn get(Path(a): Path<i64>, Path(b): Path<i64>) -> Json<X> { todo!() }"
+        ));
+        // State: not eligible.
+        assert!(!get_is_seed_eligible(
+            "pub async fn get(State(db): State<Db>) -> Json<X> { todo!() }"
         ));
         // Fallible handlers: eligible — mirrors the macro's Result widening.
         assert!(get_is_seed_eligible(

@@ -85,25 +85,32 @@ pub fn api(args: TokenStream, item: TokenStream) -> TokenStream {
 
 /// Emit `__nextrs_seed_get` next to an eligible GET handler.
 ///
-/// Eligible: a `Json<...>` or `Result<Json<...>, E>` return type and at most
-/// one `Path<...>` plus one `Query<T>` extractor, in any order (including
-/// none) — the shapes whose responses the generated client caches under a
-/// query key. `Path` values substitute into the URL's `{seg}` slots so the
-/// key matches the client's substituted-URL form. Anything else (other
-/// extractors — `State`/`Extension` included — opaque `impl IntoResponse`
+/// Eligible: a `Json<...>` or `Result<Json<...>, E>` return type and, in any
+/// order (including none): at most one `Path<...>`, at most one `Query<T>`,
+/// plus any number of `Extension<T>` / `WaitUntil` args — the shapes whose
+/// responses the generated client caches under a query key. `Path` values
+/// substitute into the URL's `{seg}` slots so the key matches the client's
+/// substituted-URL form. Anything else (`State`, opaque `impl IntoResponse`
 /// returns, type aliases over Result) gets no companion and routes normally;
 /// it just can't be seeded.
 ///
-/// Fallible companions return `Option<SeedEntry>`: an `Err` from the handler
-/// seeds nothing, and the page degrades to fetch-on-mount where the hook
-/// surfaces the error as usual. Infallible ones return `SeedEntry`;
-/// `QuerySeed::seed` accepts both.
+/// `Extension<T>` and `WaitUntil` are sourced from `_ext` — the request
+/// extensions every prefetch call site passes, which already carry
+/// layer-installed app state and the Vercel-injected `WaitUntil` (both
+/// prefetch paths hand the companion a real, middleware-processed request).
+/// They never affect the seed key: it stays URL + query params, matching the
+/// client hook.
+///
+/// Companions return `Option<SeedEntry>` when the handler is fallible OR
+/// takes an `Extension`: an `Err` — or a missing extension — seeds nothing,
+/// and the page degrades to fetch-on-mount where the hook surfaces the error
+/// as usual. Plain infallible ones return `SeedEntry`; `QuerySeed::seed`
+/// accepts both. A missing `WaitUntil` never disqualifies — it falls back to
+/// the detached `tokio::spawn` form, like the extractor itself.
 ///
 /// The companion calls the real handler, so the seeded data is byte-identical
-/// to a client refetch. `_ext` is accepted-but-unused: a stable call shape for
-/// later middleware-extension forwarding. (It's `&Extensions`, not `&Request`
-/// — request bodies aren't `Sync`, and the shell handler's future must be
-/// `Send`.)
+/// to a client refetch. (`_ext` is `&Extensions`, not `&Request` — request
+/// bodies aren't `Sync`, and the shell handler's future must be `Send`.)
 fn seed_companion(item: proc_macro2::TokenStream, url: &str) -> Option<proc_macro2::TokenStream> {
     use quote::quote;
 
@@ -126,11 +133,20 @@ fn seed_companion(item: proc_macro2::TokenStream, url: &str) -> Option<proc_macr
         _ => return None,
     };
 
-    // Collect the extractors: at most one Path and one Query, in any order.
-    // Anything else disqualifies the handler.
+    // Collect the extractors: at most one Path and one Query (caller-supplied),
+    // plus any number of Extension<T> / WaitUntil (sourced from `_ext` — the
+    // request extensions every prefetch call site already passes). Anything
+    // else disqualifies the handler.
+    enum CallArg {
+        Path,
+        Query,
+        Ext(usize),
+        Wait,
+    }
     let mut path_ty: Option<&syn::Type> = None;
     let mut query_ty: Option<&syn::Type> = None;
-    let mut call_order: Vec<&'static str> = Vec::new();
+    let mut ext_tys: Vec<&syn::Type> = Vec::new();
+    let mut call_order: Vec<CallArg> = Vec::new();
     for arg in &func.sig.inputs {
         let syn::FnArg::Typed(arg) = arg else {
             return None;
@@ -138,12 +154,17 @@ fn seed_companion(item: proc_macro2::TokenStream, url: &str) -> Option<proc_macr
         match last_path_ident(&arg.ty)?.as_str() {
             "Path" if path_ty.is_none() => {
                 path_ty = Some(first_generic_arg(&arg.ty)?);
-                call_order.push("path");
+                call_order.push(CallArg::Path);
             }
             "Query" if query_ty.is_none() => {
                 query_ty = Some(first_generic_arg(&arg.ty)?);
-                call_order.push("query");
+                call_order.push(CallArg::Query);
             }
+            "Extension" => {
+                ext_tys.push(first_generic_arg(&arg.ty)?);
+                call_order.push(CallArg::Ext(ext_tys.len() - 1));
+            }
+            "WaitUntil" => call_order.push(CallArg::Wait),
             _ => return None,
         }
     }
@@ -198,22 +219,44 @@ fn seed_companion(item: proc_macro2::TokenStream, url: &str) -> Option<proc_macr
         None => (quote! {}, quote! { None }),
     };
 
-    let call_args = call_order.iter().map(|which| match *which {
-        "path" => quote! { ::nextrs::axum::extract::Path(path) },
-        _ => quote! { ::nextrs::axum::extract::Query(params) },
+    // Extension values come from `_ext`. A missing one seeds nothing (the
+    // page degrades to fetch-on-mount, like the fallible-Err path), so any
+    // Extension arg makes the companion Option-returning. They never touch
+    // the seed key — server context is invisible to the client hook, and the
+    // key must stay URL + query params or seeded keys stop matching.
+    let ext_stmts: Vec<proc_macro2::TokenStream> = ext_tys
+        .iter()
+        .enumerate()
+        .map(|(i, ty)| {
+            let ident = quote::format_ident!("__ext{i}");
+            quote! {
+                let #ident = match _ext.get::<#ty>() {
+                    Some(v) => v.clone(),
+                    None => return None,
+                };
+            }
+        })
+        .collect();
+
+    let call_args = call_order.iter().map(|which| match which {
+        CallArg::Path => quote! { ::nextrs::axum::extract::Path(path) },
+        CallArg::Query => quote! { ::nextrs::axum::extract::Query(params) },
+        CallArg::Ext(i) => {
+            let ident = quote::format_ident!("__ext{i}");
+            quote! { ::nextrs::axum::Extension(#ident) }
+        }
+        // Absent extension (local dev, no Vercel layer) falls back to the
+        // detached tokio::spawn form — identical to the extractor's behavior.
+        CallArg::Wait => quote! {
+            _ext.get::<::nextrs::WaitUntil>().cloned().unwrap_or_default()
+        },
     });
 
-    if fallible {
-        // Err seeds nothing — the page falls back to fetch-on-mount and the
-        // hook surfaces the error client-side.
-        Some(quote! {
-            #[doc(hidden)]
-            pub async fn __nextrs_seed_get(
-                #sig_args
-                _ext: &::nextrs::http::Extensions,
-            ) -> Option<::nextrs::SeedEntry> {
-                let __url = #url_expr;
-                #params_stmt
+    if fallible || !ext_stmts.is_empty() {
+        // Err (or a missing extension) seeds nothing — the page falls back to
+        // fetch-on-mount and the hook surfaces any error client-side.
+        let call = if fallible {
+            quote! {
                 match #fn_name(#(#call_args),*).await {
                     Ok(__json) => Some(::nextrs::SeedEntry {
                         key: ::nextrs::seed_key(&__url, #key_params),
@@ -222,6 +265,29 @@ fn seed_companion(item: proc_macro2::TokenStream, url: &str) -> Option<proc_macr
                     }),
                     Err(_) => None,
                 }
+            }
+        } else {
+            quote! {
+                {
+                    let __resp = #fn_name(#(#call_args),*).await;
+                    Some(::nextrs::SeedEntry {
+                        key: ::nextrs::seed_key(&__url, #key_params),
+                        data: ::nextrs::serde_json::to_value(&__resp.0)
+                            .expect("nextrs seed: response body must serialize"),
+                    })
+                }
+            }
+        };
+        Some(quote! {
+            #[doc(hidden)]
+            pub async fn __nextrs_seed_get(
+                #sig_args
+                _ext: &::nextrs::http::Extensions,
+            ) -> Option<::nextrs::SeedEntry> {
+                let __url = #url_expr;
+                #(#ext_stmts)*
+                #params_stmt
+                #call
             }
         })
     } else {
@@ -696,11 +762,59 @@ mod tests {
             "pub async fn get() -> impl IntoResponse { todo!() }",
             // Body extractor on a GET.
             "pub async fn get(Json(b): Json<Req>) -> Json<Resp> { todo!() }",
-            // Multiple extractors.
+            // Unknown extractor.
             "pub async fn get(Query(f): Query<F>, headers: HeaderMap) -> Json<X> { todo!() }",
+            // State stays out — registry routing has no Router::with_state.
+            "pub async fn get(State(db): State<Db>) -> Json<X> { todo!() }",
         ] {
             let item: proc_macro2::TokenStream = src.parse().unwrap();
             assert!(seed_companion(item, "/x").is_none(), "{}", src);
         }
+    }
+
+    #[test]
+    fn seed_companion_for_extension_get_sources_ext_and_is_optional() {
+        let item: proc_macro2::TokenStream =
+            "pub async fn get(Extension(ctx): Extension<AppCtx>, Query(f): Query<F>) -> Json<X> { todo!() }"
+                .parse()
+                .unwrap();
+        let c = seed_companion(item, "/api/status").unwrap().to_string();
+        // Sourced from _ext, not the companion signature…
+        assert!(c.contains("_ext . get :: < AppCtx >"), "{}", c);
+        assert!(!c.contains("ctx : AppCtx"), "{}", c);
+        // …missing extension seeds nothing (Option-returning even though the
+        // handler is infallible)…
+        assert!(c.contains("Option < :: nextrs :: SeedEntry >"), "{}", c);
+        assert!(c.contains("None => return None"), "{}", c);
+        // …and the declared arg order is preserved in the call.
+        let ext_call = c.find("Extension (__ext0)").unwrap();
+        let query_call = c.find("Query (params)").unwrap();
+        assert!(ext_call < query_call, "{}", c);
+        // The key ignores the extension: still URL + query params only.
+        assert!(c.contains("Some (__params)"), "{}", c);
+    }
+
+    #[test]
+    fn seed_companion_for_wait_until_get_stays_infallible() {
+        let item: proc_macro2::TokenStream =
+            "pub async fn get(wait: WaitUntil) -> Json<X> { todo!() }"
+                .parse()
+                .unwrap();
+        let c = seed_companion(item, "/api/x").unwrap().to_string();
+        // No Extension arg → still the plain SeedEntry-returning shape…
+        assert!(!c.contains("Option < :: nextrs :: SeedEntry >"), "{}", c);
+        // …with the WaitUntil pulled from _ext, detached when absent.
+        assert!(c.contains("WaitUntil > () . cloned () . unwrap_or_default ()"), "{}", c);
+    }
+
+    #[test]
+    fn seed_companion_fallible_with_extension_keeps_err_path() {
+        let item: proc_macro2::TokenStream =
+            "pub async fn get(Extension(ctx): Extension<Ctx>) -> Result<Json<X>, E> { todo!() }"
+                .parse()
+                .unwrap();
+        let c = seed_companion(item, "/api/x").unwrap().to_string();
+        assert!(c.contains("None => return None"), "{}", c);
+        assert!(c.contains("Err (_) => None"), "{}", c);
     }
 }
