@@ -7,9 +7,10 @@
 //! Being a `Path`-param GET returning `Json<...>`, it also gets a typed seed
 //! companion (`get_api_todos_by_id`) that `app/todos/[id]/prefetch.rs` uses.
 
-use axum::Json;
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
+use axum::{Extension, Json};
+use react_todos::core::todos::TodosCtx;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
@@ -48,14 +49,13 @@ pub struct DetailQuery {
     ),
 )]
 pub async fn get(
+    Extension(ctx): Extension<TodosCtx>,
     Path(id): Path<u64>,
     Query(q): Query<DetailQuery>,
 ) -> Result<Json<TodoDetail>, StatusCode> {
-    let todo = react_todos::core::todos::get(id)
-        .await
-        .ok_or(StatusCode::NOT_FOUND)?;
+    let todo = ctx.get(id).await.ok_or(StatusCode::NOT_FOUND)?;
     let (prev, next) = if q.neighbors.unwrap_or(false) {
-        react_todos::core::todos::neighbors(id).await
+        ctx.neighbors(id).await
     } else {
         (None, None)
     };
@@ -83,11 +83,12 @@ pub struct UpdateTodoRequest {
     responses((status = 200, description = "The updated todo, or null if unknown", body = Option<TodoDetail>)),
 )]
 pub async fn patch(
+    Extension(ctx): Extension<TodosCtx>,
     Path(id): Path<u64>,
     Json(req): Json<UpdateTodoRequest>,
 ) -> Json<Option<TodoDetail>> {
     Json(
-        react_todos::core::todos::set_done(id, req.done)
+        ctx.set_done(id, req.done)
             .await
             .map(|t| TodoDetail {
                 id: t.id,
@@ -108,8 +109,8 @@ pub async fn patch(
         (status = 404, description = "No todo with that id"),
     ),
 )]
-pub async fn delete(Path(id): Path<u64>) -> StatusCode {
-    if react_todos::core::todos::remove(id).await {
+pub async fn delete(Extension(ctx): Extension<TodosCtx>, Path(id): Path<u64>) -> StatusCode {
+    if ctx.remove(id).await {
         StatusCode::OK
     } else {
         StatusCode::NOT_FOUND

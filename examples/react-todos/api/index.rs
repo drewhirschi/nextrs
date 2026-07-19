@@ -45,6 +45,7 @@ async fn main() -> Result<(), vercel_runtime::Error> {
 
     let router = nextrs::router::build_router(generated_registry())
         .merge(nextrs::openapi::spec_router(generated_openapi()))
+        .layer(axum::Extension(react_todos::core::todos::TodosCtx::new()))
         .layer(axum::middleware::map_response(
             move |mut res: axum::response::Response| {
                 let instance_id = instance_id.clone();

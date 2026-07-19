@@ -15,8 +15,12 @@ async fn main() {
     let public_dir = std::env::var("NEXTRS_PUBLIC_DIR")
         .unwrap_or_else(|_| concat!(env!("CARGO_MANIFEST_DIR"), "/public").to_string());
 
+    // App state as an Extension layer — the seedable-and-stateful paved road:
+    // handlers extract it, and seed companions read it back out of the
+    // request extensions during prefetch.
     let app = nextrs::router::build_router_with_public(generated_registry(), &public_dir)
-        .merge(nextrs::openapi::spec_router(generated_openapi()));
+        .merge(nextrs::openapi::spec_router(generated_openapi()))
+        .layer(axum::Extension(react_todos::core::todos::TodosCtx::new()));
 
     let addr = format!(
         "0.0.0.0:{}",

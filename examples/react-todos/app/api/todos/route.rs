@@ -1,8 +1,9 @@
 //! Todos API — the adapter for `react_todos::core::todos`. Handlers stay thin:
 //! extract, delegate to core, map to the wire DTOs that live here.
 
-use axum::Json;
+use axum::{Extension, Json};
 use axum::extract::Query;
+use react_todos::core::todos::TodosCtx;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
@@ -48,10 +49,17 @@ pub struct AddTodoRequest {
     params(TodosFilter),
     responses((status = 200, description = "List todos", body = Vec<Todo>)),
 )]
-pub async fn get(Query(f): Query<TodosFilter>) -> Json<Vec<Todo>> {
+// `Extension<TodosCtx>` is the demo's stand-in for a DB handle. The handler
+// keeps its seed companion: the companion sources the context from the
+// request extensions (installed by the layer in main.rs / api/index.rs), so
+// prefetch.rs seeds through this handler unchanged.
+pub async fn get(
+    Extension(ctx): Extension<TodosCtx>,
+    Query(f): Query<TodosFilter>,
+) -> Json<Vec<Todo>> {
     let open_only = f.status.as_deref() == Some("open");
     Json(
-        react_todos::core::todos::list(open_only)
+        ctx.list(open_only)
             .await
             .into_iter()
             .map(Into::into)
@@ -64,8 +72,12 @@ pub async fn get(Query(f): Query<TodosFilter>) -> Json<Vec<Todo>> {
     operation_id = "addTodo",
     responses((status = 200, description = "The created todo", body = Todo)),
 )]
-pub async fn post(wait: nextrs::WaitUntil, Json(req): Json<AddTodoRequest>) -> Json<Todo> {
-    let todo: Todo = react_todos::core::todos::add(req.title).await.into();
+pub async fn post(
+    Extension(ctx): Extension<TodosCtx>,
+    wait: nextrs::WaitUntil,
+    Json(req): Json<AddTodoRequest>,
+) -> Json<Todo> {
+    let todo: Todo = ctx.add(req.title).await.into();
     // Background work after the response: locally this is a plain spawn; on
     // Vercel (behind StreamingVercelLayer) it's registered with the runtime's
     // waitUntil so it isn't killed when the invocation ends.

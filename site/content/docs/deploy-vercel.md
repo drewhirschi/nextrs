@@ -128,7 +128,7 @@ pub async fn post(wait: WaitUntil, Json(req): Json<AddTodoRequest>) -> Json<Todo
 
 Behind `StreamingVercelLayer` this registers the future with the Vercel runtime's `waitUntil` awaiter: it starts immediately, never delays the response, and at instance shutdown the runtime drains anything still in flight instead of killing it. Anywhere else (local dev, Docker, self-hosted) the extractor falls back to a plain `tokio::spawn` — same handler code in both environments, no cfg flags.
 
-Two things to know: the future's output is discarded, so surface failures by logging inside it; and adding `WaitUntil` (like any extractor beyond `Path`/`Query`) to a GET handler opts that handler out of the `#[nextrs::api]` seed companion — typical `waitUntil` consumers are mutation handlers, where seeding doesn't apply.
+One thing to know: the future's output is discarded, so surface failures by logging inside it. `WaitUntil` composes with everything else — seeded GET handlers keep their `#[nextrs::api]` seed companions (the companion pulls the runtime-backed `WaitUntil` from the request extensions during prefetch, so background work registered while seeding gets the same shutdown-drain guarantee).
 
 ## Static assets on the CDN
 
