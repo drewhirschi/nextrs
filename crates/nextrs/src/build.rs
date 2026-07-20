@@ -310,7 +310,7 @@ fn url_snake(url: &str) -> String {
 
 /// Textual mirror of the macro's seed-companion eligibility: `get`'s args are
 /// empty, or at most one `Path<...>` and one `Query<...>` plus any number of
-/// `Extension<...>` / `WaitUntil` args, and it returns `Json<...>` or
+/// `Extension<...>` / `WaitUntil` / `Timing` args, and it returns `Json<...>` or
 /// `Result<Json<...>, E>`. Kept deliberately simple — a false positive means
 /// a clear "cannot find __nextrs_seed_get" error at the `pub use`, not silent
 /// misrouting. The return check is a normalized prefix match (NOT
@@ -357,10 +357,10 @@ fn get_is_seed_eligible(source: &str) -> bool {
         return true;
     }
     // Split at top-level commas and classify each arg the way the macro does:
-    // at most one Path, one Query; any number of Extension / WaitUntil
-    // (sourced from `_ext`); anything else disqualifies. Checked on the type
-    // side of each `pattern: Type` pair; Extension/WaitUntil are matched
-    // first so `Extension<QueryConfig>` doesn't read as a Query.
+    // at most one Path, one Query; any number of Extension / WaitUntil /
+    // Timing (sourced from `_ext`); anything else disqualifies. Checked on the
+    // type side of each `pattern: Type` pair; Extension/WaitUntil/Timing are
+    // matched first so `Extension<QueryConfig>` doesn't read as a Query.
     let mut pieces = Vec::new();
     {
         let mut depth = 0i32;
@@ -382,7 +382,7 @@ fn get_is_seed_eligible(source: &str) -> bool {
     let mut query_count = 0usize;
     for piece in pieces {
         let ty = piece.split_once(':').map(|(_, t)| t).unwrap_or(piece);
-        if ty.contains("Extension") || ty.contains("WaitUntil") {
+        if ty.contains("Extension") || ty.contains("WaitUntil") || ty.contains("Timing") {
             continue;
         } else if ty.contains("Query") {
             query_count += 1;
@@ -1221,12 +1221,17 @@ fn emit_page_slot(out: &mut String, idx: usize, route: &DiscoveredRoute) {
         } else {
             "props"
         };
+        // The seed await is the page's dominant server-side cost; time it as
+        // the `seed` segment (guard drop records against the request's
+        // telemetry handle — a no-op when absent).
         if is_dynamic {
             let _ = writeln!(
                 out,
                 "        page: Some(Box::new(|req| Box::pin(async move {{\n            \
                  let (params, req) = ::nextrs::params::extract_params(req).await;\n            \
+                 let __nx_seed = ::nextrs::telemetry::start_segment(req.extensions(), \"seed\");\n            \
                  let seeds = {}::{}(req, params.clone()).await;\n            \
+                 ::std::mem::drop(__nx_seed);\n            \
                  format!(\"{{}}{{}}{{}}\", params.to_script_tag(), seeds.to_script_tag(), {})\n        \
                  }}))),",
                 prefetch_mod, entry_fn, shell
@@ -1235,7 +1240,9 @@ fn emit_page_slot(out: &mut String, idx: usize, route: &DiscoveredRoute) {
             let _ = writeln!(
                 out,
                 "        page: Some(Box::new(|req| Box::pin(async move {{\n            \
+                 let __nx_seed = ::nextrs::telemetry::start_segment(req.extensions(), \"seed\");\n            \
                  let seeds = {}::{}(req).await;\n            \
+                 ::std::mem::drop(__nx_seed);\n            \
                  format!(\"{{}}{{}}\", seeds.to_script_tag(), {})\n        \
                  }}))),",
                 prefetch_mod, entry_fn, shell
@@ -2349,6 +2356,10 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
         ));
         assert!(get_is_seed_eligible(
             "pub async fn get(wait: nextrs::WaitUntil) -> Json<X> { todo!() }"
+        ));
+        // Timing: eligible.
+        assert!(get_is_seed_eligible(
+            "pub async fn get(timing: nextrs::Timing, Query(f): Query<F>) -> Json<X> { todo!() }"
         ));
         // Extension of a Query-named inner type is still an Extension.
         assert!(get_is_seed_eligible(
