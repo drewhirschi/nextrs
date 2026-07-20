@@ -145,7 +145,9 @@ pub fn build_router_with_public_and_speculation(
     speculation: SpeculationConfig,
 ) -> Router {
     return build_router_with_public_inner(registry, public_dir, speculation)
-        .layer(axum::middleware::map_response(crate::health::stamp));
+        .layer(axum::middleware::map_response(crate::health::stamp))
+        // Outermost so it sees the cold flag `stamp` just wrote.
+        .layer(axum::middleware::from_fn(crate::telemetry::record));
 }
 
 fn build_router_with_public_inner(
@@ -262,6 +264,8 @@ pub fn build_router_with_speculation(
     let router = build_route_table(Arc::clone(&entries), Arc::clone(&speculation));
     with_not_found_fallback(router, entries, not_found, speculation)
         .layer(axum::middleware::map_response(crate::health::stamp))
+        // Outermost so it sees the cold flag `stamp` just wrote.
+        .layer(axum::middleware::from_fn(crate::telemetry::record))
 }
 
 /// Deprecated name for [`build_router_with_speculation`].
@@ -295,16 +299,36 @@ fn build_prefetch_endpoint(entries: Arc<Vec<RouteEntry>>) -> Router {
         let route_path = path.clone();
         inner = inner.route(
             &path,
-            get(move |req: Request| {
+            get(move |mut req: Request| {
                 let entries = Arc::clone(&entries_for_route);
                 let path = route_path.clone();
                 async move {
-                    let req = match run_middlewares(&entries, &path, req).await {
+                    // Labeled distinctly from a page render of the same
+                    // template — "/__nx/prefetch/todos/{id}" — so slow seed
+                    // work is attributable to the soft-nav path.
+                    let telemetry = crate::telemetry::RouteTelemetry::new(
+                        &format!("{}{}", NX_PREFETCH_PATH, path),
+                        http::Method::GET,
+                    );
+                    req.extensions_mut().insert(Arc::clone(&telemetry));
+
+                    let mw_start = std::time::Instant::now();
+                    let mw_result = run_middlewares(&entries, &path, req).await;
+                    telemetry.record_mw(mw_start.elapsed());
+                    let req = match mw_result {
                         Ok(req) => req,
-                        Err(response) => return response,
+                        Err(mut response) => {
+                            response.extensions_mut().insert(telemetry);
+                            return response;
+                        }
                     };
+
+                    let handler_start = std::time::Instant::now();
                     let seeds = entries[idx].prefetch.as_ref().unwrap()(req).await;
-                    axum::Json(seeds.to_json()).into_response()
+                    telemetry.record_handler(handler_start.elapsed());
+                    let mut response = axum::Json(seeds.to_json()).into_response();
+                    response.extensions_mut().insert(telemetry);
+                    response
                 }
             }),
         );
@@ -456,15 +480,20 @@ async fn render_not_found(
         return http::StatusCode::NOT_FOUND.into_response();
     };
 
+    let telemetry = crate::telemetry::RouteTelemetry::new("__not_found", req.method().clone());
     let layouts = collect_layouts_for_path(entries, &nf.path);
     let (before, after) = layout_shell(&layouts);
     // Same speculation-rules injection as a normal page response (no-op for
     // head-less fragments / when speculation is off).
     let before = speculation.inject_into_head(before);
+    let handler_start = std::time::Instant::now();
     let body = (nf.render)(req).await;
+    telemetry.record_handler(handler_start.elapsed());
     let full = format!("{}{}{}", before, body, after);
 
-    (http::StatusCode::NOT_FOUND, Html(full)).into_response()
+    let mut response = (http::StatusCode::NOT_FOUND, Html(full)).into_response();
+    response.extensions_mut().insert(telemetry);
+    response
 }
 
 async fn render_route(
@@ -472,11 +501,29 @@ async fn render_route(
     speculation: Arc<ResolvedSpeculation>,
     idx: usize,
     path: String,
-    req: Request,
+    mut req: Request,
 ) -> Response {
-    let req = match run_middlewares(&entries, &path, req).await {
+    use tracing::Instrument;
+
+    let telemetry = crate::telemetry::RouteTelemetry::new(&path, req.method().clone());
+    req.extensions_mut().insert(Arc::clone(&telemetry));
+    let span = tracing::debug_span!(
+        "nextrs.route",
+        http.route = %path,
+        http.request.method = %req.method(),
+    );
+
+    let mw_start = std::time::Instant::now();
+    let mw_result = run_middlewares(&entries, &path, req)
+        .instrument(span.clone())
+        .await;
+    telemetry.record_mw(mw_start.elapsed());
+    let req = match mw_result {
         Ok(req) => req,
-        Err(response) => return response,
+        Err(mut response) => {
+            response.extensions_mut().insert(telemetry);
+            return response;
+        }
     };
 
     let layouts = collect_layouts_for_path(&entries, &path);
@@ -492,11 +539,18 @@ async fn render_route(
         let loading_html = entries[idx].loading.as_ref().unwrap()();
         let slot_div = format!(r#"<div id="{}">{}</div>"#, NX_SLOT_ID, loading_html);
 
+        // Headers ship before the page fn runs, so the handler duration is
+        // recorded by the stream itself and the summary event fires from the
+        // final chunk (or the telemetry Drop, if the client walked away).
+        telemetry.set_streaming();
+        let stream_telemetry = Arc::clone(&telemetry);
         let stream = async_stream::stream! {
             yield Ok::<Bytes, Infallible>(Bytes::from(before));
             yield Ok(Bytes::from(slot_div));
 
-            let page_html = entries[idx].page.as_ref().unwrap()(req).await;
+            let handler_start = std::time::Instant::now();
+            let page_html = entries[idx].page.as_ref().unwrap()(req).instrument(span).await;
+            stream_telemetry.record_handler(handler_start.elapsed());
             let swap_chunk = format!(
                 r#"<template id="{}">{}</template>{}"#,
                 NX_PAGE_ID, page_html, NX_SWAP_SCRIPT,
@@ -504,16 +558,22 @@ async fn render_route(
             yield Ok(Bytes::from(swap_chunk));
 
             yield Ok(Bytes::from(after));
+            stream_telemetry.emit();
         };
 
         Response::builder()
             .header("content-type", "text/html; charset=utf-8")
+            .extension(telemetry)
             .body(Body::from_stream(stream))
             .unwrap()
     } else {
-        let page_html = entries[idx].page.as_ref().unwrap()(req).await;
+        let handler_start = std::time::Instant::now();
+        let page_html = entries[idx].page.as_ref().unwrap()(req).instrument(span).await;
+        telemetry.record_handler(handler_start.elapsed());
         let full = format!("{}{}{}", before, page_html, after);
-        Html(full).into_response()
+        let mut response = Html(full).into_response();
+        response.extensions_mut().insert(telemetry);
+        response
     }
 }
 
@@ -522,15 +582,37 @@ async fn handle_method_route(
     idx: usize,
     method_idx: usize,
     path: String,
-    req: Request,
+    mut req: Request,
 ) -> Response {
-    let req = match run_middlewares(&entries, &path, req).await {
+    use tracing::Instrument;
+
+    let telemetry = crate::telemetry::RouteTelemetry::new(&path, req.method().clone());
+    req.extensions_mut().insert(Arc::clone(&telemetry));
+    let span = tracing::debug_span!(
+        "nextrs.route",
+        http.route = %path,
+        http.request.method = %req.method(),
+    );
+
+    let mw_start = std::time::Instant::now();
+    let mw_result = run_middlewares(&entries, &path, req)
+        .instrument(span.clone())
+        .await;
+    telemetry.record_mw(mw_start.elapsed());
+    let req = match mw_result {
         Ok(req) => req,
-        Err(response) => return response,
+        Err(mut response) => {
+            response.extensions_mut().insert(telemetry);
+            return response;
+        }
     };
 
     let route_fn = &entries[idx].methods[method_idx].1;
-    route_fn(req).await
+    let handler_start = std::time::Instant::now();
+    let mut response = route_fn(req).instrument(span).await;
+    telemetry.record_handler(handler_start.elapsed());
+    response.extensions_mut().insert(telemetry);
+    response
 }
 
 async fn run_middlewares(
@@ -2192,5 +2274,165 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    }
+
+    // -- Route telemetry ------------------------------------------------------
+
+    fn server_timing(resp: &Response) -> String {
+        resp.headers()
+            .get("server-timing")
+            .map(|v| v.to_str().unwrap().to_string())
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn page_response_carries_server_timing_breakdown() {
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/".to_string(),
+            page: Some(dyn_page("home")),
+            ..Default::default()
+        });
+        let app = build_router(registry);
+        let resp = app
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let st = server_timing(&resp);
+        assert!(st.contains("mw;dur="), "{st}");
+        assert!(st.contains("handler;dur="), "{st}");
+        assert!(st.contains("total;dur="), "{st}");
+        assert!(st.contains("route;desc=\"/\""), "{st}");
+    }
+
+    #[tokio::test]
+    async fn api_route_records_custom_segments_in_server_timing() {
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/api/todos".to_string(),
+            methods: vec![(
+                http::Method::POST,
+                Box::new(|req: Request<Body>| {
+                    Box::pin(async move {
+                        let guard = crate::telemetry::start_segment(req.extensions(), "db");
+                        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+                        drop(guard);
+                        "created".into_response()
+                    })
+                }),
+            )],
+            ..Default::default()
+        });
+        let app = build_router(registry);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/api/todos")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let st = server_timing(&resp);
+        assert!(st.contains("db;dur="), "{st}");
+        assert!(st.contains("handler;dur="), "{st}");
+        assert!(st.contains("route;desc=\"/api/todos\""), "{st}");
+    }
+
+    #[tokio::test]
+    async fn streaming_response_reports_partial_server_timing() {
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/slow".to_string(),
+            page: Some(slow_dyn_page("late", 10)),
+            loading: Some(static_loading("spinner")),
+            ..Default::default()
+        });
+        let app = build_router(registry);
+        let resp = app
+            .oneshot(Request::builder().uri("/slow").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let st = server_timing(&resp);
+        assert!(st.contains("mw;dur="), "{st}");
+        assert!(st.contains("streaming"), "{st}");
+        assert!(!st.contains("handler;dur="), "{st}");
+        assert!(!st.contains("total;dur="), "{st}");
+        // The stream still completes normally with the header already sent.
+        let body = body_to_string(resp.into_body()).await;
+        assert!(body.contains("late"), "{body}");
+    }
+
+    #[tokio::test]
+    async fn middleware_rejection_still_carries_server_timing() {
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/private".to_string(),
+            page: Some(dyn_page("secret")),
+            middleware: Some(Box::new(|_req| {
+                Box::pin(async {
+                    MiddlewareResult::Response(
+                        (StatusCode::UNAUTHORIZED, "denied").into_response(),
+                    )
+                })
+            })),
+            ..Default::default()
+        });
+        let app = build_router(registry);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/private")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        let st = server_timing(&resp);
+        assert!(st.contains("mw;dur="), "{st}");
+        assert!(!st.contains("handler;dur="), "{st}");
+        assert!(st.contains("route;desc=\"/private\""), "{st}");
+    }
+
+    #[tokio::test]
+    async fn static_files_carry_no_server_timing() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::write(tmp.path().join("s.txt"), "static").unwrap();
+        let app = build_router_with_public(RouteRegistry::new(), tmp.path());
+        let resp = app
+            .oneshot(Request::builder().uri("/s.txt").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        assert!(resp.headers().get("server-timing").is_none());
+    }
+
+    #[tokio::test]
+    async fn prefetch_endpoint_is_labeled_distinctly() {
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/todos".to_string(),
+            page: Some(dyn_page("shell")),
+            prefetch: Some(Box::new(|_req| {
+                Box::pin(async { crate::seed::QuerySeed::new() })
+            })),
+            ..Default::default()
+        });
+        let app = build_router(registry);
+        let resp = app
+            .oneshot(
+                Request::builder()
+                    .uri("/__nx/prefetch?path=%2Ftodos")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::OK);
+        let st = server_timing(&resp);
+        assert!(st.contains("route;desc=\"/__nx/prefetch/todos\""), "{st}");
+        assert!(st.contains("handler;dur="), "{st}");
     }
 }
