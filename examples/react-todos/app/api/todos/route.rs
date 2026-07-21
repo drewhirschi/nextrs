@@ -53,18 +53,17 @@ pub struct AddTodoRequest {
 // keeps its seed companion: the companion sources the context from the
 // request extensions (installed by the layer in main.rs / api/index.rs), so
 // prefetch.rs seeds through this handler unchanged.
+// `Timing` records the store lookup as a `db` segment: visible in the
+// response's Server-Timing header (DevTools → Network → Timing) and in the
+// page's breakdown when prefetch.rs seeds through this handler.
 pub async fn get(
     Extension(ctx): Extension<TodosCtx>,
+    timing: nextrs::Timing,
     Query(f): Query<TodosFilter>,
 ) -> Json<Vec<Todo>> {
     let open_only = f.status.as_deref() == Some("open");
-    Json(
-        ctx.list(open_only)
-            .await
-            .into_iter()
-            .map(Into::into)
-            .collect(),
-    )
+    let todos = timing.span("db", ctx.list(open_only)).await;
+    Json(todos.into_iter().map(Into::into).collect())
 }
 
 #[nextrs::api(

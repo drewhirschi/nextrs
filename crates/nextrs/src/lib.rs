@@ -6,6 +6,7 @@ pub mod params;
 pub mod router;
 pub mod seed;
 pub mod speculation;
+pub mod telemetry;
 pub mod wait_until;
 
 /// Deprecated path for [`speculation`] — kept for one release. This module
@@ -29,6 +30,7 @@ pub use utoipa;
 // Re-exported for the seed companions `#[nextrs::api]` expands (they
 // reference `::nextrs::serde_json` so consumer crates don't need the dep).
 pub use params::{Params, search_params};
+pub use telemetry::Timing;
 pub use wait_until::WaitUntil;
 pub use seed::{QuerySeed, SeedEntry, seed_key};
 pub use serde_json;

@@ -142,6 +142,7 @@ fn seed_companion(item: proc_macro2::TokenStream, url: &str) -> Option<proc_macr
         Query,
         Ext(usize),
         Wait,
+        Timing,
     }
     let mut path_ty: Option<&syn::Type> = None;
     let mut query_ty: Option<&syn::Type> = None;
@@ -165,6 +166,7 @@ fn seed_companion(item: proc_macro2::TokenStream, url: &str) -> Option<proc_macr
                 call_order.push(CallArg::Ext(ext_tys.len() - 1));
             }
             "WaitUntil" => call_order.push(CallArg::Wait),
+            "Timing" => call_order.push(CallArg::Timing),
             _ => return None,
         }
     }
@@ -249,6 +251,12 @@ fn seed_companion(item: proc_macro2::TokenStream, url: &str) -> Option<proc_macr
         // detached tokio::spawn form — identical to the extractor's behavior.
         CallArg::Wait => quote! {
             _ext.get::<::nextrs::WaitUntil>().cloned().unwrap_or_default()
+        },
+        // Sourced from the same extensions; during a page render this is the
+        // request's telemetry handle, so segments recorded while seeding land
+        // in the page's breakdown. No-op when absent — like the extractor.
+        CallArg::Timing => quote! {
+            ::nextrs::telemetry::Timing::from_extensions(_ext)
         },
     });
 
@@ -805,6 +813,19 @@ mod tests {
         assert!(!c.contains("Option < :: nextrs :: SeedEntry >"), "{}", c);
         // …with the WaitUntil pulled from _ext, detached when absent.
         assert!(c.contains("WaitUntil > () . cloned () . unwrap_or_default ()"), "{}", c);
+    }
+
+    #[test]
+    fn seed_companion_for_timing_get_stays_infallible() {
+        let item: proc_macro2::TokenStream =
+            "pub async fn get(timing: nextrs::Timing, Query(f): Query<F>) -> Json<X> { todo!() }"
+                .parse()
+                .unwrap();
+        let c = seed_companion(item, "/api/x").unwrap().to_string();
+        // Timing never fails → still the plain SeedEntry-returning shape…
+        assert!(!c.contains("Option < :: nextrs :: SeedEntry >"), "{}", c);
+        // …with the Timing rebuilt from _ext (no-op when absent).
+        assert!(c.contains("Timing :: from_extensions (_ext)"), "{}", c);
     }
 
     #[test]
