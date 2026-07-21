@@ -553,6 +553,32 @@ cargo dev   # build + run + watch (alias for nextrs-dev; `cargo install cargo-ne
 Don't substitute a hand-rolled watch script — the runner knows which inputs
 (Rust, templates, `app/`, `public/`, env files) require a restart.
 
+## Diagnosing a slow route
+
+Every response carries a `Server-Timing` breakdown — read it before adding
+any logging:
+
+```bash
+curl -sI http://localhost:3000/todos | grep -i server-timing
+# server-timing: mw;dur=1.2, seed;dur=430.0, handler;dur=445.1, total;dur=447.0, route;desc="/todos"
+```
+
+`mw` = middleware chain, `seed` = `prefetch.rs` data seeding, `handler` =
+page render or API fn. When `handler` is the mystery, extract
+`nextrs::Timing` and wrap the suspects — the segment appears in the same
+header on the next request:
+
+```rust
+pub async fn get(timing: nextrs::Timing, Extension(db): Extension<Db>) -> Json<Vec<Todo>> {{
+    let todos = timing.span("db", db.list()).await;
+    Json(todos)
+}}
+```
+
+The same data fires as `tracing` events (`RUST_LOG=nextrs=info` locally;
+Vercel function logs in production). Full guide, including OpenTelemetry
+export: <https://nextrs-docs.vercel.app/docs/telemetry>
+
 ## Deploys are prebuilt
 
 Git auto-builds are OFF (`vercel.json` sets `git.deploymentEnabled: false`);
@@ -1366,6 +1392,9 @@ mod tests {
         assert!(agents.contains("cargo dev"));
         assert!(agents.contains("scripts/deploy-prebuilt.sh"));
         assert!(agents.contains("https://nextrs-docs.vercel.app/docs/porting"));
+        assert!(agents.contains("server-timing"));
+        assert!(agents.contains("nextrs::Timing"));
+        assert!(agents.contains("https://nextrs-docs.vercel.app/docs/telemetry"));
         assert!(agents.contains("@demo/client"));
     }
 
