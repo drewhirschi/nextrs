@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 
-const VERSION: &str = "0.4";
+const VERSION: &str = "0.5";
 
 fn main() {
     if let Err(err) = run() {
