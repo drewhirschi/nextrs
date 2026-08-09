@@ -1,12 +1,8 @@
-# Keep Vercel uploads small and under the free-tier 5000-file limit.
-# vercel-rust compiles from source on Vercel, so none of these belong in the
-# upload. (A deploy without an effective ignore tried to push 2.6GB — target/,
-# .git, and a .claude/ agent worktree — which blew past the 5000-file cap and
-# triggered a 24h upload rate-limit.)
-target
-node_modules
-**/node_modules
-.git
-.claude
-.vercel
-*.log
+.git/
+.vercel/
+**/.vercel/
+target/
+**/target/
+**/node_modules/
+docs/nextrs-transcripts-backup.zip
+.playwright-mcp/
