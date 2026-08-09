@@ -1,32 +1,34 @@
 +++
 title = "A Rust-First Tour"
-description = "Build from one line of HTML to local state, a typed Rust API call, React Query, and server-seeded data"
+description = "Build from a tiny React component to local state, a typed Rust API call, React Query, and server-seeded data"
 section = "Guides"
 order = 2
 +++
 
-nextrs is easiest to understand one layer at a time. You do not need React,
-React Query, client generation, or even a Rust page handler to put something on
-the screen. Add each only when the problem in front of you needs it.
+nextrs is easiest to understand one layer at a time. Start with the smallest
+React component, then add each backend or data abstraction only when the
+problem in front of you needs it.
 
 This tour deliberately builds the same idea five times. It is also a useful
 demo path: start with almost nothing, put Rust behind an HTTP boundary, and
 then show how that Rust contract keeps the richer client honest.
 
-## 1. A page with text
+## 1. A React page with text
 
-Create `app/page.html`:
+Create `app/page.tsx`:
 
-```html
-<h1>Hello from nextrs</h1>
+```tsx
+export default function HomePage() {
+  return <h1>Hello from nextrs</h1>;
+}
 ```
 
-That is a complete page. The file convention creates `/`; no component,
-JavaScript, or Rust handler is required.
+That is a complete page. The file convention creates `/`; no backend handler
+or data library is required.
 
 ## 2. A page with local state
 
-Rename it to `app/page.tsx` when the page needs browser interaction:
+Add local state when the page needs browser interaction:
 
 ```tsx
 import { useState } from "react";
@@ -87,14 +89,14 @@ The generated client does not require React Query. Import its plain function
 from the package root and call it like any other async function:
 
 ```tsx
-import { getTodos } from "@mysite/client";
+import { getApiTodos } from "@mysite/client";
 import { useState } from "react";
 
 export default function Todos() {
   const [message, setMessage] = useState("Nothing loaded yet");
 
   async function load() {
-    const response = await getTodos();
+    const response = await getApiTodos();
     setMessage(response.data[0]?.title ?? "No todos");
   }
 
@@ -103,7 +105,7 @@ export default function Todos() {
 ```
 
 There is no handwritten URL, response interface, cast, or generic annotation.
-The generated `getTodos` function and its result come from the Rust endpoint.
+The generated `getApiTodos` function and its result come from the Rust endpoint.
 Rename `title` in Rust, regenerate, and this page stops type-checking at the
 exact place that still expects the old contract.
 
@@ -117,10 +119,10 @@ refetching, mutations, or invalidation. The hook is generated beside the plain
 function from the same contract:
 
 ```tsx
-import { useGetTodos } from "@mysite/client";
+import { useGetApiTodos } from "@mysite/client";
 
 export default function Todos() {
-  const { data, isPending } = useGetTodos();
+  const { data, isPending } = useGetApiTodos();
 
   if (isPending) return <p>Loading…</p>;
 
@@ -147,7 +149,7 @@ This is the progression used by the
 example:
 
 ```
-HTML page
+React text page
   → React local state
   → typed Rust route
   → plain generated client

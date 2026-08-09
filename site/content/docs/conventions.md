@@ -1,85 +1,78 @@
 +++
 title = "Routing Conventions"
-description = "page, layout, loading, middleware, and route files — what each does and how they compose"
+description = "React pages, layouts, loading UI, middleware, APIs, and server prefetch"
 section = "Guides"
 order = 2
 +++
 
-Every directory under `app/` is a URL segment. Six file names have meaning inside a segment:
+Every directory under `app/` is a URL segment. These are the public React-first
+conventions:
 
-| File | Role | Signature |
-|---|---|---|
-| `page.{rs,html,tsx}` | The content for this URL | `pub async fn render(Request<Body>) -> String` |
-| `layout.{rs,html,tsx}` | Wraps this segment's children (and nested routes) | `pub fn render(children: &str) -> String` |
-| `loading.{rs,html,tsx}` | Skeleton streamed while the page computes | `pub fn render() -> String` |
-| `middleware.rs` | Guard that runs before anything renders | `pub async fn handle(Request<Body>) -> MiddlewareResult` |
-| `route.rs` | API handlers (JSON etc.) | `pub async fn get/post/put/patch/delete/...` |
-| `prefetch.rs` | Server data that warms a `page.tsx`'s React Query cache | `pub async fn prefetch(Request<Body>) -> QuerySeed` |
-
-For `page`, `layout`, and `loading`, three variants are accepted (the signatures above are for `.rs`). `.rs` is dynamic Rust; `.html` is served as-is (for layouts, `{{ children }}` is substituted literally) — zero Rust required for static segments; if both `.rs` and `.html` exist, **`.rs` wins**. `.tsx` is a React component, bundled and client-rendered (see [React pages](#react-pages) below). A `.tsx` slot is **exclusive**: it cannot coexist with a `.rs` or `.html` of the same name (the build emits a `compile_error!`), because a segment has exactly one rendering model.
+| File | Role |
+|---|---|
+| `page.tsx` | React content for the URL |
+| `layout.tsx` | Shared React UI around this segment and its descendants |
+| `loading.tsx` | Immediate loading UI while route data becomes available |
+| `prefetch.rs` | Server data that warms the page's React Query cache |
+| `middleware.rs` | Request guard or transformation |
+| `route.rs` | Typed Axum API handlers |
 
 ## Pages
 
-```rust
-use askama::Template;
-
-#[derive(Template)]
-#[template(path = "users/page.html")]
-pub struct UsersPage { pub names: Vec<String> }
-
-pub async fn render(req: http::Request<axum::body::Body>) -> String {
-    let names = fetch_users().await;
-    UsersPage { names }.render().unwrap()
+```tsx
+export default function UsersPage() {
+  return <h1>Users</h1>;
 }
 ```
 
-Pages receive the full request: headers, URI, and any extensions middleware inserted. They return the rendered HTML string; the framework wraps it in the layout chain and the HTTP response.
+`app/users/page.tsx` maps to `/users`. nextrs bundles each page and mounts it
+under a TanStack `QueryClientProvider`.
 
 ## Layouts
 
-Layouts nest: a request to `/a/b` renders `app/layout` around `app/a/layout` around `app/a/b/page`, root to leaf.
+Layouts nest from root to leaf and receive the matched page as `children`:
 
-```rust
-use askama::Template;
+```tsx
+import type { ReactNode } from "react";
 
-#[derive(Template)]
-#[template(path = "layout.html")]
-pub struct RootLayout<'a> { pub children: &'a str }
-
-pub fn render(children: &str) -> String {
-    RootLayout { children }.render().unwrap()
+export default function DashboardLayout({ children }: { children: ReactNode }) {
+  return (
+    <section>
+      <aside>Dashboard</aside>
+      <main>{children}</main>
+    </section>
+  );
 }
 ```
 
-**Askama layouts must use `{{ children|safe }}`.** Without `|safe`, Askama HTML-escapes the children — which breaks both your page markup and the framework's internal content marker (see [Streaming](/docs/streaming) for why that marker exists). This is the most common first-run mistake.
+`app/layout.tsx` wraps the whole app. `app/dashboard/layout.tsx` adds another
+layer only for routes below `/dashboard`.
 
-## Loading
+## Loading UI
 
-A `loading.{rs,html}` file opts the route into streaming: the loading skeleton is sent immediately, the page handler runs concurrently, and the resolved page is swapped in on the same response. Routes without a loading slot return one synchronous response. Details in [Streaming](/docs/streaming).
+Place `loading.tsx` beside a page to define its pending experience:
 
-## React pages
+```tsx
+export default function Loading() {
+  return <p>Loading…</p>;
+}
+```
 
-A `page.tsx` (and optional `layout.tsx` / `loading.tsx`) is a React component instead of a Rust handler. Behind the `tsx` cargo feature, the build bundles each `page.tsx` to `/dist/<slug>.js` with an embedded rolldown bundler — no swc, no external Node build step — and generates a shell handler that streams a `<div id="__nx_root__">` plus a module script. The component mounts client-side under a TanStack `<QueryClientProvider>`; layouts, middleware, and streaming compose around it exactly as they do for a Rust page.
+Keep loading components free of data dependencies. The resolved page replaces
+them when its prefetched data and route code are ready.
 
-Components import their typed data hooks from the generated client in the `client/` npm package (aliased `@site/client`) — see [Typesafe Client Generation](/docs/typesafe-client).
+## Server prefetch
 
-A sibling `prefetch.rs` warms that client's React Query cache from the server. It returns a `nextrs::QuerySeed` whose entries are keyed with `nextrs::seed_key(...)`; the framework streams them as a JSON `<script id="__nx_seeds__">` tag and the client loads them into the cache before mount, so the first paint has data without a mount-time round-trip. `prefetch.rs` requires a `page.tsx` sibling — a `prefetch.rs` next to a Rust page is a compile error, since Rust pages fetch their own data. The legacy filename `props.rs` (exporting `fn props`) still works, but new code should use `prefetch.rs`. Full walkthrough in [React Pages & Server Prefetch](/docs/react-server-props).
-
-## Prefetch vs preload vs speculation
-
-nextrs has three ahead-of-time mechanisms, named to match the ecosystem (Next.js calls data warming "prefetch"; TanStack Router calls route-code warming "preload"; the browser spec is "Speculation Rules"). They warm different things and are configured in different places:
-
-| Mechanism | What it warms | Who triggers it | Where configured |
-|---|---|---|---|
-| **Prefetch** | A React page's *data* (React Query cache entries) | The server on hard loads (streamed `__nx_seeds__`); the app shell on hover/soft-nav (`/__nx/prefetch`) | `prefetch.rs` beside a `page.tsx` |
-| **Preload** | A React route's *JS chunk* | The app shell's router, on link hover (intent) | Automatic for every `page.tsx` route — nothing to configure |
-| **Speculation** | The *next full document*, browser-natively | The browser, per its injected Speculation Rules (hover by default) | Opt-in: `build_router_with_speculation(registry, SpeculationConfig { mode: SpeculationMode::Prefetch, eagerness: Eagerness::Moderate })` (or the `..._with_public_and_speculation` variant) |
-
-React (`page.tsx`) routes get prefetch + preload automatically and don't need speculation — the app shell soft-navigates them. Speculation is for **server-rendered pages** (`page.rs` / `page.html`), where every click is a full-document navigation; this docs site enables it for exactly that reason. It's off by default (since 0.4.0), and when enabled the injected rules automatically exclude React app-shell routes, whose speculated documents would be discarded by the soft-nav interceptor. A link can opt out with `data-no-prefetch` (for e.g. destructive GETs like `/logout`).
+A `prefetch.rs` beside `page.tsx` returns a `nextrs::QuerySeed`. On a hard load,
+the server sends those cache entries with the React shell. On hover and soft
+navigation, the app shell warms both the route chunk and its data automatically.
+See [React Pages & Server Prefetch](/docs/react-server-props) for the complete
+flow.
 
 ## Middleware
 
-`middleware.rs` files compose root-to-leaf along the matched path and run **before** layouts, loading, pages, and API handlers:
+`middleware.rs` files compose root-to-leaf and run before pages and API
+handlers:
 
 ```rust
 use axum::body::Body;
@@ -98,54 +91,46 @@ pub async fn handle(mut req: Request<Body>) -> MiddlewareResult {
 }
 ```
 
-`MiddlewareResult::next(req)` continues (pass the request along — you may have mutated it); `MiddlewareResult::response(...)` short-circuits with a real HTTP response. Because middleware runs before the loading shell is sent, redirects and auth failures get correct status codes and headers even on streaming routes. Downstream pages read what middleware inserted via `req.extensions().get::<User>()`.
-
 ## API routes
 
-`route.rs` exports one public async function per HTTP method. Handlers are ordinary Axum handlers — extractors in, `impl IntoResponse` out:
+`route.rs` exports an async function named for each HTTP method. Axum
+extractors define the inputs and concrete response types define the output:
 
 ```rust
 use axum::Json;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
+use utoipa::ToSchema;
 
-#[derive(Serialize)]
+#[derive(Serialize, ToSchema)]
 pub struct Pong { pub message: String }
 
+#[nextrs::api]
 pub async fn get() -> Json<Pong> {
     Json(Pong { message: "pong".into() })
 }
 ```
 
-The build step detects which methods a `route.rs` exports by name. A segment can have both `page.rs` and `route.rs` — the page owns GET, the route file handles the rest. **Exporting `get()` from a `route.rs` next to a page is a compile error** (the build emits `compile_error!` with the conflicting path), so the conflict can't ship.
-
-To generate a typesafe TypeScript client from your `route.rs` handlers, see [Typesafe Client Generation](/docs/typesafe-client).
-
-> **In progress:** first-party durable background jobs are being developed on
-> the [`feat/background-jobs`](https://github.com/drewhirschi/nextrs/tree/feat/background-jobs)
-> branch. The proposed convention is `app/jobs/<name>/job.rs`, with typed
-> payloads, retries, and status tracking. It is not part of `main` yet.
+See [Client Generation: Step by Step](/docs/client-codegen) for consuming the
+generated function directly or through React Query.
 
 ## Dynamic segments
 
-A directory named `[param]` matches one path segment:
+A bracketed directory matches one path segment:
 
+```text
+app/users/[id]/page.tsx       → /users/{id}
+app/api/users/[id]/route.rs   → /api/users/{id}
 ```
-app/users/[id]/page.rs   →  /users/{id}
-```
 
-Inside the handler, extract the parameter with Axum's `Path` extractor:
-
-```rust
-use axum::extract::Path;
-use axum::RequestPartsExt;
-
-pub async fn render(req: http::Request<axum::body::Body>) -> String {
-    let (mut parts, _body) = req.into_parts();
-    let Path(id): Path<String> = parts.extract().await.unwrap();
-    format!("<h1>user {}</h1>", id)
-}
-```
+The React route receives the matched route context, while an API handler reads
+the same value through Axum's `Path<T>` extractor.
 
 ## Static assets
 
-Files in `public/` (sibling of `app/`) are served at the root URL path: `public/style.css` → `/style.css`. Locally they're a router fallback (routes win over files); on Vercel the CDN serves them before the function is invoked (files win over routes). Don't give a route and a file the same name and the asymmetry never matters.
+Files in `public/` are served at the root URL path:
+
+```text
+public/logo.svg → /logo.svg
+```
+
+Avoid assigning the same URL to both a public file and a route.

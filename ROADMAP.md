@@ -98,7 +98,6 @@ Questions to resolve before enforcing this:
 - How to support dynamic `IntoResponse` implementations without claiming an
   incomplete contract.
 
-- `error.{rs,html}` segment convention.
 - Per-route Vercel binaries for very large apps where the current single binary
   becomes too broad.
 - Make the idiomatic Rust `src/main.rs` usable as the Vercel function entry too.

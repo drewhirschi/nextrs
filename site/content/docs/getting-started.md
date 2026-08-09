@@ -1,166 +1,125 @@
 +++
 title = "Getting Started"
-description = "Set up a nextrs app: the app/ tree, build-time codegen, and the dev loop"
+description = "Set up a React-first nextrs app and run the Cargo-powered dev loop"
 section = "Guides"
 order = 1
 +++
 
-nextrs is a Next.js-style routing framework for Rust. You write convention files (`page.tsx`, `page.rs`, `layout.rs`, `loading.html`, `middleware.rs`, `prefetch.rs`, `route.rs`) in an `app/` directory; a build step discovers them and wires the router. Two rendering models coexist: Rust/HTML pages rendered with Askama (streamed when a route has a loading state), and React `.tsx` pages bundled to the client with their server data seeded from a `prefetch.rs` sibling.
+nextrs is a React frontend framework with a Rust backend. Routes live in an
+`app/` convention tree, React components use `.tsx`, and Rust `route.rs`
+handlers provide typed APIs. A build step discovers and wires everything.
 
-## The pieces
+## Create the app
 
-A nextrs app is a normal Rust binary crate plus three things:
+The fastest start is the scaffold:
 
+```bash
+cargo install create-nextrs-app
+create-nextrs-app mysite
+cd mysite
 ```
+
+The generated app has this shape:
+
+```text
 mysite/
-├── Cargo.toml          # depends on nextrs; build-dep on nextrs with "build" feature
-├── build.rs            # one call: emit_registry
-├── askama.toml         # points Askama at app/ for templates
-├── app/                # your routes (the convention tree)
-│   ├── layout.rs       # root layout (+ layout.html Askama template)
-│   ├── page.rs         # /
-│   └── hello/
-│       └── page.html   # /hello — static HTML needs no Rust at all
-├── public/             # static assets, served at the root URL path
-└── src/
-    └── main.rs         # ~15 lines: include the registry, serve it
-```
-
-`Cargo.toml`:
-
-```toml
-[dependencies]
-nextrs = "0.5"
-axum = "0.8"
-tokio = { version = "1", features = ["full"] }
-askama = "0.15"
-
-[build-dependencies]
-nextrs = { version = "0.5", features = ["build"] }
-```
-
-`build.rs`:
-
-```rust
-fn main() {
-    nextrs::build::emit_registry("app", "src/main.rs", "nextrs_routes.rs")
-        .expect("nextrs::build::emit_registry failed");
-}
-```
-
-`emit_registry` scans `app/`, and writes a generated `generated_registry()` function into `$OUT_DIR`. It also tells cargo to rerun whenever anything under `app/` changes, so adding a file is enough — no manual wiring, ever. (A copy of the generated code is dumped to `target/nextrs/` if you want to read it.)
-
-`src/main.rs`:
-
-```rust
-include!(concat!(env!("OUT_DIR"), "/nextrs_routes.rs"));
-
-#[tokio::main]
-async fn main() {
-    let app = nextrs::router::build_router_with_public(
-        generated_registry(),
-        concat!(env!("CARGO_MANIFEST_DIR"), "/public"),
-    );
-    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
-    axum::serve(listener, app).await.unwrap();
-}
-```
-
-You own `main.rs` — pick the address, attach tower layers (the demo site adds `tower-livereload` in debug builds), read env vars. The framework only owns the router.
-
-`askama.toml`:
-
-```toml
-[general]
-dirs = ["app"]
+├── app/
+│   ├── layout.tsx          # shared React layout
+│   ├── page.tsx            # /
+│   ├── slow/
+│   │   ├── page.tsx        # /slow
+│   │   ├── loading.tsx     # loading UI
+│   │   └── prefetch.rs     # server-warmed React Query data
+│   └── api/ping/route.rs   # typed Axum API
+├── client/                 # generated fetch functions and React Query hooks
+├── public/                 # static assets
+├── build.rs                # route discovery and TSX bundling
+└── src/main.rs             # Axum server
 ```
 
 ## Your first page
 
-`app/page.rs` plus an Askama template `app/page.html`:
+`app/page.tsx` is an ordinary React component:
 
-```rust
-use askama::Template;
-
-#[derive(Template)]
-#[template(path = "page.html")]
-pub struct HomePage;
-
-pub async fn render(_req: http::Request<axum::body::Body>) -> String {
-    HomePage.render().unwrap()
+```tsx
+export default function HomePage() {
+  return <main>Hello from nextrs</main>;
 }
 ```
 
-Pages are async functions from a request to an HTML string. They can await anything — database calls, upstream APIs — and read headers, the URI, and extensions set by middleware from the request. If a page doesn't need Rust at all, skip the `.rs` file and write just `page.html`; the build step serves it statically.
+Directories become URL segments, so `app/settings/page.tsx` serves
+`/settings`. A `layout.tsx` wraps the pages beneath it:
 
-Run it:
+```tsx
+import type { ReactNode } from "react";
+
+export default function RootLayout({ children }: { children: ReactNode }) {
+  return (
+    <div>
+      <nav>My app</nav>
+      {children}
+    </div>
+  );
+}
+```
+
+The embedded Rolldown-based build bundles these components. There is no
+separate frontend build command to remember.
+
+## Add a typed backend route
+
+Create `app/api/greeting/route.rs`:
+
+```rust
+use axum::Json;
+use serde::Serialize;
+use utoipa::ToSchema;
+
+#[derive(Serialize, ToSchema)]
+pub struct Greeting {
+    pub message: String,
+}
+
+#[nextrs::api]
+pub async fn get() -> Json<Greeting> {
+    Json(Greeting { message: "Hello from Rust".into() })
+}
+```
+
+The annotation opts the handler into client generation. nextrs infers the
+method, URL, status, and response body from the function and its location.
+Generate both direct fetch functions and React Query hooks with:
 
 ```bash
-cargo run
-# Listening on 0.0.0.0:3000
+cargo nextrs client generate
 ```
 
-## React pages
+See [Client Generation: Step by Step](/docs/client-codegen) for progressive
+usage examples.
 
-A route can render a React component instead. A `page.tsx` (plus optional `layout.tsx` / `loading.tsx`) is bundled to `public/dist/<slug>.js` at build time by an embedded [rolldown](https://rolldown.rs) bundler — there is no separate Node build step — gated behind the `tsx` cargo feature on the build-dependency:
+## Server-warm React data
 
-```toml
-[build-dependencies]
-nextrs = { version = "0.5", features = ["build", "tsx"] }
-```
+A `prefetch.rs` beside `page.tsx` can fill the page's React Query cache before
+the component mounts. It returns a `nextrs::QuerySeed`; the browser receives
+those entries with the page shell and hydrates the same keys used by generated
+hooks. See [React Pages & Server Prefetch](/docs/react-server-props).
 
-`build.rs` adds a bundle step alongside `emit_registry`:
+## Run the dev loop
 
-```rust
-nextrs::bundle::bundle_pages(&nextrs::bundle::BundleConfig {
-    app_dir: "app",
-    client_dir: "client",
-    client_alias: "@mysite/client",
-    public_dist: "public/dist",
-    ..Default::default()
-})
-.expect("nextrs::bundle::bundle_pages failed");
-```
-
-Each page mounts into `<div id="__nx_root__">` under a TanStack `<QueryClientProvider>`. A sibling `client/` package holds generated fetch functions and React Query hooks derived from the app's OpenAPI spec. See [Client Code Generation, Step by Step](/docs/client-codegen) for the smallest direct-call example and [Typesafe Client Generation](/docs/typesafe-client) for the complete reference.
-
-### Server data with `prefetch.rs`
-
-To warm the React Query cache on the server, drop a `prefetch.rs` next to a `page.tsx`. It exports `pub async fn prefetch(req) -> nextrs::QuerySeed`:
-
-```rust
-pub async fn prefetch(_req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
-    nextrs::QuerySeed::new()
-        .seed(async {
-            nextrs::SeedEntry {
-                key: nextrs::seed_key("/slow/message", None),
-                data: nextrs::serde_json::json!({ "message": "Loaded from Rust." }),
-            }
-        })
-        .await
-}
-```
-
-The framework streams the entries as a JSON `<script id="__nx_seeds__">` tag and the client loads them into the React Query cache before mount, so the page renders with the data already in place. Keys built with `seed_key` match the generated client's query keys exactly, so a seeded entry behaves like a fetched one (mutations and `invalidateQueries` reach it the same way).
-
-`create-nextrs-app` scaffolds this whole track for you — `app/page.tsx`, a `/slow` route with `prefetch.rs` + `loading.tsx`, an `/api/ping` handler, the `client/` orval package, and an `AGENTS.md` contract for coding agents — so it's the fastest way to start a React-first app. Bringing an existing app instead? `create-nextrs-app --adopt` grafts the same skeleton into a non-empty repo without overwriting anything — see [Porting an Existing App](/docs/porting).
-
-## The dev loop
-
-The unified `cargo-nextrs` CLI includes the dev watcher and client generator. Install it once, then run `cargo dev` — the generated `.cargo/config.toml` aliases `dev` to the included compatibility binary:
+One Cargo installation provides both the watcher and client generator:
 
 ```bash
 cargo install cargo-nextrs
 cargo dev
 ```
 
-The explicit form is `cargo nextrs dev --bin <crate>`. Both commands run the
-same watcher.
-
-It debounces changes, SIGTERMs the running server cleanly, rebuilds with `cargo build --bin <crate>`, and restarts — without interrupting an in-progress Cargo build. Combined with `tower-livereload`, the browser refreshes itself after the rebuild. This is full-page live reload, not React HMR.
+The explicit watcher command is `cargo nextrs dev --bin <crate>`. It rebuilds
+and restarts the Rust server when backend or frontend files change. With live
+reload enabled, the browser refreshes after the rebuild.
 
 ## Where to go next
 
-- [Routing Conventions](/docs/conventions) — every file type the framework understands.
-- [Streaming](/docs/streaming) — how `loading` slots stream the shell before the page resolves.
-- [Deploy to Vercel](/docs/deploy-vercel) or [Deploy with Docker](/docs/deploy-docker).
+- [Routing Conventions](/docs/conventions)
+- [Client Generation: Step by Step](/docs/client-codegen)
+- [Porting an Existing App](/docs/porting)
+- [Deploy to Vercel](/docs/deploy-vercel) or [Deploy with Docker](/docs/deploy-docker)

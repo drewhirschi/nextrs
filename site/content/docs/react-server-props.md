@@ -9,17 +9,21 @@ order = 5
 
 ## The idea
 
-nextrs lets you drop `page.tsx` files into the `app/` tree next to `page.rs` and `page.html`:
+nextrs discovers React pages and their optional server prefetch from the `app/`
+tree:
 
 ```
 app/
-├── layout.rs           # Rust layouts wrap React pages like any other page
+├── layout.tsx          # shared React layout
 └── todos/
     ├── page.tsx        # React page — discovered and routed by the same codegen
     └── prefetch.rs        # optional: Rust warms your React Query cache
 ```
 
-`.tsx` pages are **client-rendered by default**. The server streams the layout shell and a script tag; your component renders in the browser and talks to the backend through the generated typed hooks. One Rust binary serves the APIs, the Rust pages, and the React pages. There is no Node server and no JS runtime inside the binary — that's a permanent constraint, not a temporary limitation. If a page needs request-time server rendering, that's what `page.rs` is for.
+`.tsx` pages are client-rendered. The server sends the React shell and script;
+your component renders in the browser and talks to the Rust backend through
+generated typed hooks. One Rust binary serves the frontend assets and APIs.
+There is no Node server or JavaScript runtime inside the binary.
 
 The interesting part is what replaces server-side rendering's data story.
 
@@ -96,11 +100,13 @@ Three properties worth noticing:
 
 ## Thin handlers, and why seeds go through them
 
-nextrs's conventions are deliberately just the adapter layer — `route.rs`, `page.rs`, `middleware.rs`, and `prefetch.rs` all translate between the web and your domain logic, which lives wherever you keep it (a lib crate, a `core` module). Handlers stay thin:
+nextrs's Rust conventions are deliberately just the adapter layer — `route.rs`,
+`middleware.rs`, and `prefetch.rs` translate between the web and domain logic,
+which lives wherever you keep it. Handlers stay thin:
 
 ```rust
 // app/api/todos/route.rs — adapter only: extract, delegate, map
-#[nextrs::api(get, responses((status = 200, body = Vec<Todo>)))]
+#[nextrs::api]
 pub async fn get(Query(f): Query<TodosFilter>) -> Json<Vec<Todo>> {
     Json(core::todos::list(f.into()).await)
 }

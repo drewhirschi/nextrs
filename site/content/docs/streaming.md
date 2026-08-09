@@ -1,76 +1,49 @@
 +++
-title = "Streaming"
-description = "How loading slots stream the shell before the page resolves — and how to verify it"
+title = "Loading and Prefetch"
+description = "Keep React navigation responsive while route code and server data are prepared"
 section = "Guides"
 order = 3
 +++
 
-nextrs has two rendering models. **React `.tsx` pages** mount in the browser and seed their TanStack React Query cache from a `prefetch.rs` sibling; **Rust/HTML pages** (`page.{rs,html}`) render on the server and stream. Streaming is the central UX feature of that second path.
+nextrs uses React loading components and server-warmed React Query data to keep
+navigation responsive. The supported frontend conventions are `page.tsx`,
+`layout.tsx`, and `loading.tsx`.
 
-When a Rust/HTML route has a `loading.{rs,html}` slot, the server sends the loading shell to the browser **before** the page handler has finished computing — then sends the page content as a second chunk on the same response, swapping the shell out with a tiny inline script. One HTTP request, and on this path no client-side framework and no htmx — React Query only runs on the `.tsx` path.
+## Loading UI
 
-## The model
+Add `loading.tsx` beside a page:
 
-A request to a Rust/HTML route with a `loading` slot produces a chunked response shaped like this:
-
-```
-[layout-open]
-<div id="__nx_slot__">
-  …loading content…
-</div>
-                                    ← server awaits the page handler here
-                                      (could be 100ms, could be 2s)
-<template id="__nx_page__">
-  …page content…
-</template>
-<script>
-  // ~200 bytes inline
-  var s = document.getElementById('__nx_slot__');
-  var t = document.getElementById('__nx_page__');
-  if (s && t) { s.replaceWith(t.content); t.remove(); }
-</script>
-[layout-close]
+```tsx
+export default function LoadingTodos() {
+  return <p>Loading todos…</p>;
+}
 ```
 
-The browser parses incrementally as bytes arrive: the user sees the loading shell as soon as it paints (typically under 300ms TTFB). When the page handler resolves, its content arrives inside a `<template>` (parsed but not rendered), and the swap script replaces the slot with it.
+The app shell can show this component while the route bundle and data become
+available. Keep it small and independent of the data it is waiting for.
 
-Routes **without** a `loading` slot skip the streaming machinery and return one synchronous response.
+## Prefetch server data
 
-## How the layout splits
+Add `prefetch.rs` beside the same `page.tsx` to warm its React Query cache. On
+a hard load, nextrs puts those entries into the page shell before React mounts.
+On link intent and soft navigation, the app shell preloads the target route and
+calls the same prefetch path automatically.
 
-The layout's closing half (`</body></html>`) has to arrive *after* the page swap. The framework composes the layout chain around an internal sentinel comment, then splits the rendered shell on it into `(before, after)` halves. The streamed order is `before + loading slot + (await page) + page template + swap script + after`.
+The page itself continues using an ordinary generated hook:
 
-This is why **Askama layouts must use `{{ children|safe }}`**: with plain `{{ children }}`, Askama escapes the sentinel, the split fails to find it, and your page renders outside the layout. (Static `.html` layouts do literal substitution and aren't affected.)
+```tsx
+import { useGetApiTodos } from "@mysite/client";
 
-## Middleware runs first
+export default function TodosPage() {
+  const { data, isPending } = useGetApiTodos();
 
-All matching `middleware.rs` handlers run root-to-leaf **before** the loading shell is sent — once the first chunk ships, the status and headers are committed. That ordering means auth checks and redirects in middleware return real HTTP status codes even on streaming routes. Put fast request guards in middleware; put slow data work in the page and let the loading shell cover it.
-
-## Verifying streaming works
-
-The smoke test that catches buffering anywhere in the stack:
-
-```bash
-curl -o /dev/null -w "TTFB=%{time_starttransfer}s total=%{time_total}s\n" \
-  http://localhost:3000/with-loading
+  if (isPending) return <p>Loading todos…</p>;
+  return <ul>{data?.data.map((todo) => <li key={todo.id}>{todo.title}</li>)}</ul>;
+}
 ```
 
-If `TTFB ≈ total`, streaming is broken (or the route has no loading slot). If `TTFB << total` and the gap matches the page's work time, it's streaming.
+Delete `prefetch.rs` and the component still works; its hook simply fetches on
+mount. Prefetch is an optimization, not a second frontend data model.
 
-To see the individual chunks:
-
-```bash
-curl --no-buffer --trace-time --trace - http://localhost:3000/with-loading 2>&1 \
-  | grep "<= Recv data"
-```
-
-Two or more `Recv data` events, separated by roughly the page handler's duration, means it's working. A real deploy of the demo's `/with-loading` route (800ms simulated work) shows the first frame at T+0.000s and the page frame at T+0.84s.
-
-## Deploy targets
-
-Locally, axum's `Body::from_stream` streams over chunked transfer encoding with no extra setup. On Vercel, the stock adapter buffers `text/html` responses — the framework ships a drop-in fix. See [Deploy to Vercel](/docs/deploy-vercel#streaming-through-the-vercel-adapter).
-
-## Current limits
-
-- **One swap per route.** No Suspense-style nested boundaries (yet) — one loading slot, one page swap.
-- **No error frames.** If the page handler panics after the shell shipped, the browser keeps the loading state. An `error.{rs,html}` convention is on the roadmap.
+See [React Pages & Server Prefetch](/docs/react-server-props) for the complete
+server-seeding flow.
