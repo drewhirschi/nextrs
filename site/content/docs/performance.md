@@ -1,8 +1,8 @@
 +++
-title = "Why nextrs over Next.js"
+title = "Performance"
 description = "Same app, same UI, same database — measured head to head, twice: a minimal app and a real production app converted end-to-end"
-section = "Why nextrs"
-order = 0
+section = "Guides"
+order = 8
 +++
 
 <div class="not-prose my-8 grid grid-cols-1 sm:grid-cols-2 gap-4">
