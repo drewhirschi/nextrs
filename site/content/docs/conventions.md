@@ -120,6 +120,11 @@ The build step detects which methods a `route.rs` exports by name. A segment can
 
 To generate a typesafe TypeScript client from your `route.rs` handlers, see [Typesafe Client Generation](/docs/typesafe-client).
 
+> **In progress:** first-party durable background jobs are being developed on
+> the [`feat/background-jobs`](https://github.com/drewhirschi/nextrs/tree/feat/background-jobs)
+> branch. The proposed convention is `app/jobs/<name>/job.rs`, with typed
+> payloads, retries, and status tracking. It is not part of `main` yet.
+
 ## Dynamic segments
 
 A directory named `[param]` matches one path segment:
