@@ -1,8 +1,8 @@
 +++
-title = "Client Code Generation, Step by Step"
+title = "Client Generation: Step by Step"
 description = "Turn a small Rust route into typed fetch functions, React Query hooks, and a plain JavaScript client"
-section = "Guides"
-order = 3
+section = "Client Generation"
+order = 4
 +++
 
 nextrs can turn a Rust API route into client code. The generated client knows
@@ -236,5 +236,5 @@ cargo nextrs client generate
 The external command includes the full Rust-contract refresh, so it can be used
 by itself when only an external consumer needs the client.
 
-For path and query parameters, documented errors, operation naming, and
-troubleshooting, continue to [Typesafe Client Generation](/docs/typesafe-client).
+For the architecture, contract mapping, generated-file ownership, naming, and
+troubleshooting, return to the [Client Generation Overview](/docs/typesafe-client).

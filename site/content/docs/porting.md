@@ -71,7 +71,7 @@ Every directory under `app/` is a URL segment; the build step discovers the conv
 
 ### The dev loop is `cargo dev`
 
-The scaffold aliases `cargo dev` (in `.cargo/config.toml`) to the `cargo-nextrs-dev` watcher: it rebuilds and restarts on Rust, template, asset, and env changes, and the app wires live-reload in debug builds. Install it once with `cargo install cargo-nextrs-dev`. Don't substitute a hand-rolled watch script — the runner knows which inputs matter.
+The scaffold aliases `cargo dev` (in `.cargo/config.toml`) to the watcher bundled with `cargo-nextrs`: it rebuilds and restarts on Rust, template, asset, and env changes, and the app wires live-reload in debug builds. Install the one CLI with `cargo install cargo-nextrs`. Don't substitute a hand-rolled watch script — the runner knows which inputs matter.
 
 ### Deploys are prebuilt
 

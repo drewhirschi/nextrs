@@ -20,6 +20,7 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), String> {
             print_help();
             Ok(())
         }
+        CommandLine::Dev(args) => cargo_nextrs_dev::run_with_args(args).map_err(io_error),
         CommandLine::ClientGenerate(options) => generate_client(options),
     }
 }
@@ -27,6 +28,7 @@ fn run(args: impl IntoIterator<Item = OsString>) -> Result<(), String> {
 #[derive(Debug, PartialEq, Eq)]
 enum CommandLine {
     Help,
+    Dev(Vec<OsString>),
     ClientGenerate(GenerateOptions),
 }
 
@@ -49,6 +51,9 @@ impl CommandLine {
         };
         if matches!(first.to_str(), Some("-h" | "--help" | "help")) {
             return Ok(Self::Help);
+        }
+        if first == "dev" {
+            return Ok(Self::Dev(args.collect()));
         }
         if first != "client" {
             return Err(format!("unknown command `{}`", first.to_string_lossy()));
@@ -180,7 +185,7 @@ fn io_error(error: std::io::Error) -> String {
 
 fn print_help() {
     println!(
-        "cargo nextrs\n\nUSAGE:\n    cargo nextrs client generate [OPTIONS]\n\nOPTIONS:\n    --root <PATH>        nextrs application root (default: current directory)\n    --client-dir <PATH>  client directory relative to the app root (default: client)\n    --config <PATH>      external-client config; defaults to client/nextrs.client.json when present\n    -h, --help           Print help\n\nThe command installs client dependencies when needed. Without an external config it\nregenerates the app client. With a config it also publishes client.js + client.d.ts."
+        "cargo nextrs\n\nUSAGE:\n    cargo nextrs dev --bin <NAME> [-- <APP_ARGS>]\n    cargo nextrs client generate [OPTIONS]\n\nCLIENT OPTIONS:\n    --root <PATH>        nextrs application root (default: current directory)\n    --client-dir <PATH>  client directory relative to the app root (default: client)\n    --config <PATH>      external-client config; defaults to client/nextrs.client.json when present\n    -h, --help           Print help\n\nOne `cargo install cargo-nextrs` provides the dev server, the legacy\n`cargo-nextrs-dev` compatibility binary, and client generation."
     );
 }
 
@@ -223,6 +228,14 @@ mod tests {
                 client_dir: PathBuf::from("web-client"),
                 config: Some(PathBuf::from("publish.json")),
             })
+        );
+    }
+
+    #[test]
+    fn passes_dev_arguments_to_the_dev_runner() {
+        assert_eq!(
+            parse(&["nextrs", "dev", "--bin", "demo"]).unwrap(),
+            CommandLine::Dev(vec![OsString::from("--bin"), OsString::from("demo")])
         );
     }
 

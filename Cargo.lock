@@ -332,6 +332,9 @@ dependencies = [
 [[package]]
 name = "cargo-nextrs"
 version = "0.1.0"
+dependencies = [
+ "cargo-nextrs-dev",
+]
 
 [[package]]
 name = "cargo-nextrs-dev"

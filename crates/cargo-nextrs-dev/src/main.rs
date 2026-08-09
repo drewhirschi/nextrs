@@ -79,7 +79,16 @@ fn main() {
 }
 
 fn run() -> std::io::Result<()> {
-    let options = Options::parse(env::args_os().skip(1))?;
+    run_with_args(env::args_os().skip(1))
+}
+
+/// Run the dev server with an explicit cargo-subcommand argument list.
+///
+/// This is public so the unified `cargo-nextrs` package can expose
+/// `cargo nextrs dev` while the legacy `cargo-nextrs-dev` binary remains a
+/// compatibility entry point for existing `.cargo/config.toml` aliases.
+pub fn run_with_args(args: impl IntoIterator<Item = OsString>) -> std::io::Result<()> {
+    let options = Options::parse(args)?;
     let root = env::current_dir()?;
     let app_path = target_binary(&root, &options.bin_name);
     let ignore_filter = IgnoreFilter::new(&root)?;

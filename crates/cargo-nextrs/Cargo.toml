@@ -10,3 +10,10 @@ repository = "https://github.com/drewhirschi/nextrs"
 [[bin]]
 name = "cargo-nextrs"
 path = "src/main.rs"
+
+[[bin]]
+name = "cargo-nextrs-dev"
+path = "src/dev_main.rs"
+
+[dependencies]
+cargo-nextrs-dev = { path = "../cargo-nextrs-dev", version = "0.1.0" }

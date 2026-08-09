@@ -1,186 +1,192 @@
 +++
-title = "Typesafe Client Generation"
-description = "Generate a typed TypeScript / React Query client from your route.rs handlers"
-section = "Guides"
-order = 4
+title = "Client Generation Overview"
+description = "How Rust routes become internal TypeScript clients and external JavaScript packages"
+section = "Client Generation"
+order = 3
 +++
 
-nextrs can generate a fully-typed TypeScript client — TanStack (React) Query hooks with typed request and response shapes — directly from your `route.rs` handlers. Rename a field in Rust and the TypeScript call sites stop compiling. The pipeline is OpenAPI-based:
+nextrs generates client code from the API contract already expressed by your
+Rust routes. Rust stays the source of truth; OpenAPI is the intermediate
+document; generated fetch functions and hooks are the result.
 
-For a smaller first example, begin with
-[Client Code Generation, Step by Step](/docs/client-codegen). This page is the
-complete reference.
+If you want to build one endpoint and call it immediately, start with
+[Client Generation: Step by Step](/docs/client-codegen). This page explains the
+architecture, configuration, and rules behind that example.
 
-```
-route.rs (#[nextrs::api])  ─codegen→  generated_openapi()
-        │                                     │
-        │                       cargo run --bin dump-openapi
-        ▼                                     ▼
-   served at /openapi.json            client/openapi.json
-                                              │
-                                            orval
-                                              ▼
-                            src/generated/**  (hooks + types)
-```
+## The pipeline
 
-## Annotate a handler
-
-Handlers stay ordinary Axum handlers — typed extractors in, concrete return types out. Add `#[nextrs::api]` to the ones you want in the client:
-
-```rust
-use axum::Json;
-use serde::{Deserialize, Serialize};
-use utoipa::ToSchema;
-
-#[derive(Serialize, Deserialize, ToSchema)]
-pub struct PingResponse {
-    pub message: String,
-    pub pong: bool,
-}
-
-#[derive(Serialize, Deserialize, ToSchema)]
-pub struct PingRequest {
-    pub message: String,
-}
-
-#[nextrs::api(
-    get,
-    responses((status = 200, description = "Pong", body = PingResponse)),
-)]
-pub async fn get() -> Json<PingResponse> {
-    Json(PingResponse { message: "pong".into(), pong: true })
-}
-
-#[nextrs::api(
-    post,
-    operation_id = "sendPing",
-    responses((status = 200, description = "Echoes the message", body = PingResponse)),
-)]
-pub async fn post(Json(req): Json<PingRequest>) -> Json<PingResponse> {
-    Json(PingResponse { message: req.message, pong: true })
-}
+```text
+app/**/route.rs
+  + #[nextrs::api]
+          │
+          ▼
+generated_openapi() ───────► GET /openapi.json
+          │
+          ▼
+client/openapi.json
+          │
+          ▼
+        Orval
+          │
+          ├──► internal TypeScript fetch functions + React Query hooks
+          │
+          └──► optional external client.js + client.d.ts
 ```
 
-`#[nextrs::api]` is a thin wrapper over `#[utoipa::path]` that derives the URL from the file's location (`app/api/ping/route.rs` → `/api/ping`), so the path is never restated and can't drift from the file convention. You write the method, `responses(...)` (response types aren't inferred from the return type), and optionally `operation_id` / `tag` for nicer hook names. The request body **is** inferred from the `Json<T>` extractor.
-
-Annotation is **opt-in per handler**: an un-annotated handler still routes and serves normally — it just doesn't appear in the spec or the generated client.
-
-## The spec
-
-The same build-time discovery that wires your routes collects the annotated handlers into a `generated_openapi()` function. The app serves the document at `/openapi.json`, and a `dump-openapi` binary writes the identical spec to `client/openapi.json` so the client can be generated offline.
-
-## Generate the client
-
-Install the nextrs Cargo command once, then generate from the application root:
+The user-facing command is always run at the app root:
 
 ```bash
-cargo install cargo-nextrs
 cargo nextrs client generate
 ```
 
-The Cargo command installs JavaScript generator dependencies when needed, dumps
-the Rust OpenAPI document, runs Orval, and rebuilds the generated barrel. Both
-`openapi.json` and `src/generated/**` are committed, so contract changes show
-up in the diff. Rerun it whenever an annotated `route.rs` changes.
+The Cargo command installs generator dependencies when necessary, rebuilds and
+dumps the Rust contract, invokes Orval, and refreshes the app's generated
+client barrel. JavaScript tools remain implementation details behind the Cargo
+workflow.
 
-## Use the hooks
+## What defines the contract
 
-Each annotated handler becomes a hook named from its `operation_id` — GETs become query hooks, anything with a body becomes a mutation hook:
+Only handlers annotated with `#[nextrs::api]` appear in the generated client.
+An ordinary unannotated Axum handler still routes normally.
 
-```tsx
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useGetApiPing, useSendPing } from "@site/client";
+| Contract part | Source in Rust |
+|---|---|
+| URL | File location, such as `app/api/todos/[id]/route.rs` |
+| HTTP method | `get`, `post`, `patch`, and so on in `#[nextrs::api]` |
+| Client name | `operation_id`, or a name derived from method and path |
+| Path parameters | Axum `Path<T>` extractor |
+| Query parameters | Axum `Query<T>` extractor |
+| Request body | Axum `Json<T>` extractor |
+| Success and error bodies | `responses(...)` entries |
+| Object schemas | Rust types deriving `utoipa::ToSchema` |
 
-function Ping() {
-  const { data } = useGetApiPing();          // GET  /api/ping → typed PingResponse
-  const send = useSendPing();                // POST /api/ping → typed PingRequest in
+The URL is deliberately not repeated in the annotation. Moving a convention
+file changes both the route and generated client contract together.
 
-  return (
-    <button onClick={() => send.mutate({ data: { message: "hi" } })}>
-      {data?.data.message ?? "…"}
-    </button>
-  );
-}
+Response declarations are explicit because a Rust return type alone does not
+describe every possible HTTP status. Documenting both `200` and `404`, for
+example, produces a discriminated response union that client code can narrow
+by `response.status`.
 
-const queryClient = new QueryClient();
-export const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <Ping />
-  </QueryClientProvider>
-);
-```
+## The two generated surfaces
 
-The generated client uses the platform `fetch` (no HTTP-library dependency) and same-origin URLs — the nextrs app serves both the pages and the API, so there's no CORS story to manage.
+### Internal application client
 
-## Or skip the hooks: plain typed clients
+The normal client lives under `client/src/generated/` and is re-exported by the
+application's client package. It contains:
 
-Every endpoint also gets a framework-free typed function alongside its hook — same types, no React Query, no component context required. Reach for these in event handlers, scripts, and tests instead of raw `fetch` (which re-duplicates route strings, request shapes, and response parsing by hand):
+- framework-independent typed fetch functions;
+- request and response types;
+- URL and query-key builders;
+- React Query query hooks and mutation hooks;
+- URL-bound query helpers generated by nextrs.
 
-```ts
-import { getSources, updateSource } from "@site/client";
+Use a direct fetch function when you only need to make a request. Use its hook
+when a React component benefits from caching, loading state, refetching,
+mutations, or invalidation. Both come from the same Rust contract.
 
-// In an event handler — no hook, still fully typed end to end.
-async function archive(id: number) {
-  const source = await getSources();                       // GET, typed response
-  await updateSource(id, { status: "archived" });          // PATCH, typed body
-}
-```
+### External JavaScript client
 
-Both flavors come out of the same generation pass, and the generated barrel exports them all — new endpoints are importable immediately, with no re-export list to maintain.
-
-## Publish a plain client to another project
-
-A browser extension, CLI, or separate frontend can consume a React-free
-JavaScript client generated from the same Rust contract. Copy the example
-configuration and choose a dedicated destination plus the API origin:
-
-```bash
-cd client
-cp nextrs.client.example.json nextrs.client.json
-```
+A browser extension, CLI, or separate frontend can receive a plain JavaScript
+package. Create `client/nextrs.client.json`:
 
 ```json
 {
-  "output": "../../../linkedin-challenge/extension/generated/nextrs-client",
+  "output": "../../extension/generated/nextrs-client",
   "baseUrl": "https://challenge.example.com"
 }
 ```
 
-Paths are resolved from `client/`. Then generate and publish from the app root:
+The next `cargo nextrs client generate` detects that file and also publishes:
+
+```text
+client.js       browser-native fetch implementation, with no React dependency
+client.d.ts     declarations used by editors and JavaScript type checking
+package.json    ES module package metadata
+.nextrs-generated-client
+```
+
+Paths in the configuration are resolved from `client/`. The output must be a
+directory reserved for generated artifacts. nextrs refuses to clean a
+non-empty directory unless its marker proves that nextrs generated it.
+
+The configured `baseUrl` is applied to generated request URLs. Use an empty
+string for same-origin calls.
+
+## Naming
+
+Set an explicit `operation_id` when the client name is part of your public API:
+
+```rust
+#[nextrs::api(
+    get,
+    operation_id = "getTodo",
+    responses((status = 200, description = "A todo", body = Todo)),
+)]
+```
+
+That produces names such as `getTodo`, `useGetTodo`, and the corresponding
+query-key helpers. Stable operation IDs keep names concise when paths move or
+grow more complex.
+
+## Generated files are outputs
+
+Do not edit these by hand:
+
+```text
+client/openapi.json
+client/src/generated/
+client/external-src/
+client/external-dist/
+<configured external output>/
+```
+
+Edit the Rust route or its schemas, then regenerate. Generated changes are
+useful in code review because they expose the client-visible effect of a Rust
+contract change.
+
+## When to regenerate
+
+Run the command after changing any annotated handler's:
+
+- path or HTTP method;
+- `operation_id`;
+- path or query parameters;
+- request body;
+- success or error response;
+- referenced schema.
 
 ```bash
 cargo nextrs client generate
 ```
 
-That command always performs the complete contract refresh:
+When an external configuration exists, the same command refreshes both the
+internal and external clients. There is no second publish command to remember.
 
-1. builds and dumps the current Rust OpenAPI document;
-2. asks Orval for a single-file `fetch` client with no React dependencies;
-3. rebuilds the app so its internal client barrel remains current;
-4. compiles the external client to browser-native `client.js` plus `client.d.ts`;
-5. replaces the configured generated destination.
+## Troubleshooting
 
-The destination contains a marker file and a small ESM `package.json`. The
-publisher only cleans a non-empty directory when that marker is present, and
-refuses broad destinations such as the app root, client root, filesystem root,
-or the app's parent. Point `output` at a directory reserved exclusively for
-generated client artifacts.
+If an expected function is missing:
 
-Plain JavaScript can import the file directly. Editors use the adjacent
-declaration file for completions and contract errors:
+1. Confirm the handler has `#[nextrs::api]`.
+2. Confirm every response body derives `ToSchema`.
+3. Set an explicit `operation_id` and search for that name.
+4. Run `cargo nextrs client generate` from the app root.
+5. Inspect `client/openapi.json` to determine whether the issue is in the Rust
+   contract or the later generator stage.
 
-```js
-// @ts-check
-import { getTodos } from "./generated/nextrs-client/client.js";
+If Cargo reports that the command is missing, install it once:
 
-const response = await getTodos({ status: "open" });
+```bash
+cargo install cargo-nextrs
 ```
-
-Run `cargo nextrs client generate` after changing any annotated handler's path,
-parameters, request body, response, error response, or `operation_id`. Because
-the command begins by rebuilding and dumping the Rust contract, it cannot
-publish a client from a stale checked-in OpenAPI file.
 
 ## Why OpenAPI
 
-Direct Rust→TS type generation (`ts-rs`, `specta`) only produces *types* — you'd still hand-write the fetch layer and hooks. Going through OpenAPI lets orval generate the entire client (hooks, types, fetchers), keeps the door open to Swagger UI and non-TypeScript consumers, and the file-convention discovery removes utoipa's usual hand-maintained path list.
+Direct Rust-to-TypeScript tools can generate data types, but a usable client
+also needs URLs, parameter serialization, request bodies, response parsing,
+status-specific errors, and framework integrations. OpenAPI describes that
+whole HTTP contract and keeps the door open to non-TypeScript consumers and
+standard API tooling.
+
+Continue with [Client Generation: Step by Step](/docs/client-codegen) for the
+small runnable examples.

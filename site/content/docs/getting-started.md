@@ -147,12 +147,15 @@ The framework streams the entries as a JSON `<script id="__nx_seeds__">` tag and
 
 ## The dev loop
 
-Generated apps use `cargo-nextrs-dev`, a file watcher that rebuilds and restarts the server when anything relevant changes (source, templates, `app/` files, assets, `.env`). Install it once, then run `cargo dev` — the generated `.cargo/config.toml` aliases `dev` to `nextrs-dev --bin <crate>`:
+The unified `cargo-nextrs` CLI includes the dev watcher and client generator. Install it once, then run `cargo dev` — the generated `.cargo/config.toml` aliases `dev` to the included compatibility binary:
 
 ```bash
-cargo install cargo-nextrs-dev
+cargo install cargo-nextrs
 cargo dev
 ```
+
+The explicit form is `cargo nextrs dev --bin <crate>`. Both commands run the
+same watcher.
 
 It debounces changes, SIGTERMs the running server cleanly, rebuilds with `cargo build --bin <crate>`, and restarts — without interrupting an in-progress Cargo build. Combined with `tower-livereload`, the browser refreshes itself after the rebuild. This is full-page live reload, not React HMR.
 

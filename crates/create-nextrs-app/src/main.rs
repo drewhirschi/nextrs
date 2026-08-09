@@ -138,8 +138,7 @@ fn scaffold(target: &Path, nextrs_path: Option<&Path>) -> io::Result<()> {
     if !is_current_dir(target) {
         println!("  cd {}", display_cd_path(target));
     }
-    println!("  {}   # required: installs the `cargo dev` runner", dep.dev_tool_install_command());
-    println!("  {}   # installs `cargo nextrs`", dep.client_cli_install_command());
+    println!("  {}   # installs the nextrs dev + client CLI", dep.cli_install_command());
     println!("  cargo nextrs client generate   # generate the typed client");
     println!("  cargo dev   # build + run with live reload");
     println!();
@@ -284,8 +283,7 @@ fn print_adopt_report(
 
     println!();
     println!("  Then, in order:");
-    println!("    cargo install cargo-nextrs-dev              # the `cargo dev` runner");
-    println!("    cargo install cargo-nextrs                  # client generation command");
+    println!("    cargo install cargo-nextrs                  # dev server + client generation");
     println!("    cargo dev                                   # build + run with live reload");
     println!();
     println!("  Add API routes as app/**/route.rs with #[nextrs::api], then generate the");
@@ -432,23 +430,7 @@ impl DependencySource {
         }
     }
 
-    fn dev_tool_install_command(&self) -> String {
-        match self {
-            Self::Version => "cargo install cargo-nextrs-dev".to_string(),
-            Self::Path(path) => {
-                let runner = path
-                    .parent()
-                    .map(|parent| parent.join("cargo-nextrs-dev"))
-                    .unwrap_or_else(|| PathBuf::from("cargo-nextrs-dev"));
-                format!(
-                    "cargo install --path {} --force",
-                    display_shell_path(&runner)
-                )
-            }
-        }
-    }
-
-    fn client_cli_install_command(&self) -> String {
+    fn cli_install_command(&self) -> String {
         match self {
             Self::Version => "cargo install cargo-nextrs".to_string(),
             Self::Path(path) => {
@@ -568,7 +550,7 @@ seams for app code are `app/**`, `client/src/index.ts`, and
 ## Dev loop
 
 ```bash
-cargo dev   # build + run + watch (alias for nextrs-dev; `cargo install cargo-nextrs-dev` once)
+cargo dev   # build + run + watch (`cargo install cargo-nextrs` once)
 ```
 
 Don't substitute a hand-rolled watch script — the runner knows which inputs
