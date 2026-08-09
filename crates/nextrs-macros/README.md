@@ -8,11 +8,15 @@ A thin wrapper over `#[utoipa::path]` that derives the OpenAPI `path` from the h
 
 ```rust,ignore
 // in app/api/ping/route.rs — no `path = "/api/ping"`
-#[nextrs::api(post, responses((status = 200, body = PingResponse)))]
+#[nextrs::api]
 pub async fn post(Json(req): Json<PingRequest>) -> Json<PingResponse> { /* … */ }
 ```
 
-`operation_id` and `tag` are derived from the route when omitted (giving the generated client clean hook names), and left alone when supplied. For eligible `GET` handlers the macro also emits a typed seed companion used by the server-side React Query cache seeding (`prefetch.rs`).
+The method is derived from the function name, request and response bodies from
+`Json<T>`, and `operation_id` and `tag` from the route. Each can still be
+overridden for a richer contract. For eligible `GET` handlers the macro also
+emits a typed seed companion used by server-side React Query cache seeding
+(`prefetch.rs`).
 
 ## License
 

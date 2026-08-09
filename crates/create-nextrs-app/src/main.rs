@@ -994,10 +994,7 @@ pub struct PingResponse {
     pub message: String,
 }
 
-#[nextrs::api(
-    get,
-    responses((status = 200, description = "Pong", body = PingResponse)),
-)]
+#[nextrs::api]
 pub async fn get() -> Json<PingResponse> {
     Json(PingResponse {
         message: "pong from Rust".to_string(),
@@ -1358,7 +1355,7 @@ mod tests {
             .unwrap()
             .1
             .as_str();
-        assert!(route.contains("#[nextrs::api("));
+        assert!(route.contains("#[nextrs::api]"));
         assert!(route.contains("ToSchema"));
 
         let package_json = files

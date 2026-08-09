@@ -46,26 +46,31 @@ workflow.
 
 ## What defines the contract
 
-Only handlers annotated with `#[nextrs::api]` appear in the generated client.
-An ordinary unannotated Axum handler still routes normally.
+`#[nextrs::api]` marks a handler as part of the public generated-client
+contract. An unannotated Axum handler still routes normally, which lets an app
+keep internal callbacks, health endpoints, or implementation-only routes out
+of its published client. The annotation is only the opt-in marker; nextrs
+infers the routine contract from the route and Rust signature.
 
 | Contract part | Source in Rust |
 |---|---|
 | URL | File location, such as `app/api/todos/[id]/route.rs` |
-| HTTP method | `get`, `post`, `patch`, and so on in `#[nextrs::api]` |
+| HTTP method | Handler function name: `get`, `post`, `patch`, and so on |
 | Client name | `operation_id`, or a name derived from method and path |
 | Path parameters | Axum `Path<T>` extractor |
 | Query parameters | Axum `Query<T>` extractor |
 | Request body | Axum `Json<T>` extractor |
-| Success and error bodies | `responses(...)` entries |
+| Success body and status | `Json<T>` return (`200`), including `Result<Json<T>, E>` |
+| Additional statuses | Optional `responses(...)` overrides |
 | Object schemas | Rust types deriving `utoipa::ToSchema` |
 
 The URL is deliberately not repeated in the annotation. Moving a convention
 file changes both the route and generated client contract together.
 
-Response declarations are explicit because a Rust return type alone does not
-describe every possible HTTP status. Documenting both `200` and `404`, for
-example, produces a discriminated response union that client code can narrow
+The routine `200` response is inferred. Additional response declarations are
+explicit because an error's `IntoResponse` implementation can choose its HTTP
+status at runtime. Documenting both `200` and `404`, for example, produces a
+discriminated response union that client code can narrow
 by `response.status`.
 
 ## The two generated surfaces

@@ -17,13 +17,14 @@ use proc_macro::{Span, TokenStream};
 ///
 /// ```ignore
 /// // in app/api/ping/route.rs — no `path = "/api/ping"`
-/// #[nextrs::api(post, responses((status = 200, body = PingResponse)))]
+/// #[nextrs::api]
 /// pub async fn post(Json(req): Json<PingRequest>) -> Json<PingResponse> { ... }
 /// ```
 ///
-/// All `#[utoipa::path]` arguments pass through. `operation_id` and `tag` are
-/// derived from the route when you don't supply them (so the generated hook
-/// gets a clean, unique name), and are left alone when you do.
+/// The HTTP method comes from the function name. Request and success response
+/// bodies are inferred from `Json<T>`, while the path, `operation_id`, and tag
+/// come from the route. All values can still be overridden with ordinary
+/// `#[utoipa::path]` arguments when an endpoint has a richer contract.
 #[proc_macro_attribute]
 pub fn api(args: TokenStream, item: TokenStream) -> TokenStream {
     // `Span::call_site()` is the attribute's location; its file is the route.rs.
@@ -33,39 +34,52 @@ pub fn api(args: TokenStream, item: TokenStream) -> TokenStream {
     let url = url_from_file(&Span::call_site().file());
     // A trailing comma is common in the multi-line attribute form; strip it so
     // appending our own arguments doesn't produce a `, ,`.
-    let args_str = args.to_string();
-    let args_str = args_str.trim().trim_end_matches(',').trim_end();
+    let args_string = args.to_string();
+    let args_str = args_string.trim().trim_end_matches(',').trim_end();
+    let func = syn::parse::<syn::ItemFn>(item.clone()).ok();
+    let fn_method = func
+        .as_ref()
+        .map(|func| func.sig.ident.to_string().to_lowercase())
+        .unwrap_or_default();
+    let (method, extra_args) = split_method(args_str, &fn_method);
 
-    let method = args_str
-        .split(|c: char| c == ',' || c.is_whitespace())
-        .find(|s| !s.is_empty())
-        .unwrap_or_default()
-        .to_string();
-
-    let mut injected = format!("path = \"{url}\"");
+    let mut parts = vec![method.clone(), format!("path = \"{url}\"")];
+    if !extra_args.is_empty() {
+        parts.push(extra_args.to_string());
+    }
     // Infer `params(...)` from the extractors when the user didn't write it —
     // the handler signature is the single source of truth, so the OpenAPI
     // spec (and the generated client's types) can't silently drift from it.
-    if !args_str.contains("params(") && !args_str.contains("params (") {
-        if let Ok(func) = syn::parse::<syn::ItemFn>(item.clone()) {
+    if !extra_args.contains("params(") && !extra_args.contains("params (") {
+        if let Some(func) = &func {
             if let Some(params) = infer_params(&func, &url) {
-                injected.push_str(&format!(", params({params})"));
+                parts.push(format!("params({params})"));
             }
         }
     }
-    if !args_str.contains("operation_id") {
-        injected.push_str(&format!(
-            ", operation_id = \"{}\"",
+    if !extra_args.contains("request_body") {
+        if let Some(body) = func.as_ref().and_then(infer_request_body) {
+            parts.push(format!("request_body = {body}"));
+        }
+    }
+    if !extra_args.contains("responses(") && !extra_args.contains("responses (") {
+        if let Some(body) = func.as_ref().and_then(infer_success_body) {
+            parts.push(format!("responses((status = 200, body = {body}))"));
+        }
+    }
+    if !extra_args.contains("operation_id") {
+        parts.push(format!(
+            "operation_id = \"{}\"",
             default_operation_id(&method, &url)
         ));
     }
-    if !args_str.contains("tag =") && !args_str.contains("tag=") {
+    if !extra_args.contains("tag =") && !extra_args.contains("tag=") {
         if let Some(tag) = default_tag(&url) {
-            injected.push_str(&format!(", tag = \"{tag}\""));
+            parts.push(format!("tag = \"{tag}\""));
         }
     }
 
-    let attr = format!("#[utoipa::path({args_str}, {injected})]");
+    let attr = format!("#[utoipa::path({})]", parts.join(", "));
     let mut out: TokenStream = attr
         .parse()
         .expect("nextrs::api: could not build the utoipa::path attribute");
@@ -395,9 +409,10 @@ fn infer_params(func: &syn::ItemFn, url: &str) -> Option<String> {
         if path_types.len() != path_names.len() {
             return None; // shape mismatch — don't guess
         }
-        let zipped = path_names.iter().zip(&path_types).map(|(name, ty)| {
-            format!("(\"{}\" = {}, Path)", name, ty.to_token_stream())
-        });
+        let zipped = path_names
+            .iter()
+            .zip(&path_types)
+            .map(|(name, ty)| format!("(\"{}\" = {}, Path)", name, ty.to_token_stream()));
         // Path params lead, matching their position in the URL.
         entries.splice(0..0, zipped);
     }
@@ -451,6 +466,62 @@ fn first_generic_arg(ty: &syn::Type) -> Option<&syn::Type> {
         syn::GenericArgument::Type(t) => Some(t),
         _ => None,
     })
+}
+
+/// Accept the old `#[nextrs::api(get, ...)]` spelling, but make the handler
+/// name the default source of truth for the method.
+fn split_method<'a>(args: &'a str, fn_method: &str) -> (String, &'a str) {
+    const METHODS: &[&str] = &[
+        "get", "post", "put", "delete", "patch", "head", "options", "trace",
+    ];
+    let first_end = args
+        .find(|c: char| c == ',' || c.is_whitespace())
+        .unwrap_or(args.len());
+    let first = &args[..first_end];
+    if METHODS.contains(&first) {
+        let rest = args[first_end..]
+            .trim_start()
+            .strip_prefix(',')
+            .unwrap_or(&args[first_end..])
+            .trim_start();
+        (first.to_string(), rest)
+    } else {
+        (fn_method.to_string(), args)
+    }
+}
+
+fn infer_request_body(func: &syn::ItemFn) -> Option<String> {
+    use quote::ToTokens;
+
+    func.sig.inputs.iter().find_map(|arg| {
+        let syn::FnArg::Typed(arg) = arg else {
+            return None;
+        };
+        (last_path_ident(&arg.ty).as_deref() == Some("Json"))
+            .then(|| first_generic_arg(&arg.ty))
+            .flatten()
+            .map(|ty| ty.to_token_stream().to_string())
+    })
+}
+
+fn infer_success_body(func: &syn::ItemFn) -> Option<String> {
+    use quote::ToTokens;
+
+    let syn::ReturnType::Type(_, ret) = &func.sig.output else {
+        return None;
+    };
+    let response = match last_path_ident(ret)?.as_str() {
+        "Json" => first_generic_arg(ret)?,
+        "Result" => {
+            let ok = first_generic_arg(ret)?;
+            if last_path_ident(ok)?.as_str() != "Json" {
+                return None;
+            }
+            first_generic_arg(ok)?
+        }
+        _ => return None,
+    };
+    Some(response.to_token_stream().to_string())
 }
 
 /// Turn a `route.rs` file path into its URL, mirroring `nextrs::discovery`:
@@ -562,6 +633,35 @@ mod tests {
     }
 
     #[test]
+    fn method_defaults_to_function_name_and_accepts_legacy_argument() {
+        assert_eq!(split_method("", "get"), ("get".into(), ""));
+        assert_eq!(
+            split_method("operation_id = \"sendPing\"", "post"),
+            ("post".into(), "operation_id = \"sendPing\"")
+        );
+        assert_eq!(
+            split_method("post, operation_id = \"sendPing\"", "ignored"),
+            ("post".into(), "operation_id = \"sendPing\"")
+        );
+    }
+
+    #[test]
+    fn infers_json_request_and_response_types() {
+        let f = parse_fn(
+            "pub async fn post(Json(body): Json<CreateGreeting>) -> Json<Greeting> { todo!() }",
+        );
+        assert_eq!(infer_request_body(&f).as_deref(), Some("CreateGreeting"));
+        assert_eq!(infer_success_body(&f).as_deref(), Some("Greeting"));
+
+        let fallible =
+            parse_fn("pub async fn get() -> Result<Json<Vec<Greeting>>, AppError> { todo!() }");
+        assert_eq!(
+            infer_success_body(&fallible).as_deref(),
+            Some("Vec < Greeting >")
+        );
+    }
+
+    #[test]
     fn tag_is_last_static_segment() {
         assert_eq!(default_tag("/api/ping").as_deref(), Some("ping"));
         assert_eq!(default_tag("/api/users/{id}").as_deref(), Some("users"));
@@ -603,7 +703,10 @@ mod tests {
     #[test]
     fn infer_params_query() {
         let f = parse_fn("pub async fn get(Query(f): Query<TodosFilter>) -> Json<X> { todo!() }");
-        assert_eq!(infer_params(&f, "/api/todos").as_deref(), Some("TodosFilter"));
+        assert_eq!(
+            infer_params(&f, "/api/todos").as_deref(),
+            Some("TodosFilter")
+        );
     }
 
     #[test]
@@ -812,7 +915,11 @@ mod tests {
         // No Extension arg → still the plain SeedEntry-returning shape…
         assert!(!c.contains("Option < :: nextrs :: SeedEntry >"), "{}", c);
         // …with the WaitUntil pulled from _ext, detached when absent.
-        assert!(c.contains("WaitUntil > () . cloned () . unwrap_or_default ()"), "{}", c);
+        assert!(
+            c.contains("WaitUntil > () . cloned () . unwrap_or_default ()"),
+            "{}",
+            c
+        );
     }
 
     #[test]

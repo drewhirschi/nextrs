@@ -8,14 +8,10 @@
 //!
 //! `#[nextrs::api]` is a thin wrapper over `#[utoipa::path]` that **derives the
 //! `path` from this file's location** (`app/api/ping/route.rs` → `/api/ping`),
-//! so the URL isn't restated. What's left to write:
-//!   - the method (`get` / `post`) — first argument.
-//!   - `responses(...)` — required for a *typed response*; it isn't inferred
-//!     from the `Json<T>` return type.
-//!   - the request body is **inferred** from the `Json<PingRequest>` extractor.
-//!   - `operation_id` / `tag` are derived from the route (here `getApiPing`,
-//!     tag `ping`) unless you set them — `post` overrides `operation_id` below
-//!     to get a nicer `useSendPing()` hook.
+//! so the URL isn't restated. The method comes from the function name, request
+//! and response bodies come from `Json<T>`, and `operation_id` / `tag` come
+//! from the route. `post` below overrides only its public client name to get a
+//! nicer `useSendPing()` hook.
 //!
 //! You can still use `#[utoipa::path(...)]` directly for full control; the
 //! codegen then checks its `path` against this file's URL.
@@ -40,10 +36,7 @@ pub struct PingRequest {
     pub message: String,
 }
 
-#[nextrs::api(
-    get,
-    responses((status = 200, description = "Pong", body = PingResponse)),
-)]
+#[nextrs::api]
 pub async fn get() -> Json<PingResponse> {
     Json(PingResponse {
         message: "pong".to_string(),
@@ -51,11 +44,7 @@ pub async fn get() -> Json<PingResponse> {
     })
 }
 
-#[nextrs::api(
-    post,
-    operation_id = "sendPing",
-    responses((status = 200, description = "Echoes the posted message", body = PingResponse)),
-)]
+#[nextrs::api(operation_id = "sendPing")]
 pub async fn post(Json(req): Json<PingRequest>) -> Json<PingResponse> {
     Json(PingResponse {
         message: req.message,

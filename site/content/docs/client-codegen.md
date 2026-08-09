@@ -24,11 +24,7 @@ pub struct Greeting {
     pub message: String,
 }
 
-#[nextrs::api(
-    get,
-    operation_id = "getGreeting",
-    responses((status = 200, description = "A greeting", body = Greeting)),
-)]
+#[nextrs::api]
 pub async fn get() -> Json<Greeting> {
     Json(Greeting {
         message: "Hello from Rust".into(),
@@ -36,9 +32,10 @@ pub async fn get() -> Json<Greeting> {
 }
 ```
 
-The file location supplies the URL: `app/api/greeting/route.rs` becomes
-`GET /api/greeting`. The annotation supplies the name and response contract
-for code generation.
+The file location supplies `/api/greeting`; the function name supplies `GET`;
+and `Json<Greeting>` supplies the `200` response body. nextrs derives the
+default operation ID `getApiGreeting` from the method and path. There is no
+contract metadata to repeat.
 
 This remains an ordinary Axum handler. `#[nextrs::api]` adds it to the OpenAPI
 document; it does not introduce a separate RPC runtime.
@@ -69,14 +66,14 @@ generated TypeScript fetch function + React Query hook
 Conceptually, the generated surface looks like this:
 
 ```ts
-declare function getGreeting(): Promise<{
+declare function getApiGreeting(): Promise<{
   status: 200;
   data: { message: string };
   headers: Headers;
 }>;
 
-declare function useGetGreeting(): UseQueryResult<
-  Awaited<ReturnType<typeof getGreeting>>
+declare function useGetApiGreeting(): UseQueryResult<
+  Awaited<ReturnType<typeof getApiGreeting>>
 >;
 ```
 
@@ -88,9 +85,9 @@ implementation and types. Do not edit `client/src/generated/` by hand.
 The smallest client usage is a normal async function call:
 
 ```ts
-import { getGreeting } from "@mysite/client";
+import { getApiGreeting } from "@mysite/client";
 
-const response = await getGreeting();
+const response = await getApiGreeting();
 console.log(response.data.message);
 ```
 
@@ -103,10 +100,10 @@ handwritten URL, response interface, JSON parsing, or type assertion.
 The same endpoint also produces a React Query hook:
 
 ```tsx
-import { useGetGreeting } from "@mysite/client";
+import { useGetApiGreeting } from "@mysite/client";
 
 export default function GreetingPage() {
-  const greeting = useGetGreeting();
+  const greeting = useGetApiGreeting();
 
   if (greeting.isPending) return <p>Loading…</p>;
   return <p>{greeting.data?.data.message}</p>;
@@ -155,11 +152,7 @@ pub struct CreateGreeting {
     pub name: String,
 }
 
-#[nextrs::api(
-    post,
-    operation_id = "createGreeting",
-    responses((status = 200, description = "A greeting", body = Greeting)),
-)]
+#[nextrs::api]
 pub async fn post(Json(body): Json<CreateGreeting>) -> Json<Greeting> {
     Json(Greeting {
         text: format!("Hello, {}", body.name),
@@ -170,10 +163,10 @@ pub async fn post(Json(body): Json<CreateGreeting>) -> Json<Greeting> {
 After regeneration, the body is checked at the call site:
 
 ```ts
-import { createGreeting } from "@mysite/client";
+import { postApiGreeting } from "@mysite/client";
 
-await createGreeting({ name: "Ada" }); // valid
-await createGreeting({ name: 42 });    // type error
+await postApiGreeting({ name: "Ada" }); // valid
+await postApiGreeting({ name: 42 });    // type error
 ```
 
 ## 7. Publish plain JavaScript to another project
@@ -211,9 +204,9 @@ A plain JavaScript file can import it directly:
 
 ```js
 // @ts-check
-import { getGreeting } from "./generated/nextrs-client/client.js";
+import { getApiGreeting } from "./generated/nextrs-client/client.js";
 
-const response = await getGreeting();
+const response = await getApiGreeting();
 console.log(response.data.message);
 ```
 
