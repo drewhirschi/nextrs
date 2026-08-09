@@ -71,7 +71,7 @@
         "operationId": "getApiPing",
         "responses": {
           "200": {
-            "description": "Pong",
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
@@ -99,7 +99,7 @@
         },
         "responses": {
           "200": {
-            "description": "Echoes the posted message",
+            "description": "",
             "content": {
               "application/json": {
                 "schema": {
