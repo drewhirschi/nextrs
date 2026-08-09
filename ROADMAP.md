@@ -35,9 +35,9 @@ Status: shipped as the `create-nextrs-app` workspace crate.
 
 Nextrs has a first-class starter command, similar in spirit to `create-next-app`
 or the old `create-react-app`. `create-nextrs-app` generates a React-first
-starter, and the local dev workflow runs through `cargo-nextrs-dev` (installed
-with `cargo install cargo-nextrs-dev`), which the scaffold wires up as a
-`cargo dev` alias.
+starter, and the local dev workflow runs through the unified `cargo-nextrs`
+tool (installed with `cargo install cargo-nextrs`), which the scaffold wires
+up as a `cargo dev` alias.
 
 The scaffold is intentionally small but covers the important framework seams:
 
@@ -73,6 +73,30 @@ my-app/
 ```
 
 ## Framework Surface
+
+### Typed API error contracts
+
+Explore making `Result` the standard return shape for generated-client routes:
+
+```rust
+#[nextrs::api]
+pub async fn get() -> Result<Json<Greeting>, ApiError> {
+    // ...
+}
+```
+
+Define a nextrs error-response trait that lets `ApiError` expose every possible
+HTTP status and response body at build time. The API macro could then infer
+both success and error variants for OpenAPI and generated clients without
+repeating `responses(...)` metadata on each handler.
+
+Questions to resolve before enforcing this:
+
+- Whether all `#[nextrs::api]` handlers must return `Result`, or whether plain
+  `Json<T>` remains valid for genuinely infallible routes.
+- How enum variants map to statuses, schemas, and descriptions.
+- How to support dynamic `IntoResponse` implementations without claiming an
+  incomplete contract.
 
 - `error.{rs,html}` segment convention.
 - Per-route Vercel binaries for very large apps where the current single binary
