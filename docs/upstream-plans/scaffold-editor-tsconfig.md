@@ -2,7 +2,7 @@
 
 - **Reported-in:** linkedin-challenge (adopted via `create-nextrs-app --adopt`)
 - **Date:** 2026-08-09
-- **Status:** worked around downstream; proposed fix below
+- **Status:** fixed in the scaffold; existing apps should migrate as described below
 
 ## Problem
 
@@ -37,10 +37,10 @@ should light up at the call site — and out of the box it does so only in CI. T
 person most likely to hit this is someone new to the framework, on day one, with
 no reason to suspect `client/tsconfig.json` is the cause.
 
-## Suggested fix
+## Resolution
 
-Scaffold a second `tsconfig.json` at the **app root**, and demote the client one
-to extending it:
+Scaffold one canonical `tsconfig.json` at the **app root** and remove the
+ordinary `client/tsconfig.json`:
 
 ```jsonc
 // tsconfig.json  (app root — the one an editor finds first)
@@ -48,29 +48,25 @@ to extending it:
   "compilerOptions": {
     // …same options…
     // Resolved relative to THIS file, so it must reach into client/.
-    "paths": { "@app/client": ["./client/src/index.ts"] },
-    "typeRoots": ["./client/node_modules/@types"]
+    "paths": { "@app/client": ["./client/src/index.ts"] }
   },
   "include": ["app/**/*.tsx", "app/**/*.ts", "client/src"]
 }
 ```
 
-```jsonc
-// client/tsconfig.json
-{ "extends": "../tsconfig.json", "include": ["src", "../app/**/*.tsx"] }
-```
+The client package runs `tsc --project ../tsconfig.json`. The specialized
+`client/tsconfig.external.json` remains separate because it emits the portable
+external client and serves a different purpose.
 
-Verified downstream: with this pair, `tsc --noEmit` is clean from both the app
-root and `client/`, and every page resolves a project. `typeRoots` matters
-because React's types are installed under `client/node_modules`, not at the app
-root.
+Verified in both repository apps: the root project typechecks cleanly when run
+from `client/`, and every page resolves the same project. The package install's
+root `node_modules` link makes React's types available without restricting
+ambient type discovery through `typeRoots`.
 
 Two details worth keeping in the template:
 
-- The alias path differs between the two files (`./src/index.ts` vs
-  `./client/src/index.ts`) because TypeScript resolves `paths` relative to the
-  config that declares them. Extending alone does not fix the editor; the root
-  config must restate them.
+- Paths move from `./src/index.ts` to `./client/src/index.ts` because they are
+  now resolved relative to the app root.
 - `client/src/generated/index.ts` is written by `cargo build` and deleted by
   `npm run gen`. Between those two steps the alias resolves to a barrel that
   exports nothing, so the editor reports every hook as missing. Worth a line in
@@ -81,3 +77,22 @@ Two details worth keeping in the template:
 
 A comment in `client/tsconfig.json` would not be found by someone whose symptom
 appears in `app/**/page.tsx`. The config has to exist where the editor looks.
+
+## `--adopt` needs care
+
+`--adopt` promises never to overwrite an existing file, which the root config
+must respect:
+
+- Write `tsconfig.json` when none exists.
+- Leave an existing one untouched.
+- Print explicit merge instructions when one exists: the alias, the `include`
+  entries, and the required compiler options.
+
+## Existing apps
+
+Move the compiler options from `client/tsconfig.json` into a root
+`tsconfig.json`, change client-relative aliases to root-relative paths, include
+both `app/**/*.ts(x)` and `client/src/**/*.ts(x)`, and change the client package's
+typecheck script to `tsc --project ../tsconfig.json`. Do not add `typeRoots`
+unless the normal root `node_modules` link is unavailable; setting it restricts
+ambient type discovery.

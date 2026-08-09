@@ -231,7 +231,7 @@ Notes, all verified in `nextrs/src/bundle.rs`:
   the shared components live under `client/src/`). Extra `aliases` entries are
   `(pattern, replacement)` with the replacement **relative to `client_dir`**;
   exact patterns map to files, `x/*` patterns to directories. Mirror every
-  alias in `client/tsconfig.json` `paths` so `tsc` agrees with the bundler.
+  alias in the root `tsconfig.json` `paths` so `tsc` agrees with the bundler.
   **Version caveat:** in published `nextrs 0.2.0` the `x/*` alias spelling
   (including the built-in `@/*`) silently never matches — the resolver's alias
   keys are prefix matches, not globs, so resolution falls through to tsconfig
@@ -328,7 +328,7 @@ not drift into slightly different `cargo dev` behavior.
     "dump": "NEXTRS_SKIP_BUNDLE=1 cargo run --bin dump-openapi",
     "orval": "orval --config ./orval.config.ts",
     "gen": "npm run dump && npm run orval",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --project ../tsconfig.json"
   },
   "dependencies": {
     "@tanstack/react-query": "^5.62.0",
@@ -350,9 +350,16 @@ module resolution for their bare imports (`react`, `@tanstack/react-query`)
 walks up from `app/` — the symlink makes `client/node_modules` visible at the
 app root. Keep it.
 
-`client/tsconfig.json`: copy from react-todos; `include` must cover
-`"../app/**/*.tsx"`, and `paths` must mirror the bundler aliases (the client
-barrel, `@/*`, and the `next/*` shims).
+Keep one `tsconfig.json` at the app root rather than placing it under `client/`.
+Editors find a project by walking upward from an open `app/**/*.tsx` file, so a
+sibling client config can make the command-line typecheck pass while editor
+imports and callback types remain unresolved. The root config should include
+`app/**/*.ts`, `app/**/*.tsx`, `client/src/**/*.ts`, `client/src/**/*.tsx`, and
+`client/orval.config.ts`. Its `paths` should map the client package to
+`./client/src/index.ts` and mirror any additional bundler aliases (`@/*` and
+the `next/*` shims). Existing apps should move their compiler options and
+aliases from `client/tsconfig.json` to the root, update paths to be root-relative,
+then point the client package's `typecheck` script at `../tsconfig.json`.
 
 Copy `client/src/nextrs-client.ts` from react-todos **unchanged** — it's the
 seed-hydration helper the generated entry wrappers import. `client/src/index.ts`

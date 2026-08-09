@@ -102,7 +102,7 @@ let app = app.layer(tower_livereload::LiveReloadLayer::new());
 - Build the app with `cargo build --bin <crate>` without interrupting an
   in-progress Cargo build, then run the produced binary directly.
 - Watch app inputs: `src`, the Nextrs `app/` route tree, `client/src`, JS
-  package and lock files, `client/tsconfig.json`, `build.rs`, `Cargo.toml`,
+  package and lock files, the root `tsconfig.json`, `build.rs`, `Cargo.toml`,
   `Cargo.lock`, `.cargo/config.toml`, and `public`.
 - Respect `.gitignore`/`.ignore`, plus built-in ignores for `target/`,
   `node_modules/`, generated client code, and `public/dist/`.
