@@ -1,8 +1,14 @@
-.git/
-.vercel/
-**/.vercel/
-target/
-**/target/
-**/node_modules/
+# Keep source uploads small. Vercel builds the Rust workspace remotely.
+target
+**/target
+**/target-vercel
+node_modules
+**/node_modules
+.git
+.claude
+.vercel
+**/.vercel
+.playwright-mcp
+benchmarks
 docs/nextrs-transcripts-backup.zip
-.playwright-mcp/
+*.log
