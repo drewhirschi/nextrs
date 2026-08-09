@@ -118,22 +118,6 @@ non-empty directory unless its marker proves that nextrs generated it.
 The configured `baseUrl` is applied to generated request URLs. Use an empty
 string for same-origin calls.
 
-## Naming
-
-Set an explicit `operation_id` when the client name is part of your public API:
-
-```rust
-#[nextrs::api(
-    get,
-    operation_id = "getTodo",
-    responses((status = 200, description = "A todo", body = Todo)),
-)]
-```
-
-That produces names such as `getTodo`, `useGetTodo`, and the corresponding
-query-key helpers. Stable operation IDs keep names concise when paths move or
-grow more complex.
-
 ## Generated files are outputs
 
 Do not edit these by hand:
@@ -155,7 +139,6 @@ contract change.
 Run the command after changing any annotated handler's:
 
 - path or HTTP method;
-- `operation_id`;
 - path or query parameters;
 - request body;
 - success or error response;
@@ -174,9 +157,8 @@ If an expected function is missing:
 
 1. Confirm the handler has `#[nextrs::api]`.
 2. Confirm every response body derives `ToSchema`.
-3. Set an explicit `operation_id` and search for that name.
-4. Run `cargo nextrs client generate` from the app root.
-5. Inspect `client/openapi.json` to determine whether the issue is in the Rust
+3. Run `cargo nextrs client generate` from the app root.
+4. Inspect `client/openapi.json` to determine whether the issue is in the Rust
    contract or the later generator stage.
 
 If Cargo reports that the command is missing, install it once:

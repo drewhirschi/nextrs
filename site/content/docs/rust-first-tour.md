@@ -61,11 +61,7 @@ pub struct Todo {
     pub done: bool,
 }
 
-#[nextrs::api(
-    get,
-    operation_id = "getTodos",
-    responses((status = 200, description = "List todos", body = Vec<Todo>)),
-)]
+#[nextrs::api]
 pub async fn get() -> Json<Vec<Todo>> {
     Json(vec![Todo {
         id: 1,
@@ -75,9 +71,9 @@ pub async fn get() -> Json<Vec<Todo>> {
 }
 ```
 
-The handler is an ordinary typed Axum handler. `#[nextrs::api]` adds this Rust
-contract to the generated OpenAPI document; the URL still comes from the file
-location, so it is not repeated in the annotation.
+The handler is an ordinary typed Axum handler. `#[nextrs::api]` opts it into
+the generated client. nextrs gets the method from `get`, the URL from the file
+location, and the response shape from `Json<Vec<Todo>>`.
 
 After changing the contract, generate the client from the application root:
 
