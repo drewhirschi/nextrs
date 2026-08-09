@@ -21,6 +21,14 @@ vercel = [
     "dep:http-body-util",
     "dep:hyper",
 ]
+# Enables `nextrs::jobs`: first-party background jobs (app/jobs/<name>/job.rs
+# + #[nextrs::job]) — typed enqueue wrappers, the /__nx/jobs/* routes, retries
+# with back-off, and the in-memory dev store. Pulls in reqwest for the
+# self-delivery POSTs.
+jobs = ["dep:reqwest"]
+# Adds the Turso/libsql `JobStore` backend, selected automatically when
+# NEXTRS_JOBS_DB_URL/TURSO_DATABASE_URL is set.
+jobs-libsql = ["jobs", "dep:libsql"]
 # Enables the `nextrs::build` and `nextrs::docs` modules: codegen invoked from
 # a consumer crate's `build.rs` to emit a `generated_registry()` function from
 # a scan of `app/`, and pre-rendered docs content + llms.txt from a scan of a
@@ -106,6 +114,10 @@ rolldown_std_utils = { version = "=1.1.4", optional = true }
 rolldown_tracing = { version = "=1.1.4", optional = true }
 rolldown_utils = { version = "=1.1.4", optional = true }
 string_wizard = { version = "=1.1.4", optional = true }
+
+# Optional — only pulled in when the `jobs` / `jobs-libsql` features are on.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"], optional = true }
+libsql = { version = "0.10.0-pre.4", default-features = false, features = ["remote", "tls"], optional = true }
 
 # Optional — only pulled in when the `vercel` feature is on.
 vercel_runtime = { version = "2", features = ["axum"], optional = true }

@@ -25,6 +25,12 @@
       "destination": "/api/index"
     }
   ],
+  "crons": [
+    {
+      "path": "/__nx/jobs/sweep",
+      "schedule": "0 3 * * *"
+    }
+  ],
   "git": {
     "deploymentEnabled": false
   }

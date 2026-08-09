@@ -8,6 +8,8 @@ pub mod seed;
 pub mod speculation;
 pub mod telemetry;
 pub mod wait_until;
+#[cfg(feature = "jobs")]
+pub mod jobs;
 
 /// Deprecated path for [`speculation`] — kept for one release. This module
 /// only ever controlled document-level Speculation Rules; the data-prefetch
@@ -38,6 +40,7 @@ pub use serde_json;
 /// `#[nextrs::api(...)]` — typed API handler with the OpenAPI path derived from
 /// the file location. See [`nextrs_macros::api`].
 pub use nextrs_macros::api;
+pub use nextrs_macros::job;
 
 #[cfg(feature = "vercel")]
 pub mod vercel;

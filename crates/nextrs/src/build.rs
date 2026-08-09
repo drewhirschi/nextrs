@@ -516,6 +516,11 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
                 )
             );
         }
+        if route.job.is_some() {
+            if let Some(err) = job_convention_error(route) {
+                let _ = writeln!(out, "::core::compile_error!({:?});", err);
+            }
+        }
     }
 
     // ---- Module declarations for every .rs slot --------------------------
@@ -541,6 +546,21 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
         if let Some(p) = &route.prefetch {
             emit_path_mod(&mut out, &mod_name(i, "prefetch"), p);
         }
+        if route.job.is_some() && job_convention_error(route).is_none() {
+            emit_path_mod(&mut out, &mod_name(i, "job"), route.job.as_ref().unwrap());
+        }
+    }
+
+    // A pointed error when app/jobs/ exists but the app's nextrs dependency
+    // lacks the `jobs` feature: the macro-generated enqueue wrappers reference
+    // ::nextrs::jobs, so the build fails anyway — this line makes the first
+    // error point at the fix instead of at generated internals. (The build-dep
+    // nextrs can't see the runtime dep's feature set, so this can't be a
+    // cargo:warning.)
+    if routes.iter().any(|r| r.job.is_some() && job_convention_error(r).is_none()) {
+        out.push_str(
+            "#[allow(unused_imports)]\nuse ::nextrs::jobs as _found_app_jobs__enable_the_nextrs_jobs_cargo_feature;\n",
+        );
     }
 
     // ---- generated_registry() --------------------------------------------
@@ -548,6 +568,10 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
     out.push_str("    let mut registry = ::nextrs::conventions::RouteRegistry::new();\n");
 
     for (i, route) in routes.iter().enumerate() {
+        // Job-only directories are not URL routes; they register below.
+        if route.job.is_some() && !route.page.exists() && route.route.is_none() {
+            continue;
+        }
         let _ = writeln!(out, "    registry.add(::nextrs::conventions::RouteEntry {{");
         let _ = writeln!(out, "        path: {:?}.to_string(),", route.url_path);
 
@@ -579,11 +603,129 @@ fn generate_code(routes: &[DiscoveredRoute]) -> String {
         emit_not_found(&mut out, i, route);
     }
 
+    emit_jobs(&mut out, routes);
+
     out.push_str("    registry\n}\n");
 
+    emit_jobs_module(&mut out, routes);
     emit_openapi(&mut out, routes);
 
     out
+}
+
+/// The job's stable name: the directory path under `app/jobs/`
+/// (`/jobs/audit-todo` → `audit-todo`, `/jobs/email/welcome` →
+/// `email/welcome`). `None` when the route isn't a valid job location.
+fn job_name(route: &DiscoveredRoute) -> Option<&str> {
+    route
+        .url_path
+        .strip_prefix("/jobs/")
+        .filter(|rest| !rest.is_empty())
+}
+
+/// Convention violations for a `job.rs`, mirrored by the macro where it can
+/// see them (`job_name_from_file`); codegen catches the rest. A `Some` here
+/// suppresses the module/registry emission so this error is the only one.
+fn job_convention_error(route: &DiscoveredRoute) -> Option<String> {
+    let name = match job_name(route) {
+        Some(n) => n,
+        None => {
+            return Some(format!(
+                "nextrs: job.rs at {} must live under app/jobs/<name>/ — the directory path is the job's name",
+                route.url_path
+            ));
+        }
+    };
+    if name.contains('{') {
+        return Some(format!(
+            "nextrs: job.rs at {} — job directories cannot use [param] segments; a job's name is static",
+            route.url_path
+        ));
+    }
+    if route.page.exists() || route.route.is_some() || route.prefetch.is_some() {
+        return Some(format!(
+            "nextrs: job.rs at {} cannot share a directory with page/route/prefetch files — jobs are not URL routes",
+            route.url_path
+        ));
+    }
+    let source = std::fs::read_to_string(route.job.as_ref()?).ok()?;
+    if job_fn_ident(&source).is_none() {
+        return Some(format!(
+            "nextrs: job.rs at {} has no #[nextrs::job] pub async fn — annotate the job function (see the app/jobs convention)",
+            route.url_path
+        ));
+    }
+    None
+}
+
+/// Textual mirror of the `#[nextrs::job]` macro: the annotated `pub async fn`'s
+/// identifier. Deliberately simple, like `get_is_seed_eligible` — a false
+/// positive is a clean "cannot find" error at the generated `pub use`, not
+/// silent misbehavior.
+fn job_fn_ident(source: &str) -> Option<String> {
+    let idx = source.find("#[nextrs::job")?;
+    let rest = &source[idx..];
+    let after = &rest[rest.find("pub async fn ")? + "pub async fn ".len()..];
+    let ident: String = after
+        .chars()
+        .take_while(|c| c.is_alphanumeric() || *c == '_')
+        .collect();
+    (!ident.is_empty()).then_some(ident)
+}
+
+/// `registry.add_job(...)` per valid `app/jobs/<name>/job.rs`.
+fn emit_jobs(out: &mut String, routes: &[DiscoveredRoute]) {
+    for (i, route) in routes.iter().enumerate() {
+        if route.job.is_none() || job_convention_error(route).is_some() {
+            continue;
+        }
+        let Some(name) = job_name(route) else { continue };
+        let module = mod_name(i, "job");
+        let _ = writeln!(
+            out,
+            "    registry.add_job(::nextrs::conventions::JobEntry {{\n        \
+             name: {name:?},\n        \
+             run: ::nextrs::conventions::job_run_fn(|payload, ext| async move {{\n            \
+             crate::{module}::__nextrs_job_run(payload, &ext).await\n        \
+             }}),\n        \
+             timeout_ms: crate::{module}::__NEXTRS_JOB_TIMEOUT_MS,\n        \
+             max_attempts: crate::{module}::__NEXTRS_JOB_MAX_ATTEMPTS,\n    \
+             }});"
+        );
+    }
+}
+
+/// `pub mod jobs {{ ... }}` — the typed enqueue wrappers under stable names,
+/// so app code calls `crate::jobs::<fn>(payload)`. The module alias
+/// (`<name>_job`) makes payload types reachable too.
+fn emit_jobs_module(out: &mut String, routes: &[DiscoveredRoute]) {
+    let mut lines = String::new();
+    for (i, route) in routes.iter().enumerate() {
+        if route.job.is_none() || job_convention_error(route).is_some() {
+            continue;
+        }
+        let Some(name) = job_name(route) else { continue };
+        let Ok(source) = std::fs::read_to_string(route.job.as_ref().unwrap()) else {
+            continue;
+        };
+        let Some(ident) = job_fn_ident(&source) else { continue };
+        let module = mod_name(i, "job");
+        let alias = name.replace(['-', '/'], "_").to_lowercase();
+        // pub(crate): the mangled job mods are crate-private, like the seed
+        // aliases in emit_seeds — callers are this crate's own handlers.
+        let _ = writeln!(
+            lines,
+            "    #[allow(unused_imports)]\n    pub(crate) use crate::{module}::{ident};\n    \
+             #[allow(unused_imports)]\n    pub(crate) use crate::{module} as {alias}_job;"
+        );
+    }
+    if !lines.is_empty() {
+        let _ = writeln!(
+            out,
+            "\n/// Typed enqueue wrappers for the jobs under `app/jobs/` — calling one\n\
+             /// persists a job row and kicks off its background route.\npub mod jobs {{\n{lines}}}"
+        );
+    }
 }
 
 /// Emit a `generated_openapi()` function returning a single
@@ -1497,6 +1639,106 @@ mod tests {
             }
         }
         tmp
+    }
+
+    const JOB_BODY: &str = "#[nextrs::job]\npub async fn audit_todo(payload: AuditTodo) -> Result<(), String> { Ok(()) }\n";
+
+    #[test]
+    fn generates_job_registration_and_module() {
+        let tmp = setup_app_with_file_bodies(&[("jobs/audit-todo", &[("job.rs", JOB_BODY)])]);
+        let routes = discover_routes(tmp.path());
+        let code = generate_code(&routes);
+
+        // Module declaration + registry entry + typed wrapper re-export.
+        assert!(code.contains("mod __nextrs_route_0_job;"), "{code}");
+        assert!(code.contains("registry.add_job"), "{code}");
+        assert!(code.contains("name: \"audit-todo\""), "{code}");
+        assert!(code.contains("__NEXTRS_JOB_TIMEOUT_MS"), "{code}");
+        assert!(code.contains("__nextrs_job_run(payload, &ext)"), "{code}");
+        assert!(code.contains("pub mod jobs {"), "{code}");
+        assert!(
+            code.contains("pub(crate) use crate::__nextrs_route_0_job::audit_todo;"),
+            "{code}"
+        );
+        assert!(
+            code.contains("pub(crate) use crate::__nextrs_route_0_job as audit_todo_job;"),
+            "{code}"
+        );
+        // The pointed enable-the-feature line.
+        assert!(
+            code.contains("_found_app_jobs__enable_the_nextrs_jobs_cargo_feature"),
+            "{code}"
+        );
+        // A job-only directory is not a URL route.
+        assert!(!code.contains("path: \"/jobs/audit-todo\""), "{code}");
+        assert!(!code.contains("compile_error"), "{code}");
+    }
+
+    #[test]
+    fn job_nested_name_joins_with_slash() {
+        let tmp = setup_app_with_file_bodies(&[("jobs/email/welcome", &[("job.rs", JOB_BODY)])]);
+        let code = generate_code(&discover_routes(tmp.path()));
+        assert!(code.contains("name: \"email/welcome\""), "{code}");
+        assert!(code.contains("as email_welcome_job;"), "{code}");
+    }
+
+    #[test]
+    fn job_convention_violations_are_compile_errors() {
+        for (structure, needle) in [
+            // Not under app/jobs/.
+            (
+                vec![("misc", vec![("job.rs", JOB_BODY)])],
+                "must live under app/jobs/",
+            ),
+            // Directly in app/jobs/ — no name directory.
+            (
+                vec![("jobs", vec![("job.rs", JOB_BODY)])],
+                "must live under app/jobs/",
+            ),
+            // Sharing a directory with a URL route.
+            (
+                vec![(
+                    "jobs/x",
+                    vec![
+                        ("job.rs", JOB_BODY),
+                        ("route.rs", "pub async fn get() {}"),
+                    ],
+                )],
+                "cannot share a directory",
+            ),
+            // Dynamic segment in the job path.
+            (
+                vec![("jobs/[id]", vec![("job.rs", JOB_BODY)])],
+                "cannot use [param] segments",
+            ),
+            // No #[nextrs::job] fn in the file.
+            (
+                vec![("jobs/y", vec![("job.rs", "pub async fn y() {}\n")])],
+                "has no #[nextrs::job]",
+            ),
+        ] {
+            let structure: Vec<(&str, &[(&str, &str)])> = structure
+                .iter()
+                .map(|(d, fs)| (*d, fs.as_slice()))
+                .collect();
+            let tmp = setup_app_with_file_bodies(&structure);
+            let code = generate_code(&discover_routes(tmp.path()));
+            assert!(code.contains("compile_error"), "{needle}:\n{code}");
+            assert!(code.contains(needle), "{needle}:\n{code}");
+            // The broken job must not half-register.
+            assert!(!code.contains("registry.add_job"), "{needle}:\n{code}");
+        }
+    }
+
+    #[test]
+    fn job_fn_ident_scan() {
+        assert_eq!(job_fn_ident(JOB_BODY).as_deref(), Some("audit_todo"));
+        assert_eq!(
+            job_fn_ident("#[nextrs::job(max_attempts = 2)]\npub async fn send_email() {}")
+                .as_deref(),
+            Some("send_email")
+        );
+        assert_eq!(job_fn_ident("pub async fn no_attr() {}"), None);
     }
 
     /// Generated code mentions every route segment, attaches the right slot

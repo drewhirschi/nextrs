@@ -122,7 +122,7 @@ nextrs::bundle::bundle_pages(&nextrs::bundle::BundleConfig {
 .expect("nextrs::bundle::bundle_pages failed");
 ```
 
-Each page mounts into `<div id="__nx_root__">` under a TanStack `<QueryClientProvider>`. A sibling `client/` package holds the typed React Query client — generated from the app's OpenAPI spec with [orval](https://orval.dev) and imported through an alias like `@mysite/client`, so calling a Rust `route.rs` handler is a typed `useGet…` hook.
+Each page mounts into `<div id="__nx_root__">` under a TanStack `<QueryClientProvider>`. A sibling `client/` workspace package is generated from the app's OpenAPI spec. Import framework-independent fetch functions from `@mysite/client` and hooks from `@mysite/client/react-query`; both are real package exports with emitted declarations, so editors resolve them in any app file. See [Typesafe Client Generation](/docs/typesafe-client) for the install and regeneration workflow.
 
 ### Server data with `prefetch.rs`
 

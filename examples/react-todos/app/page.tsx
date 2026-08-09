@@ -5,7 +5,7 @@ import {
   useUpdateTodo,
   getGetTodosQueryKey,
   getGetApiTodosByIdQueryKey,
-} from "@react-todos/client";
+} from "@react-todos/client/react-query";
 import { useState } from "react";
 
 export default function Todos() {

@@ -70,6 +70,41 @@ pub type PrefetchDataFn = Box<
         + Sync,
 >;
 
+/// Type-erased runner for a background job (from `app/jobs/<name>/job.rs`):
+/// the macro-generated `__nextrs_job_run` behind a boxed closure. Takes the
+/// stored JSON payload plus the executing request's extensions (app state via
+/// `Extension<T>` layers), returns the job's Display-stringified error.
+pub type JobRunFn = Box<
+    dyn Fn(
+            serde_json::Value,
+            http::Extensions,
+        ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>
+        + Send
+        + Sync,
+>;
+
+/// A background job registered by codegen from `app/jobs/<name>/job.rs`.
+/// Mounted at `POST /__nx/jobs/<name>` by the router (feature `jobs`).
+pub struct JobEntry {
+    /// Stable name derived from the directory under `app/jobs/`.
+    pub name: &'static str,
+    pub run: JobRunFn,
+    /// Per-attempt timeout (`__NEXTRS_JOB_TIMEOUT_MS`).
+    pub timeout_ms: u64,
+    /// Retry budget (`__NEXTRS_JOB_MAX_ATTEMPTS`).
+    pub max_attempts: u32,
+}
+
+/// Wrap a macro-generated `__nextrs_job_run` as a [`JobRunFn`] — codegen
+/// calls this so the generated registry stays one readable line per job.
+pub fn job_run_fn<F, Fut>(f: F) -> JobRunFn
+where
+    F: Fn(serde_json::Value, http::Extensions) -> Fut + Send + Sync + 'static,
+    Fut: Future<Output = Result<(), String>> + Send + 'static,
+{
+    Box::new(move |payload, ext| Box::pin(f(payload, ext)))
+}
+
 /// Represents a single route entry discovered from the app/ directory
 #[derive(Default)]
 pub struct RouteEntry {
@@ -119,6 +154,9 @@ pub struct RouteRegistry {
     /// by codegen via [`Self::mark_react_page`]; same discovery source as the
     /// shell's `NX_APP_ROUTES`.
     pub react_pages: Vec<String>,
+    /// Background jobs (from `app/jobs/<name>/job.rs`), mounted under
+    /// `/__nx/jobs/` when the `jobs` feature is enabled.
+    pub jobs: Vec<JobEntry>,
 }
 
 impl RouteRegistry {
@@ -127,6 +165,7 @@ impl RouteRegistry {
             entries: Vec::new(),
             not_found: Vec::new(),
             react_pages: Vec::new(),
+            jobs: Vec::new(),
         }
     }
 
@@ -138,6 +177,12 @@ impl RouteRegistry {
     /// route), so document-level speculation skips it. See [`Self::react_pages`].
     pub fn mark_react_page(&mut self, path: impl Into<String>) {
         self.react_pages.push(path.into());
+    }
+
+    /// Register a background job. Codegen emits one call per
+    /// `app/jobs/<name>/job.rs`.
+    pub fn add_job(&mut self, job: JobEntry) {
+        self.jobs.push(job);
     }
 
     /// Register a `not-found` surface for the subtree rooted at `path`.

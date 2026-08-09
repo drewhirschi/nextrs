@@ -16,7 +16,12 @@ route.rs (#[nextrs::api])  ─codegen→  generated_openapi()
                                               │
                                             orval
                                               ▼
-                            src/generated/**  (hooks + types)
+                     src/generated/basic/**  (fetch client + types)
+                src/generated/react-query/** (hooks + types)
+                                              │
+                                            tsc
+                                              ▼
+                                 client/dist/** (JS + .d.ts)
 ```
 
 ## Annotate a handler
@@ -65,26 +70,32 @@ Annotation is **opt-in per handler**: an un-annotated handler still routes and s
 
 The same build-time discovery that wires your routes collects the annotated handlers into a `generated_openapi()` function. The app serves the document at `/openapi.json`, and a `dump-openapi` binary writes the identical spec to `client/openapi.json` so the client can be generated offline.
 
-## Generate the client
+## Install and generate
 
-The client directory holds the orval config and the committed generated output:
+Run these commands at the application root, not inside `client/`:
 
 ```bash
-cd site/client
-npm install      # first time only
-npm run gen      # dump openapi.json from Rust, then run orval
+npm install                 # first time: links the client workspace
+npm run client:generate     # after adding or changing a #[nextrs::api] handler
 npm run typecheck
 ```
 
-Both `openapi.json` and `src/generated/**` are committed, so contract changes show up in the diff. Rerun `npm run gen` whenever an annotated `route.rs` changes.
+`client:generate` dumps the Rust OpenAPI document, generates both clients,
+refreshes their barrels, and emits JavaScript plus declaration files. You do
+not install dependencies separately in `client/`, write a declaration file,
+or add `tsconfig.paths`. The root workspace links the package into
+`node_modules`, so TypeScript and VS Code resolve it from every `.ts` or `.tsx`
+file, including newly created nested pages.
+
+Rerun `npm run client:generate` whenever an annotated handler's parameters,
+body, response, error response, or `operation_id` changes.
 
 ## Use the hooks
 
 Each annotated handler becomes a hook named from its `operation_id` — GETs become query hooks, anything with a body becomes a mutation hook:
 
 ```tsx
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { useGetApiPing, useSendPing } from "@site/client";
+import { useGetApiPing, useSendPing } from "@site/client/react-query";
 
 function Ping() {
   const { data } = useGetApiPing();          // GET  /api/ping → typed PingResponse
@@ -97,13 +108,12 @@ function Ping() {
   );
 }
 
-const queryClient = new QueryClient();
-export const App = () => (
-  <QueryClientProvider client={queryClient}>
-    <Ping />
-  </QueryClientProvider>
-);
 ```
+
+nextrs mounts pages under its `QueryClientProvider`; application pages should
+not add a second provider. Query data, errors, and mutation variables are
+inferred. Avoid annotations such as `data: any` or `variables: any`—they erase
+the generated contract.
 
 The generated client uses the platform `fetch` (no HTTP-library dependency) and same-origin URLs — the nextrs app serves both the pages and the API, so there's no CORS story to manage.
 
@@ -121,7 +131,43 @@ async function archive(id: number) {
 }
 ```
 
-Both flavors come out of the same `npm run gen` pass, and the generated barrel exports them all — new endpoints are importable immediately, with no re-export list to maintain.
+The root package export is deliberately framework-agnostic. React Query hooks,
+query keys, and query-option factories live under `/react-query`:
+
+```ts
+import { getApiTodosById } from "@site/client";
+import {
+  getGetApiTodosByIdQueryOptions,
+  useUpdateTodo,
+} from "@site/client/react-query";
+
+const detail = await getApiTodosById(42, { neighbors: true });
+const options = getGetApiTodosByIdQueryOptions(42, { neighbors: true });
+
+const update = useUpdateTodo();
+update.mutate({ id: 42, data: { done: true } });
+```
+
+Path parameters, query objects, bodies, successful and error responses, query
+results, and mutation variables all flow from the Rust endpoint. Names derive
+from OpenAPI `operation_id`; set it explicitly when you want a concise stable
+name such as `getTodo`.
+
+Both flavors come out of the same `npm run client:generate` pass. New endpoints
+are importable immediately, with no hand-maintained re-export list.
+
+## If an import does not resolve
+
+From the application root, check these in order:
+
+1. Run `npm install` and confirm `node_modules/@scope/client` links to `client/`.
+2. Run `npm run client:generate` and confirm `client/dist/index.d.ts` and
+   `client/dist/react-query.d.ts` exist.
+3. Restart the TypeScript server only if the files resolve on disk but an
+   already-open editor still shows a stale diagnostic.
+
+Installing inside `client/` does not link the package into the application and
+is not part of the supported workflow.
 
 ## Why OpenAPI
 

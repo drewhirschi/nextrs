@@ -28,5 +28,7 @@ async fn main() {
     );
     tracing::info!("react-todos listening on http://{addr}");
     let listener = tokio::net::TcpListener::bind(&addr).await.unwrap();
+    // Jobs self-deliver over HTTP; tell them where this server actually bound.
+    nextrs::jobs::announce_local_addr(listener.local_addr().unwrap());
     axum::serve(listener, app).await.unwrap();
 }

@@ -73,16 +73,22 @@ pub async fn get(
 )]
 pub async fn post(
     Extension(ctx): Extension<TodosCtx>,
-    wait: nextrs::WaitUntil,
     Json(req): Json<AddTodoRequest>,
 ) -> Json<Todo> {
     let todo: Todo = ctx.add(req.title).await.into();
-    // Background work after the response: locally this is a plain spawn; on
-    // Vercel (behind StreamingVercelLayer) it's registered with the runtime's
-    // waitUntil so it isn't killed when the invocation ends.
-    let title = todo.title.clone();
-    wait.wait_until(async move {
-        tracing::info!(title, "audit: todo created (ran after the response)");
-    });
+    // Background work via a first-party job (app/jobs/audit-todo/job.rs).
+    // Looks like a function call; actually persists a job row and POSTs
+    // /__nx/jobs/audit-todo on this deployment — the body runs there, behind
+    // the framework-managed WaitUntil, with retries and a timeout. (For
+    // one-shot fire-and-forget without retries, nextrs::WaitUntil still
+    // works as before.)
+    let audit = crate::jobs::audit_todo_job::AuditTodo {
+        id: todo.id,
+        title: todo.title.clone(),
+    };
+    match crate::jobs::audit_todo(audit).await {
+        Ok(handle) => tracing::info!(job_id = %handle.id, delivered = handle.delivered, "audit job enqueued"),
+        Err(e) => tracing::warn!(error = %e, "audit job enqueue failed"),
+    }
     Json(todo)
 }

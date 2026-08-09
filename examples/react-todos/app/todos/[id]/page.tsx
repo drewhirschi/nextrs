@@ -8,7 +8,7 @@ import {
   useParams,
   getGetApiTodosByIdQueryKey,
   getGetTodosQueryKey,
-} from "@react-todos/client";
+} from "@react-todos/client/react-query";
 import { useQueryClient } from "@tanstack/react-query";
 
 // A "deep" component that needs the route param but doesn't get the `params`

@@ -25,8 +25,10 @@ public/dist/                prebuilt page.tsx bundle (committed; served on Verce
 ## Run it
 
 ```sh
-# 1. Install the client deps + generate the typed hooks (first time / after API changes)
-cd client && npm install && npm run gen && cd ..
+# 1. Link the client package (first time), then generate both client entry points
+cd examples/react-todos
+npm install
+npm run client:generate
 
 # 2. Run the app
 cargo run -p react-todos
@@ -34,8 +36,37 @@ cargo run -p react-todos
 ```
 
 `cargo build` bundles `page.tsx` (via rolldown, from inside the build script)
-into `public/dist/`; `npm run gen` regenerates `client/` from the app's
+into `public/dist/`; `npm run client:generate` regenerates and builds `client/` from the app's
 OpenAPI document.
+
+## Use the generated clients
+
+Use the root entry point for framework-independent fetch functions and types:
+
+```ts
+import { getApiTodosById, updateTodo } from "@react-todos/client";
+
+const todo = await getApiTodosById(1, { neighbors: true });
+await updateTodo(1, { done: true });
+```
+
+Use `/react-query` in React components:
+
+```tsx
+import {
+  useGetApiTodosById,
+  useUpdateTodo,
+} from "@react-todos/client/react-query";
+
+const query = useGetApiTodosById(1, { neighbors: true });
+const update = useUpdateTodo();
+update.mutate({ id: 1, data: { done: true } });
+```
+
+Do not add `any`, local declaration files, relative imports into generated
+folders, or `tsconfig.paths`. Parameter, body, response, query-result, error,
+and mutation-variable types are inferred from the Rust endpoint. After changing
+a `#[nextrs::api]` handler, rerun `npm run client:generate` at this directory.
 
 Run that command from the workspace root. If you invoke Cargo from inside
 `examples/react-todos/`, its Vercel `.cargo/config.toml` is active; prefix the
@@ -53,6 +84,11 @@ local run with `NEXTRS_SKIP_BUNDLE=0` so the page bundle is regenerated.
   `/openapi.json`. No Node at runtime.
 - **Thin handlers** — `route.rs` files only map between the wire and
   `src/core/todos.rs`, which holds the logic.
+
+## TODO
+
+- [ ] Revisit the app's type-checking setup and confirm it works reliably.
+- [ ] Review the `client/` folder organization and simplify it if possible.
 
 ## Deploy to Vercel
 
@@ -73,7 +109,8 @@ that make it work:
 
 ```sh
 # 1. Regenerate the client + a fresh *minified* bundle (release profile minifies)
-cd client && npm install && npm run gen && cd ..
+npm install
+npm run client:generate
 cargo build --release -p react-todos          # rebuilds public/dist/ minified
 
 # 2. Deploy from THIS directory (it builds standalone via the published crate)

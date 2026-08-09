@@ -139,7 +139,7 @@ fn scaffold(target: &Path, nextrs_path: Option<&Path>) -> io::Result<()> {
         println!("  cd {}", display_cd_path(target));
     }
     println!("  {}   # required: installs the `cargo dev` runner", dep.dev_tool_install_command());
-    println!("  cd client && npm install && npm run gen && cd ..   # generate the typed client");
+    println!("  npm install && npm run client:generate");
     println!("  cargo dev   # build + run with live reload");
     println!();
     println!("Tip: if `cargo dev` errors with \"no such command: nextrs-dev\", run the install line above.");
@@ -278,17 +278,17 @@ fn print_adopt_report(
     if skipped(".gitignore") {
         println!();
         println!("  .gitignore was left untouched — make sure it covers:");
-        println!("  /target  /public/dist  /node_modules  /client/node_modules  .env");
+        println!("  /target  /public/dist  /node_modules  /client/dist  .env");
     }
 
     println!();
     println!("  Then, in order:");
     println!("    cargo install cargo-nextrs-dev              # the `cargo dev` runner");
-    println!("    cd client && npm install && cd ..           # bundler resolves imports from client/node_modules");
+    println!("    npm install                                 # links the generated client workspace");
     println!("    cargo dev                                   # build + run with live reload");
     println!();
     println!("  Add API routes as app/**/route.rs with #[nextrs::api], then generate the");
-    println!("  typed client: cd client && npm run gen");
+    println!("  typed client: npm run client:generate");
     println!();
     println!("  Porting guide (strangler pattern, conventions, gotchas):");
     println!("    https://nextrs-docs.vercel.app/docs/porting");
@@ -423,9 +423,11 @@ impl DependencySource {
 
     fn runtime_dependency(&self) -> String {
         match self {
-            Self::Version => format!(r#"{{ version = "{VERSION}", features = ["vercel"] }}"#),
+            Self::Version => {
+                format!(r#"{{ version = "{VERSION}", features = ["vercel", "jobs"] }}"#)
+            }
             Self::Path(path) => format!(
-                r#"{{ path = "{}", features = ["vercel"] }}"#,
+                r#"{{ path = "{}", features = ["vercel", "jobs"] }}"#,
                 toml_string(&path.display().to_string())
             ),
         }
@@ -474,6 +476,7 @@ fn template_files(
         (".env.example", env_example()),
         (".cargo/config.toml", cargo_config_toml(crate_name)),
         ("Cargo.toml", cargo_toml(crate_name, dep)),
+        ("README.md", app_readme(crate_name, client_alias)),
         ("AGENTS.md", agents_md(crate_name, client_alias)),
         ("build.rs", build_rs(client_alias)),
         ("src/main.rs", main_rs()),
@@ -487,10 +490,14 @@ fn template_files(
         ("app/slow/loading.tsx", slow_loading_tsx()),
         ("app/slow/prefetch.rs", slow_prefetch_rs()),
         ("app/api/ping/route.rs", ping_route_rs()),
+        ("package.json", app_package_json(crate_name)),
+        ("tsconfig.json", app_tsconfig_json()),
         ("client/package.json", client_package_json(crate_name)),
         ("client/orval.config.ts", client_orval_config_ts()),
         ("client/tsconfig.json", client_tsconfig_json(client_alias)),
+        ("client/tsconfig.build.json", client_tsconfig_build_json()),
         ("client/src/index.ts", client_index_ts()),
+        ("client/src/react-query.ts", client_react_query_ts()),
         ("client/src/nextrs-client.ts", nextrs_client_ts()),
         ("rust-toolchain.toml", rust_toolchain_toml()),
         ("public/style.css", style_css()),
@@ -518,6 +525,7 @@ files and wires the router — never register routes by hand:
 | `middleware.rs` | Guard, runs before anything renders |
 | `route.rs` | API handlers — one `pub async fn get/post/...` per method, `#[nextrs::api]` for the typed client |
 | `prefetch.rs` | Server data seeding a `page.tsx`'s React Query cache (requires the `.tsx` sibling) |
+| `jobs/<name>/job.rs` | Background job (`#[nextrs::job]`) — calling the fn enqueues it; it runs at `POST /__nx/jobs/<name>` behind WaitUntil with retries + back-off. Set `NEXTRS_JOBS_SECRET` (and a Turso DB via `NEXTRS_JOBS_DB_URL` for durable rows) in production |
 
 A `.tsx` slot is exclusive: it cannot coexist with `.rs`/`.html` of the same
 name. Full reference: <https://nextrs-docs.vercel.app/docs/conventions>
@@ -528,7 +536,7 @@ name. Full reference: <https://nextrs-docs.vercel.app/docs/conventions>
 `scripts/deploy-prebuilt.sh`, `rust-toolchain.toml`, and the `client/`
 package are generated wiring. Extend them if you must; do not replace them
 with improvised versions. Never edit generated output: `client/src/generated/**`,
-`client/openapi.json`, and `public/dist/` are rebuilt on every build. The
+`client/openapi.json`, `client/dist/`, and `public/dist/` are rebuilt. The
 seams for app code are `app/**`, `client/src/index.ts`, and
 `client/package.json`.
 
@@ -537,11 +545,10 @@ seams for app code are `app/**`, `client/src/index.ts`, and
 `client/` is a real npm package; pages import it as `{client_alias}`.
 
 - **Every bare import used by any `.tsx` file must be installed in
-  `client/package.json`** — the bundler resolves from `client/node_modules`
-  and errors on unresolved bare imports. Adding a dependency means adding it
-  there and running `npm install` in `client/`.
+  `client/package.json`**. Run `npm install` once at the app root; npm links
+  the client workspace and the bundler resolves the same dependency tree.
 - **Never hand-write API types.** After changing `#[nextrs::api]` routes, run
-  `npm run gen` in `client/` to regenerate the typed hooks from OpenAPI.
+  `npm run client:generate` at the app root to regenerate and build the client.
   Guide: <https://nextrs-docs.vercel.app/docs/typesafe-client>
 
 ## Dev loop
@@ -603,6 +610,52 @@ incremental conversion and the gotchas list:
     )
 }
 
+fn app_readme(crate_name: &str, client_alias: &str) -> String {
+    format!(
+        r#"# {crate_name}
+
+## Generated TypeScript client
+
+Install once and generate after adding or changing a `#[nextrs::api]` handler:
+
+```bash
+npm install
+npm run client:generate
+npm run typecheck
+```
+
+Run these commands at the app root. Do not install separately inside `client/`
+or add `tsconfig.paths`; the root npm workspace links the generated package.
+
+Use the root entry point for framework-independent fetch functions and types:
+
+```ts
+import {{ getApiPing }} from "{client_alias}";
+
+const response = await getApiPing();
+```
+
+Use the React Query entry point from components:
+
+```tsx
+import {{ useGetApiPing }} from "{client_alias}/react-query";
+
+export default function Page() {{
+  const ping = useGetApiPing();
+  return <p>{{ping.data?.data.message}}</p>;
+}}
+```
+
+Path and query parameters, request bodies, responses, documented errors,
+query data, and mutation variables are inferred from Rust. Avoid `any`, manual
+declaration files, and relative imports into `client/src/generated`.
+
+See <https://nextrs-docs.vercel.app/docs/typesafe-client> for request bodies,
+mutations, operation names, and troubleshooting.
+"#,
+    )
+}
+
 fn rust_toolchain_toml() -> String {
     r#"# Vercel's Rust runtime defaults to an rustc BELOW the tsx bundler's MSRV
 # (observed: 1.92.0 vs oxc's required 1.94.0), so an unpinned deploy fails at
@@ -616,11 +669,18 @@ channel = "1.96.0"
 }
 
 fn gitignore() -> String {
-    "/target\n/public/dist\n/node_modules\n/client/node_modules\n.env\n".into()
+    "/target\n/public/dist\n/node_modules\n/client/dist\n.env\n".into()
 }
 
 fn env_example() -> String {
-    "PORT=3000\n".into()
+    "PORT=3000\n\
+     # Background jobs (app/jobs/): shared secret for the /__nx/jobs/* routes.\n\
+     # Optional locally (a per-process secret is generated); REQUIRED on Vercel.\n\
+     # NEXTRS_JOBS_SECRET=change-me\n\
+     # Durable job rows on Turso/libsql (else in-memory locally):\n\
+     # NEXTRS_JOBS_DB_URL=libsql://<db>.turso.io\n\
+     # NEXTRS_JOBS_DB_TOKEN=...\n"
+        .into()
 }
 
 fn cargo_config_toml(crate_name: &str) -> String {
@@ -711,6 +771,9 @@ async fn main() {
     let listener = bind_with_fallback(port).await;
     let local = listener.local_addr().expect("listener has a local addr");
     println!("listening on http://{local}");
+    // Background jobs (app/jobs/) self-deliver over HTTP; announce where this
+    // server actually bound so enqueues work even on a fallback port.
+    nextrs::jobs::announce_local_addr(local);
 
     axum::serve(listener, app)
         .with_graceful_shutdown(shutdown_signal())
@@ -893,7 +956,7 @@ export default function Layout({ children }: { children: ReactNode }) {
 
 fn page_tsx(client_alias: &str) -> String {
     format!(
-        r#"import {{ useGetApiPing }} from "{client_alias}";
+        r#"import {{ useGetApiPing }} from "{client_alias}/react-query";
 
 export default function Page() {{
   const ping = useGetApiPing({{ query: {{ enabled: false }} }});
@@ -1011,11 +1074,16 @@ fn client_package_json(crate_name: &str) -> String {
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {{
+    ".": {{ "types": "./dist/index.d.ts", "import": "./dist/index.js" }},
+    "./react-query": {{ "types": "./dist/react-query.d.ts", "import": "./dist/react-query.js" }}
+  }},
+  "files": ["dist"],
   "scripts": {{
-    "postinstall": "ln -sfn client/node_modules ../node_modules",
     "dump": "NEXTRS_SKIP_BUNDLE=1 cargo run --bin dump-openapi",
     "orval": "orval --config ./orval.config.ts",
-    "gen": "npm run dump && npm run orval",
+    "gen": "npm run dump && npm run orval && cargo build && npm run build",
+    "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit"
   }},
   "dependencies": {{
@@ -1035,16 +1103,64 @@ fn client_package_json(crate_name: &str) -> String {
     )
 }
 
+fn app_package_json(crate_name: &str) -> String {
+    format!(
+        r#"{{
+  "name": "{crate_name}-app",
+  "private": true,
+  "workspaces": ["client"],
+  "scripts": {{
+    "client:generate": "npm run gen --workspace=@{crate_name}/client",
+    "client:build": "npm run build --workspace=@{crate_name}/client",
+    "typecheck": "tsc --noEmit"
+  }},
+  "dependencies": {{ "@{crate_name}/client": "0.1.0" }}
+}}
+"#,
+    )
+}
+
+fn app_tsconfig_json() -> String {
+    r#"{
+  "compilerOptions": {
+    "target": "ES2020",
+    "lib": ["ES2020", "DOM", "DOM.Iterable"],
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "jsx": "react-jsx",
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true
+  },
+  "include": ["app/**/*.ts", "app/**/*.tsx"]
+}
+"#
+    .into()
+}
+
 fn client_orval_config_ts() -> String {
     r#"import { defineConfig } from "orval";
 
 export default defineConfig({
-  api: {
+  basic: {
     input: "./openapi.json",
     output: {
       mode: "tags-split",
-      target: "./src/generated",
-      schemas: "./src/generated/model",
+      target: "./src/generated/basic",
+      schemas: "./src/generated/basic/model",
+      client: "fetch",
+      httpClient: "fetch",
+      baseUrl: "/",
+      clean: true,
+      prettier: false,
+    },
+  },
+  reactQuery: {
+    input: "./openapi.json",
+    output: {
+      mode: "tags-split",
+      target: "./src/generated/react-query",
+      schemas: "./src/generated/react-query/model",
       client: "react-query",
       httpClient: "fetch",
       baseUrl: "/",
@@ -1057,10 +1173,10 @@ export default defineConfig({
     .into()
 }
 
-fn client_tsconfig_json(client_alias: &str) -> String {
-    format!(
-        r#"{{
-  "compilerOptions": {{
+fn client_tsconfig_json(_client_alias: &str) -> String {
+    String::from(
+        r#"{
+  "compilerOptions": {
     "target": "ES2020",
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "module": "ESNext",
@@ -1070,18 +1186,39 @@ fn client_tsconfig_json(client_alias: &str) -> String {
     "noEmit": true,
     "skipLibCheck": true,
     "esModuleInterop": true,
-    "forceConsistentCasingInFileNames": true,
-    "paths": {{
-      "{client_alias}": ["./src/index.ts"]
-    }}
-  }},
+    "forceConsistentCasingInFileNames": true
+  },
   "include": ["src", "../app/**/*.tsx"]
-}}
+}
 "#
     )
 }
 
+fn client_tsconfig_build_json() -> String {
+    r#"{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
+    "outDir": "./dist",
+    "rootDir": "./src"
+  },
+  "include": ["src/**/*.ts", "src/**/*.tsx"]
+}
+"#
+    .into()
+}
+
 fn client_index_ts() -> String {
+    r#"// Framework-agnostic fetch functions and request/response types.
+export * from "./generated/basic";
+"#
+    .into()
+}
+
+fn client_react_query_ts() -> String {
     r#"import { useQueryClient } from "@tanstack/react-query";
 import { useParams as useRouterParams } from "@tanstack/react-router";
 
@@ -1101,7 +1238,7 @@ export function useParams<T extends Record<string, string> = Record<string, stri
 // typed clients (getX/updateX functions and URL builders) for event handlers,
 // scripts, and tests. The framework regenerates ./generated/index.ts on every
 // build, so new endpoints show up here without editing this file.
-export * from "./generated";
+export * from "./generated/react-query";
 "#
     .into()
 }
@@ -1271,6 +1408,7 @@ mod tests {
         let files = template_files("demo", "@demo/client", &DependencySource::Version);
         let names: Vec<_> = files.iter().map(|(name, _)| *name).collect();
         assert!(names.contains(&".cargo/config.toml"));
+        assert!(names.contains(&"README.md"));
         assert!(names.contains(&"src/bin/dump-openapi.rs"));
         assert!(names.contains(&"api/index.rs"));
         assert!(names.contains(&"vercel.json"));
@@ -1281,6 +1419,17 @@ mod tests {
         assert!(names.contains(&"app/api/ping/route.rs"));
         assert!(names.contains(&"client/orval.config.ts"));
         assert!(!names.iter().any(|name| name.ends_with(".html")));
+
+        let readme = files
+            .iter()
+            .find(|(name, _)| *name == "README.md")
+            .unwrap()
+            .1
+            .as_str();
+        assert!(readme.contains("npm run client:generate"));
+        assert!(readme.contains(r#"from "@demo/client""#));
+        assert!(readme.contains(r#"from "@demo/client/react-query""#));
+        assert!(readme.contains("Do not install separately inside `client/`"));
 
         let cargo_config = files
             .iter()
@@ -1297,7 +1446,7 @@ mod tests {
             .1
             .as_str();
         assert!(cargo_toml.contains("tower-livereload"));
-        assert!(cargo_toml.contains(r#"features = ["vercel"]"#));
+        assert!(cargo_toml.contains(r#"features = ["vercel", "jobs"]"#));
         assert!(cargo_toml.contains("vercel_runtime"));
         assert!(!cargo_toml.contains("command-group"));
         assert!(!cargo_toml.contains("ctrlc"));
@@ -1311,7 +1460,7 @@ mod tests {
             .unwrap()
             .1
             .as_str();
-        assert!(page.contains(r#"import { useGetApiPing } from "@demo/client";"#));
+        assert!(page.contains(r#"import { useGetApiPing } from "@demo/client/react-query";"#));
         assert!(page.contains("useGetApiPing({ query: { enabled: false } })"));
         assert!(!page.contains(r#"fetch("/api/ping")"#));
 
@@ -1330,7 +1479,13 @@ mod tests {
             .unwrap()
             .1
             .as_str();
-        assert!(package_json.contains(r#""gen": "npm run dump && npm run orval""#));
+        assert!(package_json.contains(
+            r#""gen": "npm run dump && npm run orval && cargo build && npm run build""#
+        ));
+        assert!(package_json.contains(r#""./react-query""#));
+        assert!(files.iter().any(|(name, body)| {
+            *name == "client/tsconfig.build.json" && body.contains(r#""declaration": true"#)
+        }));
         assert!(package_json.contains(r#""orval": "^7.3.0""#));
 
         // The client package index re-exports the generated barrel wholesale —
@@ -1342,9 +1497,16 @@ mod tests {
             .unwrap()
             .1
             .as_str();
-        assert!(index.contains(r#"export * from "./generated";"#));
+        assert!(index.contains(r#"export * from "./generated/basic";"#));
         assert!(!index.contains("./generated/ping/ping"));
-        assert!(index.contains("useParams"));
+        let react_query = files
+            .iter()
+            .find(|(name, _)| *name == "client/src/react-query.ts")
+            .unwrap()
+            .1
+            .as_str();
+        assert!(react_query.contains("useParams"));
+        assert!(react_query.contains(r#"export * from "./generated/react-query";"#));
         assert!(!files.iter().any(|(name, _)| name.contains("gen-barrel")));
 
         // Vercel's default rustc sits below the tsx bundler's MSRV — every
@@ -1530,8 +1692,8 @@ mod tests {
                 r#"nextrs = { path = "/work/nextrs/nextrs", features = ["build", "tsx"] }"#
             )
         );
-        assert!(
-            toml.contains(r#"nextrs = { path = "/work/nextrs/nextrs", features = ["vercel"] }"#)
-        );
+        assert!(toml.contains(
+            r#"nextrs = { path = "/work/nextrs/nextrs", features = ["vercel", "jobs"] }"#
+        ));
     }
 }

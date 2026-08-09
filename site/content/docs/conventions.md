@@ -5,7 +5,7 @@ section = "Guides"
 order = 2
 +++
 
-Every directory under `app/` is a URL segment. Six file names have meaning inside a segment:
+Every directory under `app/` is a URL segment. Seven file names have meaning inside a segment:
 
 | File | Role | Signature |
 |---|---|---|
@@ -15,6 +15,7 @@ Every directory under `app/` is a URL segment. Six file names have meaning insid
 | `middleware.rs` | Guard that runs before anything renders | `pub async fn handle(Request<Body>) -> MiddlewareResult` |
 | `route.rs` | API handlers (JSON etc.) | `pub async fn get/post/put/patch/delete/...` |
 | `prefetch.rs` | Server data that warms a `page.tsx`'s React Query cache | `pub async fn prefetch(Request<Body>) -> QuerySeed` |
+| `jobs/<name>/job.rs` | Background job with retries — calling the fn enqueues it (see [Background jobs](#background-jobs)) | `#[nextrs::job] pub async fn <name>(payload: T) -> Result<(), E>` |
 
 For `page`, `layout`, and `loading`, three variants are accepted (the signatures above are for `.rs`). `.rs` is dynamic Rust; `.html` is served as-is (for layouts, `{{ children }}` is substituted literally) — zero Rust required for static segments; if both `.rs` and `.html` exist, **`.rs` wins**. `.tsx` is a React component, bundled and client-rendered (see [React pages](#react-pages) below). A `.tsx` slot is **exclusive**: it cannot coexist with a `.rs` or `.html` of the same name (the build emits a `compile_error!`), because a segment has exactly one rendering model.
 
@@ -61,7 +62,7 @@ A `loading.{rs,html}` file opts the route into streaming: the loading skeleton i
 
 A `page.tsx` (and optional `layout.tsx` / `loading.tsx`) is a React component instead of a Rust handler. Behind the `tsx` cargo feature, the build bundles each `page.tsx` to `/dist/<slug>.js` with an embedded rolldown bundler — no swc, no external Node build step — and generates a shell handler that streams a `<div id="__nx_root__">` plus a module script. The component mounts client-side under a TanStack `<QueryClientProvider>`; layouts, middleware, and streaming compose around it exactly as they do for a Rust page.
 
-Components import their typed data hooks from the generated client in the `client/` npm package (aliased `@site/client`) — see [Typesafe Client Generation](/docs/typesafe-client).
+Components import typed data hooks from the generated `client/` workspace package's React Query export (`@site/client/react-query`). Framework-independent fetch functions and types come from `@site/client` — see [Typesafe Client Generation](/docs/typesafe-client).
 
 A sibling `prefetch.rs` warms that client's React Query cache from the server. It returns a `nextrs::QuerySeed` whose entries are keyed with `nextrs::seed_key(...)`; the framework streams them as a JSON `<script id="__nx_seeds__">` tag and the client loads them into the cache before mount, so the first paint has data without a mount-time round-trip. `prefetch.rs` requires a `page.tsx` sibling — a `prefetch.rs` next to a Rust page is a compile error, since Rust pages fetch their own data. The legacy filename `props.rs` (exporting `fn props`) still works, but new code should use `prefetch.rs`. Full walkthrough in [React Pages & Server Prefetch](/docs/react-server-props).
 
@@ -119,6 +120,33 @@ pub async fn get() -> Json<Pong> {
 The build step detects which methods a `route.rs` exports by name. A segment can have both `page.rs` and `route.rs` — the page owns GET, the route file handles the rest. **Exporting `get()` from a `route.rs` next to a page is a compile error** (the build emits `compile_error!` with the conflicting path), so the conflict can't ship.
 
 To generate a typesafe TypeScript client from your `route.rs` handlers, see [Typesafe Client Generation](/docs/typesafe-client).
+
+## Background jobs
+
+A `job.rs` under `app/jobs/<name>/` declares a background job (requires the `jobs` cargo feature, on by default in new apps). The directory path is the job's name:
+
+```rust
+// app/jobs/audit-todo/job.rs
+#[nextrs::job(max_attempts = 3, timeout_secs = 30)]   // both optional
+pub async fn audit_todo(
+    Extension(ctx): Extension<AppCtx>,   // 0..n app-state extensions
+    payload: AuditTodo,                  // one Serialize + Deserialize payload
+) -> Result<(), String> {                // or -> (); Err/panic/timeout → retry
+    /* the work */
+    Ok(())
+}
+```
+
+Calling `crate::jobs::audit_todo(payload).await` from any handler **does not run the body** — it persists a job row and POSTs the job's own route (`/__nx/jobs/audit-todo`) on your deployment, returning a `JobHandle { id, delivered }` immediately. The body runs inside that request, behind the framework-managed `WaitUntil`, so on Vercel each execution is its own invocation (own logs, own `request_path`) and the caller's response is never delayed. Failures retry with exponential back-off (30s doubling, capped at 1h) up to `max_attempts`, then the row goes `dead`.
+
+The plumbing around it:
+
+- **Auth** — every `/__nx/jobs/*` route requires `x-nextrs-jobs-secret: $NEXTRS_JOBS_SECRET`. Locally the framework generates a per-process secret when unset; on Vercel the env var is required (enqueue fails loud without it).
+- **Storage** — job rows live in Turso/libsql when `NEXTRS_JOBS_DB_URL`/`NEXTRS_JOBS_DB_TOKEN` (or `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN`) are set and the `jobs-libsql` feature is on; in-memory locally otherwise. The table (`__nextrs_jobs`) auto-migrates. On Vercel, no configured store is an error, never a silent in-memory queue.
+- **Retries** — `GET|POST /__nx/jobs/sweep` re-delivers due rows and reclaims runs from dead instances; point a cron at it (it also accepts Vercel cron's `Authorization: Bearer $CRON_SECRET`). New apps ship a daily Vercel cron for this.
+- **Visibility** — `GET /__nx/jobs` (authed) returns status counts and recent rows; `handle.status()` reads one row.
+
+For one-shot fire-and-forget without retries or rows, `nextrs::WaitUntil` remains the lighter tool.
 
 ## Dynamic segments
 

@@ -143,12 +143,14 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<BundleManifest> {
         return Ok(manifest);
     }
 
-    let node_modules = client_dir.join("node_modules");
-    if !node_modules.is_dir() {
+    let node_modules = client_dir
+        .ancestors()
+        .map(|dir| dir.join("node_modules"))
+        .find(|dir| dir.is_dir());
+    if node_modules.is_none() {
         return Err(std::io::Error::other(format!(
-            "nextrs: page.tsx pages found but {} is missing — run `npm install` in {}",
-            node_modules.display(),
-            client_dir.display()
+            "nextrs: page.tsx pages found but no node_modules is available — run `npm install` in {}",
+            manifest_dir.display()
         )));
     }
 
@@ -375,18 +377,23 @@ fn not_found_bundles(routes: &[DiscoveredRoute]) -> Vec<NotFoundBundle> {
         .collect()
 }
 
-/// Write `<client_dir>/src/generated/index.ts` re-exporting every generated
-/// tag module plus `model` (and `url-hooks` when present), mirroring orval's
-/// `tags-split` layout. No-op when the app has no generated client (dir
-/// absent). Framework-owned so apps don't carry a barrel script — the codegen
-/// output's surface is a framework concern, and this runs on every bundling
-/// build so it can't go stale.
+/// Write barrels for the framework-agnostic and React Query outputs. Keeping
+/// them separate ensures importing the basic client never loads React or
+/// TanStack Query, while both surfaces remain stable across generated tags.
 fn emit_client_barrel(client_dir: &Path) -> std::io::Result<()> {
     let generated = client_dir.join("src/generated");
     if !generated.is_dir() {
         return Ok(());
     }
-    let mut tags: Vec<String> = std::fs::read_dir(&generated)?
+    emit_generated_barrel(&generated.join("basic"), false)?;
+    emit_generated_barrel(&generated.join("react-query"), true)
+}
+
+fn emit_generated_barrel(generated: &Path, include_url_hooks: bool) -> std::io::Result<()> {
+    if !generated.is_dir() {
+        return Ok(());
+    }
+    let mut tags: Vec<String> = std::fs::read_dir(generated)?
         .filter_map(|e| e.ok())
         .filter(|e| e.file_type().is_ok_and(|t| t.is_dir()))
         .filter_map(|e| e.file_name().into_string().ok())
@@ -402,7 +409,7 @@ fn emit_client_barrel(client_dir: &Path) -> std::io::Result<()> {
     if generated.join("model").is_dir() {
         out.push_str("export * from \"./model\";\n");
     }
-    if generated.join("url-hooks.ts").is_file() {
+    if include_url_hooks && generated.join("url-hooks.ts").is_file() {
         out.push_str("export * from \"./url-hooks\";\n");
     }
     write_if_changed(&generated.join("index.ts"), out.as_bytes())
@@ -441,7 +448,7 @@ struct UrlHookOp {
 /// writes). No-op when it's absent or contains no eligible operations —
 /// a stale url-hooks.ts from a previous shape is removed.
 fn emit_url_hooks(client_dir: &Path) -> std::io::Result<()> {
-    let generated = client_dir.join("src/generated");
+    let generated = client_dir.join("src/generated/react-query");
     let out_path = generated.join("url-hooks.ts");
     let spec_path = client_dir.join("openapi.json");
 
@@ -1179,6 +1186,10 @@ fn build_aliases(
         client_alias.to_string(),
         vec![Some(client_dir.join("src/index.ts").display().to_string())],
     ));
+    aliases.push((
+        format!("{client_alias}/*"),
+        vec![Some(client_dir.join("src/*.ts").display().to_string())],
+    ));
     let builtin = norm("@/*", client_dir.join("src/*").display().to_string());
     if !aliases.iter().any(|(k, _)| *k == builtin.0) {
         aliases.push(builtin);
@@ -1228,7 +1239,14 @@ fn run_bundler(
         ),
         resolve: Some(rolldown::ResolveOptions {
             alias: Some(build_aliases(client_dir, client_alias, user_aliases)),
-            modules: Some(vec![client_dir.join("node_modules").display().to_string()]),
+            modules: Some(
+                client_dir
+                    .ancestors()
+                    .map(|dir| dir.join("node_modules"))
+                    .filter(|dir| dir.is_dir())
+                    .map(|dir| dir.display().to_string())
+                    .collect(),
+            ),
             // Prefix-alias substitution (`@/*`, `@workspace/x/*`) yields
             // extension-less paths (e.g. `.../src/errors`); without explicit TS
             // extensions the resolver can't find `errors.ts`, so the specifier
@@ -1381,6 +1399,11 @@ mod tests {
         assert!(
             aliases.iter().any(|(k, v)| k == "@site/client"
                 && v[0].as_deref() == Some("/proj/client/src/index.ts")),
+            "{aliases:?}"
+        );
+        assert!(
+            aliases.iter().any(|(k, v)| k == "@site/client/*"
+                && v[0].as_deref() == Some("/proj/client/src/*.ts")),
             "{aliases:?}"
         );
         // Built-in shadcn-style @/* → <client>/src/*, with `*` kept intact in
@@ -1665,15 +1688,18 @@ mod tests {
     #[test]
     fn emit_url_hooks_writes_and_removes() {
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("src/generated/todos")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("src/generated/react-query/todos")).unwrap();
         std::fs::write(tmp.path().join("openapi.json"), URL_HOOKS_SPEC).unwrap();
         emit_url_hooks(tmp.path()).unwrap();
-        let hooks = tmp.path().join("src/generated/url-hooks.ts");
+        let hooks = tmp.path().join("src/generated/react-query/url-hooks.ts");
         assert!(hooks.is_file());
 
         // Barrel picks it up.
         emit_client_barrel(tmp.path()).unwrap();
-        let barrel = std::fs::read_to_string(tmp.path().join("src/generated/index.ts")).unwrap();
+        let barrel = std::fs::read_to_string(
+            tmp.path().join("src/generated/react-query/index.ts"),
+        )
+        .unwrap();
         assert!(barrel.contains(r#"export * from "./url-hooks";"#));
 
         // Spec loses its eligible ops → stale file is removed.
@@ -1687,16 +1713,16 @@ mod tests {
         // A torn generated dir (interrupted npm run gen) must not produce a
         // wrapper importing a module that isn't there.
         let tmp = tempfile::tempdir().unwrap();
-        std::fs::create_dir_all(tmp.path().join("src/generated/model")).unwrap();
+        std::fs::create_dir_all(tmp.path().join("src/generated/react-query/model")).unwrap();
         std::fs::write(tmp.path().join("openapi.json"), URL_HOOKS_SPEC).unwrap();
         emit_url_hooks(tmp.path()).unwrap();
-        assert!(!tmp.path().join("src/generated/url-hooks.ts").exists());
+        assert!(!tmp.path().join("src/generated/react-query/url-hooks.ts").exists());
     }
 
     #[test]
     fn client_barrel_exports_every_tag_and_model() {
         let tmp = tempfile::tempdir().unwrap();
-        let generated = tmp.path().join("src/generated");
+        let generated = tmp.path().join("src/generated/basic");
         for dir in ["todos", "ping", "model"] {
             std::fs::create_dir_all(generated.join(dir)).unwrap();
         }

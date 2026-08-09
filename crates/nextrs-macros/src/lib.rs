@@ -318,6 +318,299 @@ fn seed_companion(item: proc_macro2::TokenStream, url: &str) -> Option<proc_macr
     }
 }
 
+/// Annotate the function in an `app/jobs/<name>/job.rs` as a background job.
+///
+/// The job's stable name is derived from the directory under `app/jobs/`
+/// (nested directories join with `/`), the same way [`macro@api`] derives a
+/// URL from the file location — the convention encodes the name once.
+///
+/// ```ignore
+/// // in app/jobs/audit-todo/job.rs
+/// #[nextrs::job(max_attempts = 5, timeout_secs = 120)]   // both optional
+/// pub async fn audit_todo(
+///     Extension(ctx): Extension<TodosCtx>,   // 0..n app-state extensions
+///     payload: AuditTodo,                    // at most one payload arg
+/// ) -> Result<(), anyhow::Error> { ... }     // or `-> ()`
+/// ```
+///
+/// Calling `audit_todo(payload)` from app code does **not** run the body: the
+/// macro renames the body away and re-emits the original name as a typed
+/// enqueue wrapper that persists a job row and POSTs the job's own route
+/// (`/__nx/jobs/<name>`) on this deployment. The body runs inside *that*
+/// request, behind the framework-managed `WaitUntil` — user code never touches
+/// `WaitUntil`, timeouts, or retries. `Err`, panic, or timeout mark the row
+/// failed and it retries with exponential back-off up to `max_attempts`.
+///
+/// Emitted alongside the wrapper (all `#[doc(hidden)]`, consumed by the
+/// build-time codegen): `__nextrs_job_run` (JSON-payload runner the framework
+/// route calls), `__NEXTRS_JOB_NAME`, `__NEXTRS_JOB_TIMEOUT_MS`,
+/// `__NEXTRS_JOB_MAX_ATTEMPTS`.
+#[proc_macro_attribute]
+pub fn job(args: TokenStream, item: TokenStream) -> TokenStream {
+    let file = Span::call_site().file();
+    let Some(name) = job_name_from_file(&file) else {
+        let msg = format!(
+            "#[nextrs::job] functions must live in app/jobs/<name>/job.rs \
+             (this file is `{file}`)"
+        );
+        let mut out: TokenStream = format!("::core::compile_error!({msg:?});")
+            .parse()
+            .expect("nextrs::job: could not build compile_error");
+        out.extend(item);
+        return out;
+    };
+    match job_expand(args.into(), item.clone().into(), &name) {
+        Ok(ts) => ts.into(),
+        Err(e) => {
+            // Emit the error alongside the original item so downstream errors
+            // don't cascade on top of the real one.
+            let mut out = TokenStream::from(e.to_compile_error());
+            out.extend(item);
+            out
+        }
+    }
+}
+
+/// `app/jobs/audit-todo/job.rs` → `audit-todo`;
+/// `app/jobs/email/welcome/job.rs` → `email/welcome`.
+/// Anchors on the `app/jobs/` segment (crate-relative or workspace-relative
+/// paths both work, like `url_from_file`). `None` when the file isn't a
+/// `job.rs` under `app/jobs/` with at least one directory of name.
+fn job_name_from_file(file: &str) -> Option<String> {
+    let (_, rest) = file.rsplit_once("app/jobs/")?;
+    let name = rest.strip_suffix("job.rs")?.trim_end_matches('/');
+    if name.is_empty() || name.split('/').any(|seg| seg.is_empty()) {
+        return None;
+    }
+    Some(name.to_string())
+}
+
+/// The full `#[nextrs::job]` expansion. Separated from the attribute entry
+/// point so tests can drive it with an explicit name (spans have no file in
+/// unit tests).
+fn job_expand(
+    args: proc_macro2::TokenStream,
+    item: proc_macro2::TokenStream,
+    name: &str,
+) -> syn::Result<proc_macro2::TokenStream> {
+    use quote::quote;
+    use syn::parse::Parser;
+
+    // ---- macro args: `max_attempts = N`, `timeout_secs = N`, both optional.
+    let mut max_attempts: u32 = 5;
+    let mut timeout_ms: u64 = 60_000;
+    let parsed =
+        syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated
+            .parse2(args)?;
+    for nv in &parsed {
+        let key = nv
+            .path
+            .get_ident()
+            .map(|i| i.to_string())
+            .unwrap_or_default();
+        let lit_int = match &nv.value {
+            syn::Expr::Lit(syn::ExprLit {
+                lit: syn::Lit::Int(i),
+                ..
+            }) => i,
+            other => {
+                return Err(syn::Error::new_spanned(
+                    other,
+                    "#[nextrs::job]: expected an integer literal",
+                ))
+            }
+        };
+        match key.as_str() {
+            "max_attempts" => max_attempts = lit_int.base10_parse()?,
+            "timeout_secs" => timeout_ms = lit_int.base10_parse::<u64>()?.saturating_mul(1000),
+            _ => {
+                return Err(syn::Error::new_spanned(
+                    &nv.path,
+                    "#[nextrs::job]: unknown argument (expected `max_attempts` or `timeout_secs`)",
+                ))
+            }
+        }
+    }
+
+    // ---- the function shape.
+    let func: syn::ItemFn = syn::parse2(item)?;
+    if func.sig.asyncness.is_none() {
+        return Err(syn::Error::new_spanned(
+            &func.sig.fn_token,
+            "#[nextrs::job]: job functions must be `async`",
+        ));
+    }
+    if !matches!(func.vis, syn::Visibility::Public(_)) {
+        return Err(syn::Error::new_spanned(
+            &func.sig.ident,
+            "#[nextrs::job]: job functions must be `pub` (the enqueue wrapper takes the name)",
+        ));
+    }
+
+    enum CallArg {
+        Ext(usize),
+        Payload,
+    }
+    let mut ext_tys: Vec<&syn::Type> = Vec::new();
+    let mut payload_ty: Option<&syn::Type> = None;
+    let mut call_order: Vec<CallArg> = Vec::new();
+    for arg in &func.sig.inputs {
+        let syn::FnArg::Typed(arg) = arg else {
+            return Err(syn::Error::new_spanned(
+                arg,
+                "#[nextrs::job]: job functions take no receiver",
+            ));
+        };
+        match last_path_ident(&arg.ty).as_deref() {
+            Some("Extension") => {
+                let inner = first_generic_arg(&arg.ty).ok_or_else(|| {
+                    syn::Error::new_spanned(&arg.ty, "#[nextrs::job]: Extension needs a type argument")
+                })?;
+                ext_tys.push(inner);
+                call_order.push(CallArg::Ext(ext_tys.len() - 1));
+            }
+            Some("WaitUntil") => {
+                return Err(syn::Error::new_spanned(
+                    &arg.ty,
+                    "#[nextrs::job]: jobs already run behind WaitUntil — remove the extractor; \
+                     the framework schedules, times out, and retries the body for you",
+                ))
+            }
+            Some("State" | "Path" | "Query" | "Json" | "HeaderMap" | "Timing" | "Request") => {
+                return Err(syn::Error::new_spanned(
+                    &arg.ty,
+                    "#[nextrs::job]: jobs accept only Extension<T> args plus one plain \
+                     Serialize + DeserializeOwned payload argument",
+                ))
+            }
+            _ => {
+                if payload_ty.is_some() {
+                    return Err(syn::Error::new_spanned(
+                        &arg.ty,
+                        "#[nextrs::job]: at most one payload argument \
+                         (bundle multiple values into one struct)",
+                    ));
+                }
+                payload_ty = Some(&arg.ty);
+                call_order.push(CallArg::Payload);
+            }
+        }
+    }
+
+    let fallible = match &func.sig.output {
+        syn::ReturnType::Default => false,
+        syn::ReturnType::Type(_, ty) => match &**ty {
+            syn::Type::Tuple(t) if t.elems.is_empty() => false,
+            other => match last_path_ident(other).as_deref() {
+                Some("Result") => true,
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        other,
+                        "#[nextrs::job]: job functions return `()` or `Result<(), E: Display>` \
+                         — the result lives in the job row, not the call site",
+                    ))
+                }
+            },
+        },
+    };
+
+    // ---- emission.
+    // (1) The user's body, renamed. Only `__nextrs_job_run` calls it.
+    let mut impl_fn = func.clone();
+    let orig_ident = func.sig.ident.clone();
+    impl_fn.sig.ident = syn::Ident::new("__nextrs_job_impl", orig_ident.span());
+    impl_fn.attrs.push(syn::parse_quote!(#[doc(hidden)]));
+
+    // (2) The runner: JSON in, typed call, Display-stringified error out.
+    let payload_stmt = match payload_ty {
+        Some(ty) => quote! {
+            let __payload: #ty = ::nextrs::serde_json::from_value(__payload_json)
+                .map_err(|e| ::std::format!("payload deserialize: {e}"))?;
+        },
+        None => quote! { let _ = __payload_json; },
+    };
+    let ext_stmts: Vec<proc_macro2::TokenStream> = ext_tys
+        .iter()
+        .enumerate()
+        .map(|(i, ty)| {
+            let ident = quote::format_ident!("__ext{i}");
+            let ty_str = quote!(#ty).to_string();
+            quote! {
+                let #ident = match _ext.get::<#ty>() {
+                    Some(v) => v.clone(),
+                    None => return Err(::std::format!("missing extension {}", #ty_str)),
+                };
+            }
+        })
+        .collect();
+    let call_args = call_order.iter().map(|which| match which {
+        CallArg::Ext(i) => {
+            let ident = quote::format_ident!("__ext{i}");
+            quote! { ::nextrs::axum::Extension(#ident) }
+        }
+        CallArg::Payload => quote! { __payload },
+    });
+    let call = if fallible {
+        quote! {
+            match __nextrs_job_impl(#(#call_args),*).await {
+                Ok(_) => Ok(()),
+                Err(e) => Err(::std::string::ToString::to_string(&e)),
+            }
+        }
+    } else {
+        quote! { __nextrs_job_impl(#(#call_args),*).await; Ok(()) }
+    };
+
+    // (3) The enqueue wrapper under the original name — what app code calls.
+    let (wrapper_sig, payload_value) = match payload_ty {
+        Some(ty) => (
+            quote! { payload: #ty },
+            quote! { ::nextrs::serde_json::to_value(&payload)? },
+        ),
+        None => (quote! {}, quote! { ::nextrs::serde_json::Value::Null }),
+    };
+    let wrapper_doc = format!(
+        "Enqueue the `{name}` background job.\n\n\
+         Persists a job row and kicks off `POST /__nx/jobs/{name}` on this \
+         deployment; the job body runs there, behind the framework-managed \
+         `WaitUntil`, with retries and a {timeout_ms} ms timeout. Returns \
+         immediately with a [`JobHandle`](::nextrs::jobs::JobHandle)."
+    );
+
+    Ok(quote! {
+        #impl_fn
+
+        #[doc(hidden)]
+        pub async fn __nextrs_job_run(
+            __payload_json: ::nextrs::serde_json::Value,
+            _ext: &::nextrs::http::Extensions,
+        ) -> ::core::result::Result<(), ::std::string::String> {
+            #payload_stmt
+            #(#ext_stmts)*
+            #call
+        }
+
+        #[doc(hidden)]
+        pub const __NEXTRS_JOB_NAME: &::core::primitive::str = #name;
+        #[doc(hidden)]
+        pub const __NEXTRS_JOB_TIMEOUT_MS: ::core::primitive::u64 = #timeout_ms;
+        #[doc(hidden)]
+        pub const __NEXTRS_JOB_MAX_ATTEMPTS: ::core::primitive::u32 = #max_attempts;
+
+        #[doc = #wrapper_doc]
+        pub async fn #orig_ident(
+            #wrapper_sig
+        ) -> ::core::result::Result<::nextrs::jobs::JobHandle, ::nextrs::jobs::EnqueueError> {
+            ::nextrs::jobs::enqueue(
+                __NEXTRS_JOB_NAME,
+                #payload_value,
+                __NEXTRS_JOB_MAX_ATTEMPTS,
+            )
+            .await
+        }
+    })
+}
+
 /// `/api/sources/{id}/pages` → `"/api/sources/{}/pages"` — the `format!`
 /// template that substitutes path values into their `{seg}` slots.
 fn url_format_string(url: &str) -> String {
@@ -826,6 +1119,115 @@ mod tests {
         assert!(!c.contains("Option < :: nextrs :: SeedEntry >"), "{}", c);
         // …with the Timing rebuilt from _ext (no-op when absent).
         assert!(c.contains("Timing :: from_extensions (_ext)"), "{}", c);
+    }
+
+    #[test]
+    fn job_name_from_expected_paths() {
+        assert_eq!(
+            job_name_from_file("app/jobs/audit-todo/job.rs").as_deref(),
+            Some("audit-todo")
+        );
+        // Workspace-relative view of the same file.
+        assert_eq!(
+            job_name_from_file("examples/react-todos/app/jobs/audit-todo/job.rs").as_deref(),
+            Some("audit-todo")
+        );
+        // Nested names join with `/`.
+        assert_eq!(
+            job_name_from_file("app/jobs/email/welcome/job.rs").as_deref(),
+            Some("email/welcome")
+        );
+    }
+
+    #[test]
+    fn job_name_rejects_bad_paths() {
+        // job.rs directly under app/jobs/ has no name.
+        assert_eq!(job_name_from_file("app/jobs/job.rs"), None);
+        // Not under app/jobs/ at all.
+        assert_eq!(job_name_from_file("app/api/ping/route.rs"), None);
+        assert_eq!(job_name_from_file("src/main.rs"), None);
+    }
+
+    fn expand_job(args: &str, src: &str) -> Result<String, syn::Error> {
+        job_expand(args.parse().unwrap(), src.parse().unwrap(), "audit-todo")
+            .map(|ts| ts.to_string())
+    }
+
+    #[test]
+    fn job_emits_all_four_pieces() {
+        let c = expand_job(
+            "",
+            "pub async fn audit_todo(payload: AuditTodo) -> Result<(), anyhow::Error> { todo!() }",
+        )
+        .unwrap();
+        // (1) body renamed, (2) runner, (3) consts, (4) wrapper under the name.
+        assert!(c.contains("async fn __nextrs_job_impl"), "{}", c);
+        assert!(c.contains("__nextrs_job_run"), "{}", c);
+        assert!(c.contains("__NEXTRS_JOB_NAME : & :: core :: primitive :: str = \"audit-todo\""), "{}", c);
+        assert!(c.contains("__NEXTRS_JOB_TIMEOUT_MS : :: core :: primitive :: u64 = 60000u64"), "{}", c);
+        assert!(c.contains("__NEXTRS_JOB_MAX_ATTEMPTS : :: core :: primitive :: u32 = 5u32"), "{}", c);
+        assert!(c.contains("pub async fn audit_todo (payload : AuditTodo)"), "{}", c);
+        assert!(c.contains("jobs :: enqueue"), "{}", c);
+        assert!(c.contains("JobHandle"), "{}", c);
+        // Fallible body: error stringified via Display into the job row.
+        assert!(c.contains("ToString :: to_string"), "{}", c);
+    }
+
+    #[test]
+    fn job_args_override_consts() {
+        let c = expand_job(
+            "max_attempts = 3, timeout_secs = 120",
+            "pub async fn audit_todo(payload: A) { }",
+        )
+        .unwrap();
+        assert!(c.contains("__NEXTRS_JOB_TIMEOUT_MS : :: core :: primitive :: u64 = 120000u64"), "{}", c);
+        assert!(c.contains("__NEXTRS_JOB_MAX_ATTEMPTS : :: core :: primitive :: u32 = 3u32"), "{}", c);
+    }
+
+    #[test]
+    fn job_extension_args_come_from_request_extensions() {
+        let c = expand_job(
+            "",
+            "pub async fn audit_todo(Extension(ctx): Extension<TodosCtx>, payload: A) -> Result<(), E> { todo!() }",
+        )
+        .unwrap();
+        // Extension sourced from _ext at run time, missing → Err (retryable)…
+        assert!(c.contains("_ext . get :: < TodosCtx >"), "{}", c);
+        assert!(c.contains("missing extension"), "{}", c);
+        // …and the wrapper takes ONLY the payload — state never crosses enqueue.
+        assert!(c.contains("pub async fn audit_todo (payload : A)"), "{}", c);
+        // Declared arg order preserved in the impl call.
+        let ext_call = c.find("Extension (__ext0)").unwrap();
+        let payload_call = c.find("__ext0) , __payload").map(|_| ()).is_some();
+        assert!(payload_call, "{}", c);
+        let _ = ext_call;
+    }
+
+    #[test]
+    fn job_without_payload_enqueues_null() {
+        let c = expand_job("", "pub async fn audit_todo() { }").unwrap();
+        assert!(c.contains("pub async fn audit_todo ()"), "{}", c);
+        assert!(c.contains("Value :: Null"), "{}", c);
+        // Runner ignores the JSON payload.
+        assert!(c.contains("let _ = __payload_json"), "{}", c);
+    }
+
+    #[test]
+    fn job_rejects_ineligible_shapes() {
+        for (args, src, needle) in [
+            ("", "pub fn audit_todo(p: A) { }", "must be `async`"),
+            ("", "async fn audit_todo(p: A) { }", "must be `pub`"),
+            ("", "pub async fn audit_todo(w: WaitUntil, p: A) { }", "already run behind WaitUntil"),
+            ("", "pub async fn audit_todo(State(db): State<Db>, p: A) { }", "only Extension"),
+            ("", "pub async fn audit_todo(Json(b): Json<A>) { }", "only Extension"),
+            ("", "pub async fn audit_todo(a: A, b: B) { }", "at most one payload"),
+            ("", "pub async fn audit_todo(p: A) -> Json<X> { todo!() }", "return `()` or `Result"),
+            ("bogus = 1", "pub async fn audit_todo(p: A) { }", "unknown argument"),
+            ("max_attempts = \"x\"", "pub async fn audit_todo(p: A) { }", "integer literal"),
+        ] {
+            let err = expand_job(args, src).unwrap_err().to_string();
+            assert!(err.contains(needle), "src={src} err={err}");
+        }
     }
 
     #[test]

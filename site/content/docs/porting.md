@@ -64,10 +64,10 @@ Every directory under `app/` is a URL segment; the build step discovers the conv
 
 ### The generated `client/` package, and the bare-import rule
 
-`client/` is a real npm package the scaffold generates: it holds the orval config, the generated hooks, and the seed helpers, and pages import it via the `@your-app/client` alias. Two consequences:
+`client/` is a real npm workspace package the scaffold generates. Fetch functions and types are exported from `@your-app/client`; hooks and query helpers are exported from `@your-app/client/react-query`. Two consequences:
 
-- **Every bare import your `.tsx` files use must be installed in `client/package.json`.** The embedded bundler resolves imports out of `client/node_modules`; since 0.3.6 it **errors** on unresolved bare imports instead of shipping a bundle that fails at runtime. When you copy components in from the old app, carry their dependencies into `client/package.json` and `npm install` — the bundle error names the missing specifiers.
-- **Don't hand-write API types.** `route.rs` handlers annotated with `#[nextrs::api]` become an OpenAPI document, and `npm run gen` in `client/` regenerates typed React Query hooks from it. A Rust field rename breaks the TSX compile — that end-to-end check is most of the point of porting. See [Typesafe Client Generation](/docs/typesafe-client).
+- **Every bare import your `.tsx` files use must be installed in `client/package.json`.** Run `npm install` at the app root; the embedded bundler resolves the workspace's hoisted dependencies and errors on missing specifiers.
+- **Don't hand-write API types.** `route.rs` handlers annotated with `#[nextrs::api]` become an OpenAPI document. Run `npm run client:generate` at the app root after contract changes. A Rust field rename then breaks the TSX compile—the end-to-end check is most of the point of porting. See [Typesafe Client Generation](/docs/typesafe-client).
 
 ### The dev loop is `cargo dev`
 
