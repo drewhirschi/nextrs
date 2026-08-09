@@ -1,5 +1,7 @@
 import { defineConfig } from "orval";
 
+const externalBaseUrl = process.env.NEXTRS_EXTERNAL_CLIENT_BASE_URL;
+
 // Generates a typed TanStack (React) Query client from the OpenAPI document
 // `dump-openapi` writes (the same spec the app serves at /openapi.json).
 // Run `npm run gen` to refresh both.
@@ -18,4 +20,20 @@ export default defineConfig({
       prettier: false,
     },
   },
+  ...(externalBaseUrl !== undefined
+    ? {
+        external: {
+          input: "./openapi.json",
+          output: {
+            mode: "single" as const,
+            target: "./external-src/client.ts",
+            client: "fetch" as const,
+            httpClient: "fetch" as const,
+            baseUrl: externalBaseUrl,
+            clean: true,
+            prettier: false,
+          },
+        },
+      }
+    : {}),
 });

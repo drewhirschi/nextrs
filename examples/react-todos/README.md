@@ -41,6 +41,22 @@ Run that command from the workspace root. If you invoke Cargo from inside
 `examples/react-todos/`, its Vercel `.cargo/config.toml` is active; prefix the
 local run with `NEXTRS_SKIP_BUNDLE=0` so the page bundle is regenerated.
 
+### Publish a client for plain JavaScript
+
+To consume these Rust endpoints from another project, copy
+`client/nextrs.client.example.json` to `client/nextrs.client.json`, set its
+dedicated output directory and API `baseUrl`, then run:
+
+```sh
+cd client
+npm run generate:external
+```
+
+The destination receives a browser-native, React-free `client.js`, its
+`client.d.ts` type declarations, and a generated-directory marker. The command
+rebuilds the OpenAPI contract first and refuses to clean a non-empty destination
+that it did not previously generate.
+
 ## What to look at
 
 - **No fetch on load** — open the network panel: the todo list is there on

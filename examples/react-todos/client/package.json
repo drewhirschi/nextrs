@@ -9,6 +9,7 @@
     "dump": "NEXTRS_SKIP_BUNDLE=1 cargo run -p react-todos --bin dump-openapi",
     "orval": "orval --config ./orval.config.ts",
     "gen": "npm run dump && npm run orval",
+    "generate:external": "node ./scripts/generate-external.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

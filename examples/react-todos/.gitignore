@@ -3,5 +3,7 @@
 # (dist; the framework bundles page.tsx and rewrites src/generated/index.ts).
 # The Vercel build regenerates both itself (see vercel.json buildCommand).
 client/src/generated/
+client/external-src/
+client/external-dist/
 public/dist/
 Cargo.lock

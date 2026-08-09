@@ -123,6 +123,59 @@ async function archive(id: number) {
 
 Both flavors come out of the same `npm run gen` pass, and the generated barrel exports them all — new endpoints are importable immediately, with no re-export list to maintain.
 
+## Publish a plain client to another project
+
+A browser extension, CLI, or separate frontend can consume a React-free
+JavaScript client generated from the same Rust contract. Copy the example
+configuration and choose a dedicated destination plus the API origin:
+
+```bash
+cd client
+cp nextrs.client.example.json nextrs.client.json
+```
+
+```json
+{
+  "output": "../../../linkedin-challenge/extension/generated/nextrs-client",
+  "baseUrl": "https://challenge.example.com"
+}
+```
+
+Paths are resolved from `client/`. Then generate and publish:
+
+```bash
+npm run generate:external
+```
+
+That command always performs the complete contract refresh:
+
+1. builds and dumps the current Rust OpenAPI document;
+2. asks Orval for a single-file `fetch` client with no React dependencies;
+3. rebuilds the app so its internal client barrel remains current;
+4. compiles the external client to browser-native `client.js` plus `client.d.ts`;
+5. replaces the configured generated destination.
+
+The destination contains a marker file and a small ESM `package.json`. The
+publisher only cleans a non-empty directory when that marker is present, and
+refuses broad destinations such as the app root, client root, filesystem root,
+or the app's parent. Point `output` at a directory reserved exclusively for
+generated client artifacts.
+
+Plain JavaScript can import the file directly. Editors use the adjacent
+declaration file for completions and contract errors:
+
+```js
+// @ts-check
+import { getTodos } from "./generated/nextrs-client/client.js";
+
+const response = await getTodos({ status: "open" });
+```
+
+Run `npm run generate:external` after changing any annotated handler's path,
+parameters, request body, response, error response, or `operation_id`. Because
+the command begins by rebuilding and dumping the Rust contract, it cannot
+publish a client from a stale checked-in OpenAPI file.
+
 ## Why OpenAPI
 
 Direct Rust→TS type generation (`ts-rs`, `specta`) only produces *types* — you'd still hand-write the fetch layer and hooks. Going through OpenAPI lets orval generate the entire client (hooks, types, fetchers), keeps the door open to Swagger UI and non-TypeScript consumers, and the file-convention discovery removes utoipa's usual hand-maintained path list.

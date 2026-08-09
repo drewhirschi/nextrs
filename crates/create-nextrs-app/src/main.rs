@@ -490,6 +490,9 @@ fn template_files(
         ("client/package.json", client_package_json(crate_name)),
         ("client/orval.config.ts", client_orval_config_ts()),
         ("client/tsconfig.json", client_tsconfig_json(client_alias)),
+        ("client/tsconfig.external.json", client_tsconfig_external_json()),
+        ("client/nextrs.client.example.json", external_client_example_json()),
+        ("client/scripts/generate-external.mjs", external_client_script()),
         ("client/src/index.ts", client_index_ts()),
         ("client/src/nextrs-client.ts", nextrs_client_ts()),
         ("rust-toolchain.toml", rust_toolchain_toml()),
@@ -616,7 +619,7 @@ channel = "1.96.0"
 }
 
 fn gitignore() -> String {
-    "/target\n/public/dist\n/node_modules\n/client/node_modules\n.env\n".into()
+    "/target\n/public/dist\n/node_modules\n/client/node_modules\n/client/external-src\n/client/external-dist\n.env\n".into()
 }
 
 fn env_example() -> String {
@@ -1016,6 +1019,7 @@ fn client_package_json(crate_name: &str) -> String {
     "dump": "NEXTRS_SKIP_BUNDLE=1 cargo run --bin dump-openapi",
     "orval": "orval --config ./orval.config.ts",
     "gen": "npm run dump && npm run orval",
+    "generate:external": "node ./scripts/generate-external.mjs",
     "typecheck": "tsc --noEmit"
   }},
   "dependencies": {{
@@ -1038,6 +1042,8 @@ fn client_package_json(crate_name: &str) -> String {
 fn client_orval_config_ts() -> String {
     r#"import { defineConfig } from "orval";
 
+const externalBaseUrl = process.env.NEXTRS_EXTERNAL_CLIENT_BASE_URL;
+
 export default defineConfig({
   api: {
     input: "./openapi.json",
@@ -1052,9 +1058,37 @@ export default defineConfig({
       prettier: false,
     },
   },
+  ...(externalBaseUrl !== undefined
+    ? {
+        external: {
+          input: "./openapi.json",
+          output: {
+            mode: "single" as const,
+            target: "./external-src/client.ts",
+            client: "fetch" as const,
+            httpClient: "fetch" as const,
+            baseUrl: externalBaseUrl,
+            clean: true,
+            prettier: false,
+          },
+        },
+      }
+    : {}),
 });
 "#
     .into()
+}
+
+fn client_tsconfig_external_json() -> String {
+    include_str!("../templates/client/tsconfig.external.json").into()
+}
+
+fn external_client_example_json() -> String {
+    include_str!("../templates/client/nextrs.client.example.json").into()
+}
+
+fn external_client_script() -> String {
+    include_str!("../templates/client/generate-external.mjs").into()
 }
 
 fn client_tsconfig_json(client_alias: &str) -> String {
@@ -1280,6 +1314,9 @@ mod tests {
         assert!(names.contains(&"app/slow/prefetch.rs"));
         assert!(names.contains(&"app/api/ping/route.rs"));
         assert!(names.contains(&"client/orval.config.ts"));
+        assert!(names.contains(&"client/tsconfig.external.json"));
+        assert!(names.contains(&"client/nextrs.client.example.json"));
+        assert!(names.contains(&"client/scripts/generate-external.mjs"));
         assert!(!names.iter().any(|name| name.ends_with(".html")));
 
         let cargo_config = files
@@ -1331,7 +1368,18 @@ mod tests {
             .1
             .as_str();
         assert!(package_json.contains(r#""gen": "npm run dump && npm run orval""#));
+        assert!(package_json.contains(r#""generate:external""#));
         assert!(package_json.contains(r#""orval": "^7.3.0""#));
+
+        let external_script = files
+            .iter()
+            .find(|(name, _)| *name == "client/scripts/generate-external.mjs")
+            .unwrap()
+            .1
+            .as_str();
+        assert!(external_script.contains(".nextrs-generated-client"));
+        assert!(external_script.contains("refusing to clean unmarked"));
+        assert!(external_script.contains("client.d.ts"));
 
         // The client package index re-exports the generated barrel wholesale —
         // the framework rewrites ./generated/index.ts on every build, so no
