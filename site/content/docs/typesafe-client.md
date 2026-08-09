@@ -7,6 +7,10 @@ order = 4
 
 nextrs can generate a fully-typed TypeScript client — TanStack (React) Query hooks with typed request and response shapes — directly from your `route.rs` handlers. Rename a field in Rust and the TypeScript call sites stop compiling. The pipeline is OpenAPI-based:
 
+For a smaller first example, begin with
+[Client Code Generation, Step by Step](/docs/client-codegen). This page is the
+complete reference.
+
 ```
 route.rs (#[nextrs::api])  ─codegen→  generated_openapi()
         │                                     │

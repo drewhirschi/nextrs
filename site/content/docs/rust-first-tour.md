@@ -163,6 +163,7 @@ Every step earns the next abstraction. Rust remains the source of truth for
 the backend contract, while the frontend can stay tiny or grow into a full
 interactive application without duplicating that contract.
 
-Next, read [Typesafe Client Generation](/docs/typesafe-client) for the complete
-generation setup and [Server Data in React](/docs/react-server-props) for
-prefetching, streaming, and cache-key details.
+Next, read [Client Code Generation, Step by Step](/docs/client-codegen) for the
+smallest complete client workflow, [Typesafe Client Generation](/docs/typesafe-client)
+for the full reference, and [Server Data in React](/docs/react-server-props)
+for prefetching, streaming, and cache-key details.

@@ -1018,7 +1018,7 @@ fn client_package_json(crate_name: &str) -> String {
     "postinstall": "ln -sfn client/node_modules ../node_modules",
     "dump": "NEXTRS_SKIP_BUNDLE=1 cargo run --bin dump-openapi",
     "orval": "orval --config ./orval.config.ts",
-    "gen": "npm run dump && npm run orval",
+    "gen": "npm run dump && npm run orval && cargo build",
     "generate:external": "node ./scripts/generate-external.mjs",
     "typecheck": "tsc --noEmit"
   }},
@@ -1367,7 +1367,9 @@ mod tests {
             .unwrap()
             .1
             .as_str();
-        assert!(package_json.contains(r#""gen": "npm run dump && npm run orval""#));
+        assert!(package_json.contains(
+            r#""gen": "npm run dump && npm run orval && cargo build""#
+        ));
         assert!(package_json.contains(r#""generate:external""#));
         assert!(package_json.contains(r#""orval": "^7.3.0""#));
 
