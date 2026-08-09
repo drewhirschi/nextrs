@@ -71,16 +71,17 @@ The same build-time discovery that wires your routes collects the annotated hand
 
 ## Generate the client
 
-The client directory holds the orval config and the committed generated output:
+Install the nextrs Cargo command once, then generate from the application root:
 
 ```bash
-cd site/client
-npm install      # first time only
-npm run gen      # dump openapi.json from Rust, then run orval
-npm run typecheck
+cargo install cargo-nextrs
+cargo nextrs client generate
 ```
 
-Both `openapi.json` and `src/generated/**` are committed, so contract changes show up in the diff. Rerun `npm run gen` whenever an annotated `route.rs` changes.
+The Cargo command installs JavaScript generator dependencies when needed, dumps
+the Rust OpenAPI document, runs Orval, and rebuilds the generated barrel. Both
+`openapi.json` and `src/generated/**` are committed, so contract changes show
+up in the diff. Rerun it whenever an annotated `route.rs` changes.
 
 ## Use the hooks
 
@@ -125,7 +126,7 @@ async function archive(id: number) {
 }
 ```
 
-Both flavors come out of the same `npm run gen` pass, and the generated barrel exports them all — new endpoints are importable immediately, with no re-export list to maintain.
+Both flavors come out of the same generation pass, and the generated barrel exports them all — new endpoints are importable immediately, with no re-export list to maintain.
 
 ## Publish a plain client to another project
 
@@ -145,10 +146,10 @@ cp nextrs.client.example.json nextrs.client.json
 }
 ```
 
-Paths are resolved from `client/`. Then generate and publish:
+Paths are resolved from `client/`. Then generate and publish from the app root:
 
 ```bash
-npm run generate:external
+cargo nextrs client generate
 ```
 
 That command always performs the complete contract refresh:
@@ -175,7 +176,7 @@ import { getTodos } from "./generated/nextrs-client/client.js";
 const response = await getTodos({ status: "open" });
 ```
 
-Run `npm run generate:external` after changing any annotated handler's path,
+Run `cargo nextrs client generate` after changing any annotated handler's path,
 parameters, request body, response, error response, or `operation_id`. Because
 the command begins by rebuilding and dumping the Rust contract, it cannot
 publish a client from a stale checked-in OpenAPI file.

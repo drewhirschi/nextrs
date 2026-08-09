@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/nextrs",
     "crates/nextrs-macros",
+    "crates/cargo-nextrs",
     "crates/cargo-nextrs-dev",
     "crates/create-nextrs-app",
     "site",

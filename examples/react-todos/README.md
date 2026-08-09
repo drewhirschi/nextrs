@@ -25,8 +25,9 @@ public/dist/                prebuilt page.tsx bundle (committed; served on Verce
 ## Run it
 
 ```sh
-# 1. Install the client deps + generate the typed hooks (first time / after API changes)
-cd client && npm install && npm run gen && cd ..
+# 1. Install the nextrs CLI once, then generate from the Rust API contract
+cargo install cargo-nextrs
+cargo nextrs client generate
 
 # 2. Run the app
 cargo run -p react-todos
@@ -34,7 +35,7 @@ cargo run -p react-todos
 ```
 
 `cargo build` bundles `page.tsx` (via rolldown, from inside the build script)
-into `public/dist/`; `npm run gen` regenerates `client/` from the app's
+into `public/dist/`; `cargo nextrs client generate` regenerates `client/` from the app's
 OpenAPI document.
 
 Run that command from the workspace root. If you invoke Cargo from inside
@@ -48,8 +49,7 @@ To consume these Rust endpoints from another project, copy
 dedicated output directory and API `baseUrl`, then run:
 
 ```sh
-cd client
-npm run generate:external
+cargo nextrs client generate
 ```
 
 The destination receives a browser-native, React-free `client.js`, its
@@ -89,7 +89,7 @@ that make it work:
 
 ```sh
 # 1. Regenerate the client + a fresh *minified* bundle (release profile minifies)
-cd client && npm install && npm run gen && cd ..
+cargo nextrs client generate
 cargo build --release -p react-todos          # rebuilds public/dist/ minified
 
 # 2. Deploy from THIS directory (it builds standalone via the published crate)

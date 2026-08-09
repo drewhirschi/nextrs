@@ -30,13 +30,13 @@ mysite/
 
 ```toml
 [dependencies]
-nextrs = "0.4"
+nextrs = "0.5"
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 askama = "0.15"
 
 [build-dependencies]
-nextrs = { version = "0.3", features = ["build"] }
+nextrs = { version = "0.5", features = ["build"] }
 ```
 
 `build.rs`:
@@ -106,7 +106,7 @@ A route can render a React component instead. A `page.tsx` (plus optional `layou
 
 ```toml
 [build-dependencies]
-nextrs = { version = "0.3", features = ["build", "tsx"] }
+nextrs = { version = "0.5", features = ["build", "tsx"] }
 ```
 
 `build.rs` adds a bundle step alongside `emit_registry`:

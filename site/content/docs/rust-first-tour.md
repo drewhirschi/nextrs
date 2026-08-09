@@ -82,7 +82,7 @@ location, so it is not repeated in the annotation.
 After changing the contract, generate the client from the application root:
 
 ```bash
-npm run client:generate
+cargo nextrs client generate
 ```
 
 ## 4. Call Rust directly from TypeScript

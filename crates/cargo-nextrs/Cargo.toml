@@ -1,0 +1,12 @@
+[package]
+name = "cargo-nextrs"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+description = "Cargo command-line tools for nextrs applications."
+repository = "https://github.com/drewhirschi/nextrs"
+
+[[bin]]
+name = "cargo-nextrs"
+path = "src/main.rs"

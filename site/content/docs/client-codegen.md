@@ -45,12 +45,16 @@ document; it does not introduce a separate RPC runtime.
 
 ## 2. Generate the client
 
-From the app's `client/` directory:
+Install the nextrs Cargo command once, then generate from the app root:
 
 ```bash
-npm install       # first time only
-npm run gen
+cargo install cargo-nextrs
+cargo nextrs client generate
 ```
+
+The Cargo command installs the client generator dependencies when they are
+missing. Orval and TypeScript still do the OpenAPI-to-JavaScript work, but they
+are implementation details behind one project-level command.
 
 The command follows this path:
 
@@ -126,8 +130,7 @@ pub struct Greeting {
 Regenerate:
 
 ```bash
-npm run gen
-npm run typecheck
+cargo nextrs client generate
 ```
 
 The old TypeScript expression now fails at the correct line:
@@ -185,11 +188,14 @@ output directory in `client/nextrs.client.json`:
 }
 ```
 
-Then publish it:
+Then run the same command from the app root:
 
 ```bash
-npm run generate:external
+cargo nextrs client generate
 ```
+
+When `client/nextrs.client.json` exists, the command regenerates the internal
+client and publishes the external client in the same pass.
 
 The destination receives:
 
@@ -224,8 +230,7 @@ does not come from a stale OpenAPI file.
 After changing an annotated Rust API contract, regenerate its clients:
 
 ```bash
-npm run gen                 # client used inside the nextrs app
-npm run generate:external   # JS + declarations published elsewhere
+cargo nextrs client generate
 ```
 
 The external command includes the full Rust-contract refresh, so it can be used

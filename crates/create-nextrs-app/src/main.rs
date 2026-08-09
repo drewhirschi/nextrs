@@ -139,7 +139,8 @@ fn scaffold(target: &Path, nextrs_path: Option<&Path>) -> io::Result<()> {
         println!("  cd {}", display_cd_path(target));
     }
     println!("  {}   # required: installs the `cargo dev` runner", dep.dev_tool_install_command());
-    println!("  cd client && npm install && npm run gen && cd ..   # generate the typed client");
+    println!("  {}   # installs `cargo nextrs`", dep.client_cli_install_command());
+    println!("  cargo nextrs client generate   # generate the typed client");
     println!("  cargo dev   # build + run with live reload");
     println!();
     println!("Tip: if `cargo dev` errors with \"no such command: nextrs-dev\", run the install line above.");
@@ -284,11 +285,11 @@ fn print_adopt_report(
     println!();
     println!("  Then, in order:");
     println!("    cargo install cargo-nextrs-dev              # the `cargo dev` runner");
-    println!("    cd client && npm install && cd ..           # bundler resolves imports from client/node_modules");
+    println!("    cargo install cargo-nextrs                  # client generation command");
     println!("    cargo dev                                   # build + run with live reload");
     println!();
     println!("  Add API routes as app/**/route.rs with #[nextrs::api], then generate the");
-    println!("  typed client: cd client && npm run gen");
+    println!("  typed client: cargo nextrs client generate");
     println!();
     println!("  Porting guide (strangler pattern, conventions, gotchas):");
     println!("    https://nextrs-docs.vercel.app/docs/porting");
@@ -446,6 +447,22 @@ impl DependencySource {
             }
         }
     }
+
+    fn client_cli_install_command(&self) -> String {
+        match self {
+            Self::Version => "cargo install cargo-nextrs".to_string(),
+            Self::Path(path) => {
+                let cli = path
+                    .parent()
+                    .map(|parent| parent.join("cargo-nextrs"))
+                    .unwrap_or_else(|| PathBuf::from("cargo-nextrs"));
+                format!(
+                    "cargo install --path {} --force",
+                    display_shell_path(&cli)
+                )
+            }
+        }
+    }
 }
 
 fn toml_string(value: &str) -> String {
@@ -544,7 +561,8 @@ seams for app code are `app/**`, `client/src/index.ts`, and
   and errors on unresolved bare imports. Adding a dependency means adding it
   there and running `npm install` in `client/`.
 - **Never hand-write API types.** After changing `#[nextrs::api]` routes, run
-  `npm run gen` in `client/` to regenerate the typed hooks from OpenAPI.
+  `cargo nextrs client generate` at the app root. The Cargo command owns the
+  OpenAPI, Orval, build, and optional external-client publishing steps.
   Guide: <https://nextrs-docs.vercel.app/docs/typesafe-client>
 
 ## Dev loop
