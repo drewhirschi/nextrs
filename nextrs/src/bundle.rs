@@ -417,7 +417,11 @@ fn loading_entry_wrapper(loading_path: &Path) -> String {
 import {{ createRoot }} from "react-dom/client";
 import Loading from "{loading}";
 
-createRoot(document.getElementById("__nx_loading_root__")!).render(<Loading />);
+// This module is imported asynchronously from the loading slot, so a page whose
+// props resolve quickly can run the swap script (which replaces the slot) before
+// we evaluate. The root is then already gone and there is nothing to render into.
+const root = document.getElementById("__nx_loading_root__");
+if (root) createRoot(root).render(<Loading />);
 "#,
         loading = loading_path.display(),
     )
@@ -762,6 +766,8 @@ mod tests {
         let s = loading_entry_wrapper(Path::new("/abs/app/loading.tsx"));
         assert!(s.contains("__nx_loading_root__"));
         assert!(s.contains("import Loading from \"/abs/app/loading.tsx\";"));
+        // Guarded: the swap script can remove the root before this module runs.
+        assert!(s.contains("if (root) createRoot(root).render(<Loading />);"));
     }
 
     #[test]
