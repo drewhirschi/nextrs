@@ -278,7 +278,23 @@ fn print_adopt_report(
     if skipped(".gitignore") {
         println!();
         println!("  .gitignore was left untouched — make sure it covers:");
-        println!("  /target  /public/dist  /node_modules  /client/node_modules  .env");
+        println!("  /target  /public/dist  /node_modules  .env");
+    }
+    if skipped("tsconfig.json") {
+        println!();
+        println!("  tsconfig.json was left untouched. Merge the nextrs TypeScript settings:");
+        println!(
+            "    - include app/**/*.js, app/**/*.jsx, app/**/*.ts, app/**/*.tsx, client/src/**/*.ts, client/src/**/*.tsx, and client/orval.config.ts"
+        );
+        println!("    - set jsx to react-jsx and moduleResolution to Bundler");
+        println!(
+            "  Keep one root config so editors opened in app/ see the generated client types."
+        );
+    }
+    if skipped("package.json") {
+        println!();
+        println!("  package.json was left untouched. Add `client` to its npm workspaces");
+        println!("  and depend on @{crate_name}/client via `file:./client`, then run npm install.");
     }
 
     println!();
@@ -480,6 +496,8 @@ fn template_files(
         ("api/index.rs", api_index_rs()),
         ("vercel.json", vercel_json()),
         ("scripts/deploy-prebuilt.sh", deploy_prebuilt_sh()),
+        ("package.json", root_package_json(crate_name)),
+        ("tsconfig.json", root_tsconfig_json()),
         ("app/layout.tsx", layout_tsx()),
         ("app/page.tsx", page_tsx(client_alias)),
         ("app/slow/page.tsx", slow_page_tsx(client_alias)),
@@ -488,7 +506,6 @@ fn template_files(
         ("app/api/ping/route.rs", ping_route_rs()),
         ("client/package.json", client_package_json(crate_name)),
         ("client/orval.config.ts", client_orval_config_ts()),
-        ("client/tsconfig.json", client_tsconfig_json(client_alias)),
         ("client/tsconfig.external.json", client_tsconfig_external_json()),
         ("client/nextrs.client.example.json", external_client_example_json()),
         ("client/scripts/generate-external.mjs", external_client_script()),
@@ -536,12 +553,12 @@ seams for app code are `app/**`, `client/src/index.ts`, and
 
 ## The client package and the bare-import rule
 
-`client/` is a real npm package; pages import it as `{client_alias}`.
+`client/` is a real npm workspace package; pages import it as `{client_alias}`.
 
 - **Every bare import used by any `.tsx` file must be installed in
-  `client/package.json`** — the bundler resolves from `client/node_modules`
-  and errors on unresolved bare imports. Adding a dependency means adding it
-  there and running `npm install` in `client/`.
+  `client/package.json`** — the bundler resolves from the workspace's root
+  `node_modules` and errors on unresolved bare imports. Add dependencies to
+  the client manifest, then run `npm install` at the app root.
 - **Never hand-write API types.** After changing `#[nextrs::api]` routes, run
   `cargo nextrs client generate` at the app root. The Cargo command owns the
   OpenAPI, Orval, build, and optional external-client publishing steps.
@@ -619,7 +636,7 @@ channel = "1.96.0"
 }
 
 fn gitignore() -> String {
-    "/target\n/public/dist\n/node_modules\n/client/node_modules\n/client/external-src\n/client/external-dist\n.env\n".into()
+    "/target\n/public/dist\n/node_modules\n/client/external-src\n/client/external-dist\n.env\n".into()
 }
 
 fn env_example() -> String {
@@ -1011,13 +1028,18 @@ fn client_package_json(crate_name: &str) -> String {
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "exports": {{
+    ".": {{
+      "types": "./src/index.ts",
+      "import": "./src/index.ts"
+    }}
+  }},
   "scripts": {{
-    "postinstall": "ln -sfn client/node_modules ../node_modules",
     "dump": "NEXTRS_SKIP_BUNDLE=1 cargo run --bin dump-openapi",
     "orval": "orval --config ./orval.config.ts",
     "gen": "npm run dump && npm run orval && cargo build",
     "generate:external": "node ./scripts/generate-external.mjs",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --project ../tsconfig.json"
   }},
   "dependencies": {{
     "@tanstack/react-query": "^5.62.0",
@@ -1033,6 +1055,24 @@ fn client_package_json(crate_name: &str) -> String {
   }}
 }}
 "#
+    )
+}
+
+fn root_package_json(crate_name: &str) -> String {
+    format!(
+        r#"{{
+  "name": "{crate_name}-app",
+  "private": true,
+  "workspaces": ["client"],
+  "scripts": {{
+    "client:generate": "npm run gen --workspace=@{crate_name}/client",
+    "typecheck": "tsc --project tsconfig.json"
+  }},
+  "dependencies": {{
+    "@{crate_name}/client": "file:./client"
+  }}
+}}
+"#,
     )
 }
 
@@ -1088,10 +1128,9 @@ fn external_client_script() -> String {
     include_str!("../templates/client/generate-external.mjs").into()
 }
 
-fn client_tsconfig_json(client_alias: &str) -> String {
-    format!(
-        r#"{{
-  "compilerOptions": {{
+fn root_tsconfig_json() -> String {
+    r#"{
+  "compilerOptions": {
     "target": "ES2020",
     "lib": ["ES2020", "DOM", "DOM.Iterable"],
     "module": "ESNext",
@@ -1102,14 +1141,21 @@ fn client_tsconfig_json(client_alias: &str) -> String {
     "skipLibCheck": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-    "paths": {{
-      "{client_alias}": ["./src/index.ts"]
-    }}
-  }},
-  "include": ["src", "../app/**/*.tsx"]
-}}
+    "allowJs": true,
+    "checkJs": true
+  },
+  "include": [
+    "app/**/*.js",
+    "app/**/*.jsx",
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "client/src/**/*.ts",
+    "client/src/**/*.tsx",
+    "client/orval.config.ts"
+  ]
+}
 "#
-    )
+    .into()
 }
 
 fn client_index_ts() -> String {
@@ -1302,6 +1348,8 @@ mod tests {
         let files = template_files("demo", "@demo/client", &DependencySource::Version);
         let names: Vec<_> = files.iter().map(|(name, _)| *name).collect();
         assert!(names.contains(&".cargo/config.toml"));
+        assert!(names.contains(&"tsconfig.json"));
+        assert!(names.contains(&"package.json"));
         assert!(names.contains(&"src/bin/dump-openapi.rs"));
         assert!(names.contains(&"api/index.rs"));
         assert!(names.contains(&"vercel.json"));
@@ -1311,6 +1359,7 @@ mod tests {
         assert!(names.contains(&"app/slow/prefetch.rs"));
         assert!(names.contains(&"app/api/ping/route.rs"));
         assert!(names.contains(&"client/orval.config.ts"));
+        assert!(!names.contains(&"client/tsconfig.json"));
         assert!(names.contains(&"client/tsconfig.external.json"));
         assert!(names.contains(&"client/nextrs.client.example.json"));
         assert!(names.contains(&"client/scripts/generate-external.mjs"));
@@ -1369,6 +1418,31 @@ mod tests {
         ));
         assert!(package_json.contains(r#""generate:external""#));
         assert!(package_json.contains(r#""orval": "^7.3.0""#));
+        assert!(package_json.contains(r#""typecheck": "tsc --project ../tsconfig.json""#));
+        assert!(package_json.contains(r#""types": "./src/index.ts""#));
+
+        let root_package = files
+            .iter()
+            .find(|(name, _)| *name == "package.json")
+            .unwrap()
+            .1
+            .as_str();
+        assert!(root_package.contains(r#""workspaces": ["client"]"#));
+        assert!(root_package.contains(r#""@demo/client": "file:./client""#));
+
+        let tsconfig = files
+            .iter()
+            .find(|(name, _)| *name == "tsconfig.json")
+            .unwrap()
+            .1
+            .as_str();
+        assert!(!tsconfig.contains(r#""paths""#));
+        assert!(tsconfig.contains(r#""allowJs": true"#));
+        assert!(tsconfig.contains(r#""checkJs": true"#));
+        assert!(tsconfig.contains(r#""app/**/*.js""#));
+        assert!(tsconfig.contains(r#""app/**/*.tsx""#));
+        assert!(tsconfig.contains(r#""client/src/**/*.ts""#));
+        assert!(tsconfig.contains(r#""client/src/**/*.tsx""#));
 
         let external_script = files
             .iter()

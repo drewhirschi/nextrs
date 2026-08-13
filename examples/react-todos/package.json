@@ -1,0 +1,12 @@
+{
+  "name": "react-todos-app",
+  "private": true,
+  "workspaces": ["client"],
+  "scripts": {
+    "client:generate": "npm run gen --workspace=@react-todos/client",
+    "typecheck": "tsc --project tsconfig.json"
+  },
+  "dependencies": {
+    "@react-todos/client": "file:./client"
+  }
+}

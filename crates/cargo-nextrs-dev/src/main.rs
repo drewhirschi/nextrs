@@ -24,9 +24,9 @@ const WATCH_PATHS: &[&str] = &[
     "client/package-lock.json",
     "client/package.json",
     "client/src",
-    "client/tsconfig.json",
     "public",
     "src",
+    "tsconfig.json",
 ];
 
 const DEFAULT_IGNORES: &[&str] = &[

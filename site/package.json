@@ -1,0 +1,12 @@
+{
+  "name": "nextrs-site",
+  "private": true,
+  "workspaces": ["client"],
+  "scripts": {
+    "client:generate": "npm run gen --workspace=@site/client",
+    "typecheck": "tsc --project tsconfig.json"
+  },
+  "dependencies": {
+    "@site/client": "file:./client"
+  }
+}

@@ -63,7 +63,7 @@ pub struct BundleConfig<'a> {
     /// of the built-in `@/*` → `<client_dir>/src/*` (which makes shadcn-style
     /// `@/lib/utils` / `@/components/ui/button` imports resolve). Replacements
     /// are relative to `client_dir`. Wildcard (`@/*` → `lib/*`) and prefix
-    /// (`~` → `vendor`) forms both work; mirror them in `client/tsconfig.json`
+    /// (`~` → `vendor`) forms both work; mirror them in the root `tsconfig.json`
     /// `paths` so `tsc` and the shadcn CLI agree with the bundler.
     pub aliases: &'a [(&'a str, &'a str)],
 }
@@ -143,12 +143,15 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<BundleManifest> {
         return Ok(manifest);
     }
 
-    let node_modules = client_dir.join("node_modules");
-    if !node_modules.is_dir() {
+    let node_modules: Vec<_> = client_dir
+        .ancestors()
+        .map(|dir| dir.join("node_modules"))
+        .filter(|dir| dir.is_dir())
+        .collect();
+    if node_modules.is_empty() {
         return Err(std::io::Error::other(format!(
-            "nextrs: page.tsx pages found but {} is missing — run `npm install` in {}",
-            node_modules.display(),
-            client_dir.display()
+            "nextrs: page.tsx pages found but no node_modules directory is available — run `npm install` in {}",
+            manifest_dir.display()
         )));
     }
 
@@ -1228,7 +1231,14 @@ fn run_bundler(
         ),
         resolve: Some(rolldown::ResolveOptions {
             alias: Some(build_aliases(client_dir, client_alias, user_aliases)),
-            modules: Some(vec![client_dir.join("node_modules").display().to_string()]),
+            modules: Some(
+                client_dir
+                    .ancestors()
+                    .map(|dir| dir.join("node_modules"))
+                    .filter(|dir| dir.is_dir())
+                    .map(|dir| dir.display().to_string())
+                    .collect(),
+            ),
             // Prefix-alias substitution (`@/*`, `@workspace/x/*`) yields
             // extension-less paths (e.g. `.../src/errors`); without explicit TS
             // extensions the resolver can't find `errors.ts`, so the specifier
@@ -1314,9 +1324,24 @@ fn run_bundler(
     Ok(entries)
 }
 
+/// How long an asset that a newer build no longer emits is kept on disk.
+///
+/// Deleting orphans the moment a new build lands is wrong, because two things
+/// still reference them: a running server (asset URLs are compiled into the
+/// binary through `nextrs_assets.rs`, not read from the manifest per request)
+/// and any open browser tab. Both then 404 on a file that existed a second
+/// ago — "Failed to load script /dist/__app_shell__-<hash>.js", typically
+/// minutes after an apparently unrelated build, which reads like a cache bug
+/// and sends you looking in the wrong place.
+///
+/// Filenames are content-addressed, so retaining the old ones is safe: they
+/// simply become unreferenced. See `docs/upstream-plans/dist-asset-gc.md`.
+const ORPHAN_RETENTION: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
 /// Mirror `src` into `dst`, writing a file only when its bytes differ
 /// (temp-file-then-rename so concurrent identical builds can't tear), and
-/// pruning anything in `dst` that `src` no longer has.
+/// pruning anything in `dst` that `src` no longer has *and* that has aged past
+/// [`ORPHAN_RETENTION`].
 fn mirror_by_content(src: &Path, dst: &Path) -> std::io::Result<()> {
     use std::collections::HashSet;
 
@@ -1341,12 +1366,38 @@ fn mirror_by_content(src: &Path, dst: &Path) -> std::io::Result<()> {
         if seen.contains(&entry.file_name()) {
             continue;
         }
-        let path = entry.path();
-        if entry.file_type()?.is_dir() {
-            std::fs::remove_dir_all(&path)?;
-        } else {
-            std::fs::remove_file(&path)?;
+        prune_expired_orphan(&entry.path())?;
+    }
+    Ok(())
+}
+
+/// Remove an orphaned path once it is older than [`ORPHAN_RETENTION`].
+///
+/// Directories recurse so a retained file keeps its parent alive; a directory
+/// is removed only once it is actually empty. An unreadable mtime is treated as
+/// "keep" — retaining a stale asset costs disk, deleting a live one breaks a
+/// running server.
+fn prune_expired_orphan(path: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+
+    if metadata.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            prune_expired_orphan(&entry?.path())?;
         }
+        if std::fs::read_dir(path)?.next().is_none() {
+            std::fs::remove_dir(path)?;
+        }
+        return Ok(());
+    }
+
+    let expired = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age > ORPHAN_RETENTION);
+
+    if expired {
+        std::fs::remove_file(path)?;
     }
     Ok(())
 }
@@ -1465,6 +1516,52 @@ mod tests {
         assert_eq!(std::fs::read(&p).unwrap(), b"diff");
     }
 
+    /// A fresh orphan is what a running server and open tabs are still asking
+    /// for, so mirroring must not delete it. See `dist-asset-gc.md`.
+    #[test]
+    fn mirror_keeps_recent_orphans_and_prunes_aged_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("staging");
+        let dst = tmp.path().join("dist");
+        std::fs::create_dir_all(src.join("chunks")).unwrap();
+        std::fs::create_dir_all(dst.join("chunks")).unwrap();
+
+        // The new build's output.
+        std::fs::write(src.join("app-new.js"), b"new").unwrap();
+        std::fs::write(src.join("chunks/c-new.js"), b"new chunk").unwrap();
+
+        // A previous build's output, still present in dist.
+        std::fs::write(dst.join("app-old.js"), b"old").unwrap();
+        std::fs::write(dst.join("chunks/c-old.js"), b"old chunk").unwrap();
+
+        // ...plus one orphan aged well past the retention window.
+        let stale = dst.join("app-ancient.js");
+        std::fs::write(&stale, b"ancient").unwrap();
+        let long_ago = std::time::SystemTime::now() - (ORPHAN_RETENTION * 2);
+        std::fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+
+        mirror_by_content(&src, &dst).unwrap();
+
+        assert!(dst.join("app-new.js").exists(), "new output is mirrored");
+        assert!(
+            dst.join("app-old.js").exists(),
+            "a recent orphan survives — a running server still serves its URL"
+        );
+        assert!(
+            dst.join("chunks/c-old.js").exists(),
+            "recent orphans survive inside subdirectories too"
+        );
+        assert!(
+            !stale.exists(),
+            "an orphan past the retention window is pruned"
+        );
+    }
+
     #[test]
     fn stylesheet_is_copied_under_a_content_addressed_name() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1512,7 +1609,7 @@ mod tests {
     }
 
     #[test]
-    fn mirror_prunes_and_copies() {
+    fn mirror_copies_into_dst() {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("src");
         let dst = tmp.path().join("dst");
@@ -1525,7 +1622,10 @@ mod tests {
         mirror_by_content(&src, &dst).unwrap();
         assert_eq!(std::fs::read(dst.join("a.js")).unwrap(), b"a");
         assert_eq!(std::fs::read(dst.join("chunks/shared.js")).unwrap(), b"s");
-        assert!(!dst.join("stale.js").exists());
+        // `stale.js` deliberately survives: it was written moments ago, so a
+        // running server or an open tab may still reference it. Aging it out is
+        // covered by `mirror_keeps_recent_orphans_and_prunes_aged_ones`.
+        assert!(dst.join("stale.js").exists());
     }
 
     #[test]

@@ -10,9 +10,16 @@
     "skipLibCheck": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-    "paths": {
-      "@react-todos/client": ["./src/index.ts"]
-    }
+    "allowJs": true,
+    "checkJs": true
   },
-  "include": ["src", "orval.config.ts", "../app/**/*.tsx"]
+  "include": [
+    "app/**/*.js",
+    "app/**/*.jsx",
+    "app/**/*.ts",
+    "app/**/*.tsx",
+    "client/src/**/*.ts",
+    "client/src/**/*.tsx",
+    "client/orval.config.ts"
+  ]
 }
