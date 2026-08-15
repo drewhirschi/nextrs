@@ -3,7 +3,7 @@
 - **Reported-in:** design discussion (2026-08-14), building on linkedin-challenge's
   responses-inference report and onenote-extractor's fallible-seeding report
 - **Date:** 2026-08-14
-- **Status:** open
+- **Status:** fixed in 0bad81e
 
 ## Problem
 
