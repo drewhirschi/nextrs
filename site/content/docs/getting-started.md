@@ -135,11 +135,15 @@ export function Greeting() {
 }
 ```
 
-After changing an annotated endpoint, regenerate from the project root:
+When `cargo dev` is running, changes to annotated endpoints automatically
+refresh the generated client. Production builds regenerate it through the
+configured build process as well, so client generation is not normally a step
+you need to think about.
+
+To refresh the client without starting the application, you can run:
 
 ```bash title="Terminal"
-cargo nextrs client generate
-# equivalent: nextrs client generate
+cargo nextrs client generate # or: nextrs client generate
 ```
 
 `.nextrs/client` is a genuine npm workspace dependency linked into root
