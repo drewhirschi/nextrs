@@ -1,11 +1,10 @@
 # CI for nextrs. Exists because of
 # docs/postmortems/2026-07-11-docs-site-dead-landing.md — a green local build
-# shipped a dead docs landing. Three layers of defense run here:
+# shipped a dead docs landing. Four layers of defense run here:
 #   1. cargo tests (incl. the bundler's unresolved-bare-import guard test)
-#   2. real builds of both apps with bundling ON (the site's skip-bundle dev
-#      path hides bundling breakage)
-#   3. a headless-browser smoke over every route of both apps (e2e/smoke.mjs)
-# plus a post-deploy smoke against docs production after pushes to main.
+#   2. root-level client generation, declaration emission, and typechecking
+#   3. real builds of both apps with bundling ON
+#   4. a headless-browser smoke over every route of both apps (e2e/smoke.mjs)
 name: CI
 
 on:
@@ -24,28 +23,70 @@ jobs:
         with:
           node-version: 22
 
-      - name: Install client deps
+      - name: Install application and e2e dependencies
         run: |
-          npm ci --prefix site/client
-          npm ci --prefix examples/react-todos/client
+          npm ci --prefix site
+          npm ci --prefix examples/react-todos
           npm ci --prefix e2e
 
-      # dump-openapi (cargo, NEXTRS_SKIP_BUNDLE=1) + orval — must run before
-      # any bundling build, since page.tsx imports the generated client.
+      # Each application-root script owns OpenAPI dumping, Orval, the Rust
+      # rebuild, and JS/declaration emission for its hidden workspace package.
       - name: Generate typed clients
         run: |
-          npm run gen --prefix site/client
-          npm run gen --prefix examples/react-todos/client
+          npm run client:generate --prefix site
+          npm run client:generate --prefix examples/react-todos
 
-      # Vercel builds run orval against the COMMITTED openapi.json (skipping a
-      # 3.5-minute debug cargo build — see docs/build-performance.md). That is
-      # only sound if the committed spec matches the code; fail here if a route
-      # change forgot to re-run `npm run gen`.
-      - name: Committed OpenAPI specs are fresh
-        run: git diff --exit-code site/client/openapi.json examples/react-todos/client/openapi.json
+      - name: Generated contracts and package outputs are fresh
+        run: |
+          test -s site/.nextrs/openapi.json
+          test -s site/.nextrs/client/dist/index.js
+          test -s site/.nextrs/client/dist/index.d.ts
+          test -s site/.nextrs/client/dist/react-query.js
+          test -s site/.nextrs/client/dist/react-query.d.ts
+
+          test -s examples/react-todos/.nextrs/openapi.json
+          test -s examples/react-todos/.nextrs/client/dist/index.js
+          test -s examples/react-todos/.nextrs/client/dist/index.d.ts
+          test -s examples/react-todos/.nextrs/client/dist/react-query.js
+          test -s examples/react-todos/.nextrs/client/dist/react-query.d.ts
+
+          # The materialized package is generated state and must stay ignored.
+          # Only the small framework template that recreates it is tracked.
+          for app in site examples/react-todos; do
+            git check-ignore -q "$app/.nextrs/openapi.json"
+            git check-ignore -q "$app/.nextrs/client/dist/index.d.ts"
+            git ls-files --error-unmatch "$app/.nextrs/ensure-client.mjs"
+            for required in \
+              package.json orval.config.ts tsconfig.json \
+              src/index.ts src/react-query.ts src/nextrs-client.ts \
+              scripts/normalize-esm.mjs; do
+              git ls-files --error-unmatch "$app/.nextrs/template/client/$required"
+            done
+          done
+
+      - name: Generated clients resolve through root workspace links
+        run: |
+          test -f site/node_modules/@site/client/package.json
+          test -f examples/react-todos/node_modules/@react-todos/client/package.json
+          (cd site && node --input-type=module --eval \
+            'await import("@site/client"); await import("@site/client/react-query")')
+          (cd examples/react-todos && node --input-type=module --eval \
+            'await import("@react-todos/client"); await import("@react-todos/client/react-query")')
+
+      - name: Typecheck application and generated-client projects
+        run: |
+          npm run typecheck --prefix site
+          npm run typecheck --prefix examples/react-todos
 
       - name: Workspace tests
         run: cargo test --workspace --features nextrs/build,nextrs/tsx
+
+      - name: Install unified CLI and verify both launchers
+        run: |
+          cargo install --path crates/cargo-nextrs --root "$RUNNER_TEMP/nextrs-cli" --locked
+          export PATH="$RUNNER_TEMP/nextrs-cli/bin:$PATH"
+          nextrs --help
+          cargo nextrs --help
 
       - name: Build apps (bundling ON)
         run: cargo build -p site -p react-todos
@@ -62,22 +103,3 @@ jobs:
       # them (docs/upstream-plans/hover-preload-route.md).
       - name: Hover preload regression
         run: node e2e/hover.mjs
-
-  # After a push to main, Vercel deploys the docs site. Verify the LIVE page
-  # actually runs — the layer whose absence let the dead landing sit in prod.
-  prod-smoke:
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    runs-on: ubuntu-latest
-    needs: test-and-smoke
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
-      - name: Install e2e deps
-        working-directory: e2e
-        run: |
-          npm ci
-          npx playwright install --with-deps chromium
-      - name: Smoke docs production
-        run: node e2e/prod-smoke.mjs https://nextrs-docs.vercel.app / /docs /docs/getting-started

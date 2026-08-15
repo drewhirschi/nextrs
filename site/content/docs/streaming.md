@@ -32,7 +32,7 @@ calls the same prefetch path automatically.
 The page itself continues using an ordinary generated hook:
 
 ```tsx
-import { useGetApiTodos } from "@mysite/client";
+import { useGetApiTodos } from "@mysite/client/react-query";
 
 export default function TodosPage() {
   const { data, isPending } = useGetApiTodos();

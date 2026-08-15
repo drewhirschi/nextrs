@@ -1,0 +1,41 @@
+{
+  "name": "@react-todos/client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Generated framework-agnostic and React Query clients for react-todos.",
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js",
+      "default": "./dist/index.js"
+    },
+    "./react-query": {
+      "types": "./dist/react-query.d.ts",
+      "import": "./dist/react-query.js",
+      "default": "./dist/react-query.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "peerDependencies": {
+    "@tanstack/react-query": "^5.62.0",
+    "@tanstack/react-router": "^1.87.0",
+    "react": "^19.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@tanstack/react-query": {
+      "optional": true
+    },
+    "@tanstack/react-router": {
+      "optional": true
+    },
+    "react": {
+      "optional": true
+    }
+  }
+}

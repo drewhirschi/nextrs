@@ -4,11 +4,11 @@
 //!
 //! ```ignore
 //! fn main() {
-//!     nextrs::build::emit_registry("app", "src/main.rs", "nextrs_routes.rs").unwrap();
+//!     nextrs::build::emit_registry("app", "src/app.rs", "nextrs_routes.rs").unwrap();
 //! }
 //! ```
 //!
-//! Then in `main.rs`:
+//! Then in the shared application root (`src/app.rs` in the scaffold):
 //!
 //! ```ignore
 //! include!(concat!(env!("OUT_DIR"), "/nextrs_routes.rs"));

@@ -1,7 +1,10 @@
-// Vercel deployment entry point. The route registry is generated at build
-// time by nextrs::build (see ../build.rs) from a scan of app/. Add a file
-// under site/app/, save, redeploy. This bin (`index`) and the dev bin (`site`,
-// src/main.rs) both `include!` the same generated registry.
+// @generated nextrs Vercel deployment adapter.
+//
+// DO NOT PUT APPLICATION LOGIC HERE. Vercel currently requires a Rust function
+// at api/index.rs, so this file adapts the shared app from src/app.rs to
+// vercel_runtime. If this project no longer deploys to Vercel, delete this file
+// together with its `index` Cargo target, Vercel-only dependencies, and Vercel
+// configuration.
 //
 // `StreamingVercelLayer` is a drop-in replacement for the upstream
 // `vercel_runtime::axum::VercelLayer` that doesn't buffer text/html
@@ -11,25 +14,13 @@ use nextrs::vercel::StreamingVercelLayer;
 use tower::ServiceBuilder;
 use tracing_subscriber::EnvFilter;
 
-include!(concat!(env!("OUT_DIR"), "/nextrs_routes.rs"));
-
 #[tokio::main]
 async fn main() -> Result<(), vercel_runtime::Error> {
     init_tracing();
 
-    // Speculation opt-in must mirror src/main.rs — this bin is what Vercel
-    // runs; dev-only wiring in main.rs never reaches production.
-    let router = nextrs::router::build_router_with_speculation(
-        generated_registry(),
-        nextrs::SpeculationConfig {
-            mode: nextrs::SpeculationMode::Prefetch,
-            eagerness: nextrs::Eagerness::Moderate,
-        },
-    )
-    .merge(nextrs::openapi::spec_router(generated_openapi()));
     let app = ServiceBuilder::new()
         .layer(StreamingVercelLayer::new())
-        .service(router);
+        .service(site::app());
 
     vercel_runtime::run(app).await
 }

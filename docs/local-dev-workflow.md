@@ -1,155 +1,159 @@
 # Local Dev Workflow
 
-For consumer apps, the canonical `cargo dev` setup is the `cargo-nextrs-dev`
-Cargo subcommand. You install it once and wire a `dev` alias to it; nothing
-about the dev helper lives inside the served app package. This is exactly what
-`create-nextrs-app` generates.
-
-Because the runner is a separately installed binary, running `cargo dev` never
-builds the full app just to start the helper. The runner builds the app once
-with `cargo build --bin <crate>`, runs the produced binary directly, and
-restarts it after relevant file changes.
-
-(This repo's own `site/` app uses exactly this runner — `cd site && cargo dev`
-expands to `nextrs-dev --bin site` — so the framework dogfoods the tool it ships.
-Install it from the workspace with `cargo install --path crates/cargo-nextrs-dev`.)
-
-## Commands
+Install the unified CLI once:
 
 ```bash
-cargo dev   # build, run, watch, rebuild, restart, full-page browser reload
+cargo install cargo-nextrs
 ```
 
-`cargo dev` is a Cargo alias, not a built-in Cargo subcommand. It expands to
-`cargo nextrs-dev --bin <crate>`.
-
-The baseline dev experience is full-page live reload: save a watched file,
-`cargo dev` rebuilds and restarts the server, and the browser reloads after the
-restarted server responds. That is not React HMR/Fast Refresh; React state is
-not preserved across the reload.
-
-## Workspace Shape
-
-Install the runner once:
+The package provides the same command family through two launchers:
 
 ```bash
-cargo install cargo-nextrs-dev
+nextrs dev
+cargo nextrs dev
 ```
 
-`app/` is the Nextrs route tree. It is not a required Cargo package name.
-Avoid naming the served Cargo package `app` unless you really want that
-overload.
+Scaffolded applications also retain the short command:
 
-A standalone project keeps the served app as the root package; no extra
-workspace member is needed for dev:
+```bash
+cargo dev
+```
+
+`cargo dev` is a project-local Cargo alias, not a built-in Cargo command. New
+projects map it to the unified CLI:
+
+```toml
+# .cargo/config.toml
+[alias]
+dev = "nextrs dev --bin my-app"
+```
+
+The explicit `--bin` keeps the alias deterministic. When invoking `nextrs dev`
+or `cargo nextrs dev` directly, it can usually be omitted: the runner reads
+Cargo metadata, prefers the current package's `default-run`, and otherwise uses
+its sole runnable binary. Ambiguous projects receive an error asking for
+`--bin <name>`.
+
+## What the dev command does
+
+The runner:
+
+- Builds the selected application binary without interrupting an in-progress
+  Cargo build, then runs the resulting executable directly.
+- Watches the Rust application, `app/` convention tree, shared components,
+  package metadata, build hook, TypeScript configuration, and public assets.
+- Respects `.gitignore` and `.ignore`, and excludes build products,
+  `node_modules`, generated client output, and `public/dist`.
+- Stops the previous application process group cleanly and restarts after a
+  successful rebuild.
+
+With `tower-livereload` enabled in debug builds, the browser refreshes after
+the restarted server responds. This is full-page live reload, not React Fast
+Refresh: React state is not preserved across a rebuild.
+
+## Normal project shape
 
 ```text
 my-app/
-├── .cargo/config.toml
-├── Cargo.toml
-├── app/                            # Nextrs route tree
+├── .cargo/config.toml             # `cargo dev` alias
+├── app/                           # route conventions + colocated modules
+├── components/                    # shared React components
+├── src/
+│   ├── app.rs                     # shared Rust application/router
+│   └── main.rs                    # local/container process entry
+├── .nextrs/
+│   └── client/                    # generated npm workspace; do not edit
+├── api/index.rs                   # Vercel adapter
+├── public/
 ├── build.rs
-├── client/
-└── src/main.rs
+├── Cargo.toml
+├── package.json
+└── tsconfig.json
 ```
 
-`.cargo/config.toml`:
-
-```toml
-[alias]
-dev = "nextrs-dev --bin my-app"
-```
-
-`<crate>` is the package/binary that serves the app. Generated apps set
-`default-run` and a single `[[bin]]` so the name is unambiguous:
+The generated Cargo package sets `default-run` and names its normal server
+binary explicitly. `src/app.rs` is the package library root shared by the
+normal server and deployment adapter:
 
 ```toml
 [package]
 name = "my-app"
-version = "0.1.0"
-edition = "2024"
 default-run = "my-app"
+
+[lib]
+path = "src/app.rs"
 
 [[bin]]
 name = "my-app"
 path = "src/main.rs"
 ```
 
-In a larger repo the served app can be a separate workspace member; point the
-alias at its binary with `--bin <crate>`. The alias is the only place that needs
-to know the package or binary name.
+The application owns browser reload injection in debug builds; the CLI owns
+watching, rebuilding, and process lifecycle. That split keeps production
+builds free of dev-runner machinery.
 
-Served app `Cargo.toml`:
+## Creation and client generation
 
-```toml
-[dependencies]
-tower-livereload = "0.9"
+One install owns the entire workflow, and either launcher form is valid:
+
+```bash
+nextrs new my-app
+# equivalent: cargo nextrs new my-app
+
+nextrs client generate
+# equivalent: cargo nextrs client generate
 ```
 
-Served app `main.rs`:
+A fresh `new` command writes the project, runs `npm install` at the application
+root, and runs the root `client:generate` script. Use `--no-install` to write
+files only; the command then prints the exact root-level bootstrap steps.
 
-```rust
-let app = nextrs::router::build_router_with_public(generated_registry(), &public_dir);
+Never run `npm install` inside `.nextrs/client`. It is generated output linked
+as a workspace package, while application and generator dependencies are
+owned by the root `package.json` and root `node_modules`.
 
-#[cfg(debug_assertions)]
-let app = app.layer(tower_livereload::LiveReloadLayer::new());
+## Migrating legacy installations
+
+The old executables remain functional compatibility wrappers, but they print
+deprecation warnings:
+
+- `create-nextrs-app` → use `nextrs new` or `cargo nextrs new`.
+- `cargo nextrs-dev` → use `nextrs dev` or `cargo nextrs dev`.
+
+If the standalone watcher was installed previously, remove it before
+installing the unified package because both packages provide a
+`cargo-nextrs-dev` executable:
+
+```bash
+cargo uninstall cargo-nextrs-dev
+cargo install cargo-nextrs
 ```
 
-## Helper Behavior
-
-`cargo-nextrs-dev` does four things:
-
-- Build the app with `cargo build --bin <crate>` without interrupting an
-  in-progress Cargo build, then run the produced binary directly.
-- Watch app inputs: `src`, the Nextrs `app/` route tree, `client/src`, JS
-  package and lock files, `client/tsconfig.json`, `build.rs`, `Cargo.toml`,
-  `Cargo.lock`, `.cargo/config.toml`, and `public`.
-- Respect `.gitignore`/`.ignore`, plus built-in ignores for `target/`,
-  `node_modules/`, generated client code, and `public/dist/`.
-- Restart the child cleanly on changes.
-
-The served app should add `tower-livereload` in debug builds. The runner owns
-rebuild and process restart; the app owns browser reload injection. That split
-keeps the runner generic and keeps production builds free of reload machinery.
-
-`cargo dev` should be the one stable user command. Internally, the helper may
-own more than one child process when that becomes necessary, for example a
-future frontend HMR/bundler process. The convention is not "only one process";
-the convention is "one user-facing command owns the whole dev loop."
-
-## Dev Tiers
-
-Keep these distinct:
-
-1. Baseline: rebuild, restart, and full-page browser reload on backend, route,
-   and frontend source changes.
-2. Next.js-style parity: frontend HMR/Fast Refresh under the same `cargo dev`
-   command. This should preserve compatible React component state and falls
-   back to full reload when needed.
-
-## Env Files
-
-Generated apps load `.env` at startup with `dotenvy::dotenv().ok()`.
-`cargo-nextrs-dev` does not watch `.env` (it is ignored), so restart `cargo dev`
-after changing it.
-
-## Distribution
-
-New projects get this exact shape from `create-nextrs-app`: it scaffolds the
-`.cargo/config.toml` alias, the `default-run`/`[[bin]]` package, the
-`tower-livereload` debug layer, and prints `cargo install cargo-nextrs-dev` so
-`cargo dev` works out of the box.
-
-This repo's `site/` app uses the same shape — `site/.cargo/config.toml` carries
-the alias and `cd site && cargo dev` runs the watcher, identical to a scaffolded
-app:
+Existing aliases keep working because the unified package temporarily ships
+the compatibility launcher:
 
 ```toml
 [alias]
-dev = "nextrs-dev --bin site"
+dev = "nextrs-dev --bin my-app" # legacy; still works with a warning
 ```
 
-(Historically this repo drove dev through a bespoke `xtask` workspace member
-because the old repo-root layout wasn't a standard single-app layout. The reorg
-that made `site/` self-contained removed `xtask` — `cargo-nextrs-dev` watches it
-directly now.)
+Update them when convenient:
+
+```toml
+[alias]
+dev = "nextrs dev --bin my-app"
+```
+
+The separately installed `create-nextrs-app` package may also be uninstalled;
+new documentation only teaches `cargo install cargo-nextrs`.
+
+## Environment files
+
+Generated apps load `.env` at startup with `dotenvy::dotenv().ok()`. The dev
+runner intentionally ignores `.env`, so restart `cargo dev` after changing it.
+
+## Future dev tier
+
+React HMR/Fast Refresh remains a separate enhancement. It should eventually
+live behind the same three user-facing dev forms (`cargo dev`, `nextrs dev`,
+and `cargo nextrs dev`) with full reload as the fallback.

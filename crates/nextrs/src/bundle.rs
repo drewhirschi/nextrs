@@ -14,9 +14,11 @@
 //! ```ignore
 //! nextrs::bundle::bundle_pages(&nextrs::bundle::BundleConfig {
 //!     app_dir: "app",
+//!     project_dir: Some("."),
 //!     client_dir: "client",
 //!     client_alias: "@site/client",
 //!     public_dist: "public/dist",
+//!     ..Default::default()
 //! })?;
 //! ```
 //!
@@ -25,7 +27,7 @@
 //! asset table written after Rolldown runs, so applications keep the familiar
 //! `emit_registry()` then `bundle_pages()` build order.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 
 pub use crate::build::{loading_slug, not_found_slug, page_slug};
@@ -41,6 +43,7 @@ use crate::discovery::{DiscoveredRoute, discover_routes};
 /// ```ignore
 /// nextrs::bundle::BundleConfig {
 ///     app_dir: "app",
+///     project_dir: Some("."),
 ///     client_dir: "client",
 ///     client_alias: "@site/client",
 ///     public_dist: "public/dist",
@@ -51,20 +54,33 @@ use crate::discovery::{DiscoveredRoute, discover_routes};
 pub struct BundleConfig<'a> {
     /// The app convention tree, e.g. `"app"`.
     pub app_dir: &'a str,
-    /// The npm package holding node_modules and the generated client,
-    /// e.g. `"client"`.
+    /// The application/frontend project root, e.g. `Some(".")`.
+    ///
+    /// App-owned aliases are resolved relative to this directory, the built-in
+    /// `@/*` alias maps to `<project_dir>/*`, and its `node_modules` is searched
+    /// independently from the generated client. This lets user-authored code
+    /// live in `app/`, `components/`, or any other project directory while the
+    /// generated package is hidden under a path such as `.nextrs/client`.
+    ///
+    /// `None` retains the legacy layout for existing callers: aliases remain
+    /// relative to `client_dir`, and `@/*` maps to `<client_dir>/src/*`.
+    pub project_dir: Option<&'a str>,
+    /// The generated npm client package, e.g. `"client"` or
+    /// `".nextrs/client"`. Framework-owned client helpers and generated API
+    /// modules stay anchored here even when [`Self::project_dir`] is elsewhere.
     pub client_dir: &'a str,
     /// Import specifier pages use for the generated client, aliased to
     /// `<client_dir>/src/index.ts`, e.g. `"@site/client"`.
     pub client_alias: &'a str,
     /// Where browser bundles land (served at `/dist/...`), e.g. `"public/dist"`.
     pub public_dist: &'a str,
-    /// Extra rolldown resolve aliases as `(pattern, replacement)` pairs, on top
-    /// of the built-in `@/*` → `<client_dir>/src/*` (which makes shadcn-style
-    /// `@/lib/utils` / `@/components/ui/button` imports resolve). Replacements
-    /// are relative to `client_dir`. Wildcard (`@/*` → `lib/*`) and prefix
-    /// (`~` → `vendor`) forms both work; mirror them in `client/tsconfig.json`
-    /// `paths` so `tsc` and the shadcn CLI agree with the bundler.
+    /// Extra rolldown resolve aliases as `(pattern, replacement)` pairs.
+    /// With [`Self::project_dir`] set, replacements are relative to that root
+    /// and the built-in `@/*` maps to `<project_dir>/*`, so imports such as
+    /// `@/components/Button` resolve application code. With `project_dir: None`,
+    /// the legacy `<client_dir>/src/*` behavior is preserved. Wildcard
+    /// (`@/*` → `lib/*`) and exact/prefix (`~` → `vendor`) forms work;
+    /// mirror custom aliases in `tsconfig.json` so TypeScript agrees.
     pub aliases: &'a [(&'a str, &'a str)],
 }
 
@@ -98,6 +114,11 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<BundleManifest> {
     }
 
     let client_dir = manifest_dir.join(cfg.client_dir).canonicalize()?;
+    let legacy_client_layout = cfg.project_dir.is_none();
+    let project_dir = match cfg.project_dir {
+        Some(dir) => manifest_dir.join(dir).canonicalize()?,
+        None => client_dir.clone(),
+    };
 
     // Rerun when client source or deps change. NOT node_modules (huge); a dep
     // bump edits package.json, which is enough.
@@ -109,6 +130,12 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<BundleManifest> {
         "cargo:rerun-if-changed={}",
         client_dir.join("package.json").display()
     );
+    if project_dir != client_dir {
+        println!(
+            "cargo:rerun-if-changed={}",
+            project_dir.join("package.json").display()
+        );
+    }
 
     // URL-bound hook variants (useXFromUrl) for every GET with query params,
     // generated from the app's OpenAPI document — then the barrel, so both
@@ -143,12 +170,11 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<BundleManifest> {
         return Ok(manifest);
     }
 
-    let node_modules = client_dir.join("node_modules");
-    if !node_modules.is_dir() {
+    let node_modules = node_module_dirs(&project_dir, &client_dir);
+    if node_modules.is_empty() {
         return Err(std::io::Error::other(format!(
-            "nextrs: page.tsx pages found but {} is missing — run `npm install` in {}",
-            node_modules.display(),
-            client_dir.display()
+            "nextrs: page.tsx pages found but no node_modules directory is available — run `npm install` in {}",
+            project_dir.display()
         )));
     }
 
@@ -209,7 +235,15 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<BundleManifest> {
     }
     std::fs::create_dir_all(&staging)?;
 
-    let entries = run_bundler(inputs, &staging, &client_dir, cfg.client_alias, cfg.aliases)?;
+    let entries = run_bundler(
+        inputs,
+        &staging,
+        &project_dir,
+        &client_dir,
+        legacy_client_layout,
+        cfg.client_alias,
+        cfg.aliases,
+    )?;
     let stylesheet = fingerprint_stylesheet(&manifest_dir, &staging)?;
     let manifest = BundleManifest {
         entries,
@@ -381,8 +415,7 @@ fn not_found_bundles(routes: &[DiscoveredRoute]) -> Vec<NotFoundBundle> {
 /// absent). Framework-owned so apps don't carry a barrel script — the codegen
 /// output's surface is a framework concern, and this runs on every bundling
 /// build so it can't go stale.
-fn emit_client_barrel(client_dir: &Path) -> std::io::Result<()> {
-    let generated = client_dir.join("src/generated");
+fn emit_barrel(generated: &Path, include_url_hooks: bool) -> std::io::Result<()> {
     if !generated.is_dir() {
         return Ok(());
     }
@@ -402,10 +435,20 @@ fn emit_client_barrel(client_dir: &Path) -> std::io::Result<()> {
     if generated.join("model").is_dir() {
         out.push_str("export * from \"./model\";\n");
     }
-    if generated.join("url-hooks.ts").is_file() {
+    if include_url_hooks && generated.join("url-hooks.ts").is_file() {
         out.push_str("export * from \"./url-hooks\";\n");
     }
     write_if_changed(&generated.join("index.ts"), out.as_bytes())
+}
+
+fn emit_client_barrel(client_dir: &Path) -> std::io::Result<()> {
+    let generated = client_dir.join("src/generated");
+    if generated.join("fetch").is_dir() || generated.join("react-query").is_dir() {
+        emit_barrel(&generated.join("fetch"), false)?;
+        emit_barrel(&generated.join("react-query"), true)
+    } else {
+        emit_barrel(&generated, true)
+    }
 }
 
 /// One GET operation that can carry a URL-bound hook variant: it has query
@@ -441,9 +484,22 @@ struct UrlHookOp {
 /// writes). No-op when it's absent or contains no eligible operations —
 /// a stale url-hooks.ts from a previous shape is removed.
 fn emit_url_hooks(client_dir: &Path) -> std::io::Result<()> {
-    let generated = client_dir.join("src/generated");
+    let generated_root = client_dir.join("src/generated");
+    let generated = if generated_root.join("react-query").is_dir() {
+        generated_root.join("react-query")
+    } else {
+        generated_root
+    };
     let out_path = generated.join("url-hooks.ts");
-    let spec_path = client_dir.join("openapi.json");
+    let legacy_spec = client_dir.join("openapi.json");
+    let hidden_spec = client_dir
+        .parent()
+        .map(|parent| parent.join("openapi.json"));
+    let spec_path = if legacy_spec.is_file() {
+        legacy_spec
+    } else {
+        hidden_spec.unwrap_or(legacy_spec)
+    };
 
     let mut ops = if spec_path.is_file() {
         println!("cargo:rerun-if-changed={}", spec_path.display());
@@ -1143,13 +1199,38 @@ createRoot(document.getElementById("__nx_loading_root__")!).render(<Loading />);
     )
 }
 
-/// Build rolldown's resolve-alias list: the client barrel (a file target,
-/// exact match), the built-in `@/*` → `<client_dir>/src/*` (so shadcn-style
-/// subpath imports resolve — a directory target can do subpaths, a file
-/// target can't), then any user aliases (replacements resolved relative to
-/// `client_dir`).
+/// Return every existing `node_modules` directory visible from either root.
+///
+/// Project paths come first so app-owned dependencies resolve from the app's
+/// installation even when the generated client lives outside its ancestor
+/// chain. The client chain is still searched for backwards compatibility and
+/// for independently installed generated packages.
+fn node_module_dirs(project_dir: &Path, client_dir: &Path) -> Vec<PathBuf> {
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for root in [project_dir, client_dir] {
+        for dir in root
+            .ancestors()
+            .map(|ancestor| ancestor.join("node_modules"))
+        {
+            if dir.is_dir() && seen.insert(dir.clone()) {
+                out.push(dir);
+            }
+        }
+    }
+    out
+}
+
+/// Build rolldown's resolve-alias list: app-owned aliases use `project_dir`,
+/// while the generated client barrel always remains anchored to `client_dir`.
+///
+/// In the modern layout the built-in `@/*` points at `<project_dir>/*`. The
+/// `legacy_client_layout` fallback preserves `<client_dir>/src/*` for existing
+/// applications that did not opt into a separate project root.
 fn build_aliases(
+    project_dir: &Path,
     client_dir: &Path,
+    legacy_client_layout: bool,
     client_alias: &str,
     user_aliases: &[(&str, &str)],
 ) -> Vec<(String, Vec<Option<String>>)> {
@@ -1168,18 +1249,29 @@ fn build_aliases(
     }
 
     // User aliases first: the first matching key wins, so a user `@/*` entry
-    // overrides the built-in `@/*` → `<client_dir>/src/*` default.
+    // overrides the built-in default.
     let mut aliases: Vec<(String, Vec<Option<String>>)> = user_aliases
         .iter()
         .map(|(pattern, replacement)| {
-            norm(pattern, client_dir.join(replacement).display().to_string())
+            norm(pattern, project_dir.join(replacement).display().to_string())
         })
         .collect();
+    aliases.push((
+        format!("{client_alias}/react-query"),
+        vec![Some(
+            client_dir.join("src/react-query.ts").display().to_string(),
+        )],
+    ));
     aliases.push((
         client_alias.to_string(),
         vec![Some(client_dir.join("src/index.ts").display().to_string())],
     ));
-    let builtin = norm("@/*", client_dir.join("src/*").display().to_string());
+    let builtin_target = if legacy_client_layout {
+        client_dir.join("src/*")
+    } else {
+        project_dir.join("*")
+    };
+    let builtin = norm("@/*", builtin_target.display().to_string());
     if !aliases.iter().any(|(k, _)| *k == builtin.0) {
         aliases.push(builtin);
     }
@@ -1189,7 +1281,9 @@ fn build_aliases(
 fn run_bundler(
     inputs: Vec<rolldown::InputItem>,
     staging: &Path,
+    project_dir: &Path,
     client_dir: &Path,
+    legacy_client_layout: bool,
     client_alias: &str,
     user_aliases: &[(&str, &str)],
 ) -> std::io::Result<BTreeMap<String, String>> {
@@ -1208,7 +1302,7 @@ fn run_bundler(
 
     let options = BundlerOptions {
         input: Some(inputs),
-        cwd: Some(client_dir.to_path_buf()),
+        cwd: Some(project_dir.to_path_buf()),
         dir: Some(staging.display().to_string()),
         format: Some(OutputFormat::Esm),
         platform: Some(Platform::Browser),
@@ -1227,8 +1321,19 @@ fn run_bundler(
             std::iter::once(("process.env.NODE_ENV".to_string(), node_env.to_string())).collect(),
         ),
         resolve: Some(rolldown::ResolveOptions {
-            alias: Some(build_aliases(client_dir, client_alias, user_aliases)),
-            modules: Some(vec![client_dir.join("node_modules").display().to_string()]),
+            alias: Some(build_aliases(
+                project_dir,
+                client_dir,
+                legacy_client_layout,
+                client_alias,
+                user_aliases,
+            )),
+            modules: Some(
+                node_module_dirs(project_dir, client_dir)
+                    .into_iter()
+                    .map(|dir| dir.display().to_string())
+                    .collect(),
+            ),
             // Prefix-alias substitution (`@/*`, `@workspace/x/*`) yields
             // extension-less paths (e.g. `.../src/errors`); without explicit TS
             // extensions the resolver can't find `errors.ts`, so the specifier
@@ -1294,13 +1399,14 @@ fn run_bundler(
             "nextrs: bundling left unresolved bare imports (a runtime error in \
              the browser). Usually a missing dependency — add it to {}/package.json \
              and `npm install`. Details: {}",
-            client_dir.display(),
+            project_dir.display(),
             unresolved.join("; ")
         )));
     }
     for w in &output.warnings {
         println!("cargo:warning=nextrs bundle: {w:?}");
     }
+    emit_module_rerun_directives(&output.assets, project_dir);
     let entries = output
         .assets
         .iter()
@@ -1314,9 +1420,57 @@ fn run_bundler(
     Ok(entries)
 }
 
+/// Make Cargo rerun the build script when an imported application module
+/// changes. Watching Rolldown's actual module graph avoids recursively watching
+/// the project root (which contains `target/` and would create rebuild loops),
+/// while still covering top-level `components/`, `lib/`, and other arbitrary
+/// user-owned source directories.
+fn emit_module_rerun_directives(assets: &[rolldown_common::Output], project_dir: &Path) {
+    let mut modules = std::collections::BTreeSet::new();
+    let out_dir = std::env::var_os("OUT_DIR").map(PathBuf::from);
+    for asset in assets {
+        let rolldown_common::Output::Chunk(chunk) = asset else {
+            continue;
+        };
+        for id in &chunk.module_ids {
+            let path = Path::new(id.as_ref());
+            if module_is_project_source(path, project_dir, out_dir.as_deref()) {
+                modules.insert(path.to_path_buf());
+            }
+        }
+    }
+    for path in modules {
+        println!("cargo:rerun-if-changed={}", path.display());
+    }
+}
+
+fn module_is_project_source(path: &Path, project_dir: &Path, out_dir: Option<&Path>) -> bool {
+    path.is_file()
+        && path.starts_with(project_dir)
+        && !out_dir.is_some_and(|out_dir| path.starts_with(out_dir))
+        && !path
+            .components()
+            .any(|part| part.as_os_str() == "node_modules")
+}
+
+/// How long an asset that a newer build no longer emits is kept on disk.
+///
+/// Deleting orphans the moment a new build lands is wrong, because two things
+/// still reference them: a running server (asset URLs are compiled into the
+/// binary through `nextrs_assets.rs`, not read from the manifest per request)
+/// and any open browser tab. Both then 404 on a file that existed a second
+/// ago — "Failed to load script /dist/__app_shell__-<hash>.js", typically
+/// minutes after an apparently unrelated build, which reads like a cache bug
+/// and sends you looking in the wrong place.
+///
+/// Filenames are content-addressed, so retaining the old ones is safe: they
+/// simply become unreferenced. See `docs/upstream-plans/dist-asset-gc.md`.
+const ORPHAN_RETENTION: std::time::Duration = std::time::Duration::from_secs(24 * 60 * 60);
+
 /// Mirror `src` into `dst`, writing a file only when its bytes differ
 /// (temp-file-then-rename so concurrent identical builds can't tear), and
-/// pruning anything in `dst` that `src` no longer has.
+/// pruning anything in `dst` that `src` no longer has *and* that has aged past
+/// [`ORPHAN_RETENTION`].
 fn mirror_by_content(src: &Path, dst: &Path) -> std::io::Result<()> {
     use std::collections::HashSet;
 
@@ -1341,12 +1495,38 @@ fn mirror_by_content(src: &Path, dst: &Path) -> std::io::Result<()> {
         if seen.contains(&entry.file_name()) {
             continue;
         }
-        let path = entry.path();
-        if entry.file_type()?.is_dir() {
-            std::fs::remove_dir_all(&path)?;
-        } else {
-            std::fs::remove_file(&path)?;
+        prune_expired_orphan(&entry.path())?;
+    }
+    Ok(())
+}
+
+/// Remove an orphaned path once it is older than [`ORPHAN_RETENTION`].
+///
+/// Directories recurse so a retained file keeps its parent alive; a directory
+/// is removed only once it is actually empty. An unreadable mtime is treated as
+/// "keep" — retaining a stale asset costs disk, deleting a live one breaks a
+/// running server.
+fn prune_expired_orphan(path: &Path) -> std::io::Result<()> {
+    let metadata = std::fs::symlink_metadata(path)?;
+
+    if metadata.is_dir() {
+        for entry in std::fs::read_dir(path)? {
+            prune_expired_orphan(&entry?.path())?;
         }
+        if std::fs::read_dir(path)?.next().is_none() {
+            std::fs::remove_dir(path)?;
+        }
+        return Ok(());
+    }
+
+    let expired = metadata
+        .modified()
+        .ok()
+        .and_then(|modified| modified.elapsed().ok())
+        .is_some_and(|age| age > ORPHAN_RETENTION);
+
+    if expired {
+        std::fs::remove_file(path)?;
     }
     Ok(())
 }
@@ -1376,7 +1556,8 @@ mod tests {
 
     #[test]
     fn aliases_include_barrel_and_shadcn_default() {
-        let aliases = build_aliases(Path::new("/proj/client"), "@site/client", &[]);
+        let client = Path::new("/proj/client");
+        let aliases = build_aliases(client, client, true, "@site/client", &[]);
         // The client barrel maps to the index file (exact match).
         assert!(
             aliases.iter().any(|(k, v)| k == "@site/client"
@@ -1399,6 +1580,8 @@ mod tests {
     fn user_aliases_resolve_relative_to_client_dir() {
         let aliases = build_aliases(
             Path::new("/proj/client"),
+            Path::new("/proj/client"),
+            true,
             "@site/client",
             &[("~/*", "vendor/*")],
         );
@@ -1414,6 +1597,8 @@ mod tests {
     fn user_alias_overrides_builtin_shadcn_default() {
         let aliases = build_aliases(
             Path::new("/proj/client"),
+            Path::new("/proj/client"),
+            true,
             "@site/client",
             &[("@/*", "../src/*")],
         );
@@ -1432,6 +1617,8 @@ mod tests {
     fn exact_aliases_pass_through_unnormalized() {
         let aliases = build_aliases(
             Path::new("/proj/client"),
+            Path::new("/proj/client"),
+            true,
             "@site/client",
             &[("react-dom/client", "vendor/react-dom-client.ts")],
         );
@@ -1443,6 +1630,164 @@ mod tests {
     }
 
     #[test]
+    fn project_aliases_are_separate_from_generated_client() {
+        let aliases = build_aliases(
+            Path::new("/proj"),
+            Path::new("/proj/.nextrs/client"),
+            false,
+            "@site/client",
+            &[("~/*", "lib/*")],
+        );
+        assert!(
+            aliases.iter().any(|(k, v)| k == "@site/client"
+                && v[0].as_deref() == Some("/proj/.nextrs/client/src/index.ts")),
+            "{aliases:?}"
+        );
+        assert!(
+            aliases.iter().any(|(k, v)| k == "@site/client/react-query"
+                && v[0].as_deref() == Some("/proj/.nextrs/client/src/react-query.ts")),
+            "{aliases:?}"
+        );
+        assert!(
+            aliases
+                .iter()
+                .any(|(k, v)| k == "@/*" && v[0].as_deref() == Some("/proj/*")),
+            "{aliases:?}"
+        );
+        assert!(
+            aliases
+                .iter()
+                .any(|(k, v)| k == "~/*" && v[0].as_deref() == Some("/proj/lib/*")),
+            "{aliases:?}"
+        );
+    }
+
+    #[test]
+    fn dependency_search_covers_separate_project_and_client_roots() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path().join("project");
+        let client = tmp.path().join("generated/client");
+        std::fs::create_dir_all(project.join("node_modules")).unwrap();
+        std::fs::create_dir_all(client.join("node_modules")).unwrap();
+
+        let dirs = node_module_dirs(&project, &client);
+        assert_eq!(
+            dirs.first(),
+            Some(&project.join("node_modules")),
+            "{dirs:?}"
+        );
+        let client_index = dirs
+            .iter()
+            .position(|dir| dir == &client.join("node_modules"))
+            .expect("client dependency root is searched too");
+        assert!(
+            client_index > 0,
+            "project dependencies have precedence: {dirs:?}"
+        );
+    }
+
+    #[test]
+    fn rerun_module_filter_excludes_dependencies_and_build_output() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path();
+        let source = project.join("components/Logo.tsx");
+        let dependency = project.join("node_modules/react/index.js");
+        let generated = project.join("target/debug/build/app/out/shell.tsx");
+        for path in [&source, &dependency, &generated] {
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+            std::fs::write(path, "").unwrap();
+        }
+
+        let out_dir = project.join("target/debug/build/app/out");
+        assert!(module_is_project_source(&source, project, Some(&out_dir)));
+        assert!(!module_is_project_source(
+            &dependency,
+            project,
+            Some(&out_dir)
+        ));
+        assert!(!module_is_project_source(
+            &generated,
+            project,
+            Some(&out_dir)
+        ));
+    }
+
+    #[test]
+    fn bundles_root_components_dependencies_and_hidden_client_together() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path();
+        let client = project.join(".nextrs/client");
+        let staging = project.join("dist");
+        std::fs::create_dir_all(project.join("app")).unwrap();
+        std::fs::create_dir_all(project.join("components")).unwrap();
+        std::fs::create_dir_all(client.join("src")).unwrap();
+        std::fs::create_dir_all(project.join("node_modules/root-only-dep")).unwrap();
+        std::fs::create_dir_all(project.join("node_modules/react")).unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+
+        std::fs::write(
+            project.join("app/entry.tsx"),
+            r#"import { Logo } from "@/components/Logo";
+import { generated } from "@fixture/client";
+import { dependency } from "root-only-dep";
+console.log(Logo(), generated, dependency);
+"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("components/Logo.tsx"),
+            "export function Logo() { return <svg data-testid=\"root-logo\" />; }\n",
+        )
+        .unwrap();
+        std::fs::write(
+            client.join("src/index.ts"),
+            "export const generated = 'generated-client';\n",
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("node_modules/root-only-dep/package.json"),
+            r#"{"name":"root-only-dep","type":"module","exports":"./index.js"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("node_modules/root-only-dep/index.js"),
+            "export const dependency = 'root-dependency';\n",
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("node_modules/react/package.json"),
+            r#"{"name":"react","type":"module","exports":{"./jsx-runtime":"./jsx-runtime.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            project.join("node_modules/react/jsx-runtime.js"),
+            "export function jsx(type, props) { return { type, props }; }\n",
+        )
+        .unwrap();
+
+        let entries = run_bundler(
+            vec![rolldown::InputItem {
+                name: Some("entry".to_string()),
+                import: project.join("app/entry.tsx").display().to_string(),
+            }],
+            &staging,
+            project,
+            &client,
+            false,
+            "@fixture/client",
+            &[],
+        )
+        .unwrap();
+
+        let output = entries.get("entry").expect("entry output");
+        let code = std::fs::read_to_string(staging.join(output.trim_start_matches("/dist/")))
+            .expect("emitted entry");
+        assert!(code.contains("root-logo"), "{code}");
+        assert!(code.contains("generated-client"), "{code}");
+        assert!(code.contains("root-dependency"), "{code}");
+    }
+
+    #[test]
     fn bundle_config_default_allows_partial_construction() {
         // Default + ..Default::default() keeps new fields additive/non-breaking.
         let cfg = BundleConfig {
@@ -1450,6 +1795,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(cfg.app_dir, "app");
+        assert_eq!(cfg.project_dir, None);
         assert!(cfg.aliases.is_empty());
     }
 
@@ -1463,6 +1809,52 @@ mod tests {
         assert_eq!(mtime1, std::fs::metadata(&p).unwrap().modified().unwrap());
         write_if_changed(&p, b"diff").unwrap();
         assert_eq!(std::fs::read(&p).unwrap(), b"diff");
+    }
+
+    /// A fresh orphan is what a running server and open tabs are still asking
+    /// for, so mirroring must not delete it. See `dist-asset-gc.md`.
+    #[test]
+    fn mirror_keeps_recent_orphans_and_prunes_aged_ones() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("staging");
+        let dst = tmp.path().join("dist");
+        std::fs::create_dir_all(src.join("chunks")).unwrap();
+        std::fs::create_dir_all(dst.join("chunks")).unwrap();
+
+        // The new build's output.
+        std::fs::write(src.join("app-new.js"), b"new").unwrap();
+        std::fs::write(src.join("chunks/c-new.js"), b"new chunk").unwrap();
+
+        // A previous build's output, still present in dist.
+        std::fs::write(dst.join("app-old.js"), b"old").unwrap();
+        std::fs::write(dst.join("chunks/c-old.js"), b"old chunk").unwrap();
+
+        // ...plus one orphan aged well past the retention window.
+        let stale = dst.join("app-ancient.js");
+        std::fs::write(&stale, b"ancient").unwrap();
+        let long_ago = std::time::SystemTime::now() - (ORPHAN_RETENTION * 2);
+        std::fs::File::options()
+            .write(true)
+            .open(&stale)
+            .unwrap()
+            .set_modified(long_ago)
+            .unwrap();
+
+        mirror_by_content(&src, &dst).unwrap();
+
+        assert!(dst.join("app-new.js").exists(), "new output is mirrored");
+        assert!(
+            dst.join("app-old.js").exists(),
+            "a recent orphan survives — a running server still serves its URL"
+        );
+        assert!(
+            dst.join("chunks/c-old.js").exists(),
+            "recent orphans survive inside subdirectories too"
+        );
+        assert!(
+            !stale.exists(),
+            "an orphan past the retention window is pruned"
+        );
     }
 
     #[test]
@@ -1512,7 +1904,7 @@ mod tests {
     }
 
     #[test]
-    fn mirror_prunes_and_copies() {
+    fn mirror_copies_into_dst() {
         let tmp = tempfile::tempdir().unwrap();
         let src = tmp.path().join("src");
         let dst = tmp.path().join("dst");
@@ -1525,7 +1917,10 @@ mod tests {
         mirror_by_content(&src, &dst).unwrap();
         assert_eq!(std::fs::read(dst.join("a.js")).unwrap(), b"a");
         assert_eq!(std::fs::read(dst.join("chunks/shared.js")).unwrap(), b"s");
-        assert!(!dst.join("stale.js").exists());
+        // `stale.js` deliberately survives: it was written moments ago, so a
+        // running server or an open tab may still reference it. Aging it out is
+        // covered by `mirror_keeps_recent_orphans_and_prunes_aged_ones`.
+        assert!(dst.join("stale.js").exists());
     }
 
     #[test]
@@ -1707,6 +2102,28 @@ mod tests {
         assert!(barrel.contains(r#"export * from "./model";"#));
         // model is not a tag module.
         assert!(!barrel.contains("./model/model"));
+    }
+
+    #[test]
+    fn split_client_barrels_keep_fetch_framework_agnostic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let generated = tmp.path().join("src/generated");
+        for surface in ["fetch", "react-query"] {
+            for dir in ["todos", "model"] {
+                std::fs::create_dir_all(generated.join(surface).join(dir)).unwrap();
+            }
+        }
+        std::fs::write(generated.join("react-query/url-hooks.ts"), "// hooks").unwrap();
+
+        emit_client_barrel(tmp.path()).unwrap();
+
+        let fetch = std::fs::read_to_string(generated.join("fetch/index.ts")).unwrap();
+        assert!(fetch.contains(r#"export * from "./todos/todos";"#));
+        assert!(!fetch.contains("url-hooks"));
+
+        let react_query = std::fs::read_to_string(generated.join("react-query/index.ts")).unwrap();
+        assert!(react_query.contains(r#"export * from "./todos/todos";"#));
+        assert!(react_query.contains(r#"export * from "./url-hooks";"#));
     }
 
     #[test]

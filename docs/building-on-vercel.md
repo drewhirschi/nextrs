@@ -6,12 +6,13 @@ the docs site (`nextrs-docs`, Vercel 2-core/8GB builder) unless noted.
 
 ## Anatomy of a deploy
 
-`vercel.json` drives it: `installCommand` (npm ci in `client/`), `buildCommand`
-(client codegen, then `cargo build --release`), then the `vercel-rust` runtime
-packages `api/index.rs` from the same target dir. The build cache Vercel
-restores covers npm — **not** the cargo target dir, so every deploy is a cold
-Rust build. That makes the Rust compile profile and the number of cargo
-invocations the entire game; the JS steps are noise.
+`vercel.json` drives it: `installCommand` runs `npm ci` at the application
+root, and `buildCommand` prepares the hidden linked client, builds the Vercel
+adapter, and emits client JavaScript/declarations. The `vercel-rust` runtime
+packages `api/index.rs` from the same target dir. The historical measurements
+below predate that root workspace layout and describe their commands as they
+ran at the time. Vercel's build cache restores npm — **not** the cargo target
+dir, so a cloud deploy still pays for a cold Rust build.
 
 ## Baseline — 2026-07-12, commit c908a5d (10m 0s total)
 

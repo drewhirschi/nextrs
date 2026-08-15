@@ -1,7 +1,7 @@
-# (This file used to set NEXTRS_SKIP_BUNDLE=1 so Vercel served a committed
-# public/dist. The deploy is now self-sufficient — vercel.json's
-# installCommand/buildCommand run npm ci + gen + cargo build, so bundling
-# runs everywhere and no build artifacts are committed.)
+# Keep the short `cargo dev` workflow while routing it through the unified CLI.
+# One `cargo install cargo-nextrs` provides the `nextrs` executable.
+[alias]
+dev = "nextrs dev --bin react-todos"
 
 # Empty, but required: the vercel-rust builder reads `config.build.target` and
 # crashes ("Cannot read properties of undefined (reading 'target')") if a

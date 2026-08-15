@@ -43,12 +43,10 @@ pub struct AddTodoRequest {
     pub title: String,
 }
 
-#[nextrs::api(
-    get,
-    operation_id = "getTodos",
-    params(TodosFilter),
-    responses((status = 200, description = "List todos", body = Vec<Todo>)),
-)]
+// A bare `#[nextrs::api]` is the whole contract: the method comes from the
+// function name, the path from the file, `params` from the `Query<TodosFilter>`
+// extractor, and the 200 body from `Json<Vec<Todo>>` — nothing to restate.
+#[nextrs::api]
 // `Extension<TodosCtx>` is the demo's stand-in for a DB handle. The handler
 // keeps its seed companion: the companion sources the context from the
 // request extensions (installed by the layer in main.rs / api/index.rs), so
@@ -66,11 +64,7 @@ pub async fn get(
     Json(todos.into_iter().map(Into::into).collect())
 }
 
-#[nextrs::api(
-    post,
-    operation_id = "addTodo",
-    responses((status = 200, description = "The created todo", body = Todo)),
-)]
+#[nextrs::api]
 pub async fn post(
     Extension(ctx): Extension<TodosCtx>,
     wait: nextrs::WaitUntil,

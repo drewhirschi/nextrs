@@ -293,6 +293,26 @@ mod tests {
     }
 
     #[test]
+    fn arbitrary_colocated_modules_do_not_create_routes() {
+        let tmp = setup_app_dir(&[
+            (
+                "todos",
+                &["page.tsx", "TodoRow.tsx", "format-date.ts", "types.ts"],
+            ),
+            (
+                "todos/components",
+                &["TodoFilters.tsx", "use-todo-filter.ts"],
+            ),
+            ("shared", &["Button.tsx", "README.md"]),
+        ]);
+
+        let routes = discover_routes(tmp.path());
+        assert_eq!(routes.len(), 1, "only convention files define routes");
+        assert_eq!(routes[0].url_path, "/todos");
+        assert!(routes[0].page.tsx.is_some());
+    }
+
+    #[test]
     fn test_url_path_conversion() {
         assert_eq!(rel_path_to_url(Path::new("")), "/");
         assert_eq!(rel_path_to_url(Path::new("dashboard")), "/dashboard");

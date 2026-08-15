@@ -1,5 +1,11 @@
 # React/TSX Support: page.tsx In The App Tree
 
+> **Historical implementation record.** The maintained user-facing behavior
+> and current Rolldown/client layout are documented in
+> `site/content/docs/conventions.md` and `site/content/docs/typesafe-client.md`.
+> Design sketches below that mention swc or a visible `client/` directory are
+> retained as history, not setup instructions.
+
 **Status:** phases 1 and 2 implemented (CSR `page.tsx` via rolldown bundling; `prefetch.rs` seeding the React Query cache). The runnable `examples/react-todos` crate exercises the full pipeline. Phase 3 (build-time prerender, `loading.tsx`) not started.
 
 One toolchain change from the original: the bundler is **rolldown** (all-Rust, the Vite 8 engine, on crates.io since May 2026), not `swc_bundler` — swc's bundling is officially slated for removal and lacks code splitting.

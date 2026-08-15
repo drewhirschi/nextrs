@@ -1,12 +1,13 @@
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  useGetTodosFromUrl,
-  useAddTodo,
-  useUpdateTodo,
-  getGetTodosQueryKey,
+  useGetApiTodosFromUrl,
+  usePostApiTodos,
+  usePatchApiTodosById,
+  getGetApiTodosQueryKey,
   getGetApiTodosByIdQueryKey,
-} from "@react-todos/client";
+} from "@react-todos/client/react-query";
 import { useState } from "react";
+import { TodoRow } from "./todo-row";
 
 export default function Todos() {
   const queryClient = useQueryClient();
@@ -15,7 +16,7 @@ export default function Todos() {
   // Any mutation refreshes every /api/todos variant — including the
   // server-seeded entry — because they all share the canonical query key.
   const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: getGetTodosQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getGetApiTodosQueryKey() });
 
   // URL-bound: the filter lives in the page URL (?status=open), not in
   // useState — so a shared link shows the same view, back/forward walks
@@ -28,9 +29,9 @@ export default function Todos() {
     isFetching,
     params,
     setParams,
-  } = useGetTodosFromUrl();
+  } = useGetApiTodosFromUrl();
 
-  const addTodo = useAddTodo({
+  const addTodo = usePostApiTodos({
     mutation: {
       onSuccess: () => {
         invalidate();
@@ -42,7 +43,7 @@ export default function Todos() {
   // The toggled todo also lives in the detail page's cache entry (a different
   // URL key, not a prefix of the list's) — invalidate it too, or its page
   // shows a stale badge after soft-navigating there.
-  const updateTodo = useUpdateTodo({
+  const updateTodo = usePatchApiTodosById({
     mutation: {
       onSuccess: (_data, variables) => {
         invalidate();
@@ -74,23 +75,13 @@ export default function Todos() {
 
       <ul className="list">
         {todos?.data.map((t) => (
-          <li key={t.id} className={t.done ? "done" : ""}>
-            <button
-              className={`check${t.done ? " checked" : ""}`}
-              aria-label={t.done ? `Reopen ${t.title}` : `Complete ${t.title}`}
-              onClick={() => updateTodo.mutate({ id: t.id, data: { done: !t.done } })}
-            >
-              {t.done ? "✓" : ""}
-            </button>
-            {/* Plain anchor — the app shell intercepts it and soft-navigates
-                to the [id] route (no document load; layout stays mounted). */}
-            <a className="title" href={`/todos/${t.id}`}>
-              {t.title}
-            </a>
-            <span className={`badge ${t.done ? "badge-done" : "badge-open"}`}>
-              {t.done ? "Done" : "Open"}
-            </span>
-          </li>
+          <TodoRow
+            key={t.id}
+            todo={t}
+            onToggle={(todo) =>
+              updateTodo.mutate({ id: todo.id, data: { done: !todo.done } })
+            }
+          />
         ))}
       </ul>
 

@@ -5,6 +5,7 @@ use ignore::gitignore::{Gitignore, GitignoreBuilder};
 use notify_debouncer_full::notify::event::{AccessKind, AccessMode, MetadataKind, ModifyKind};
 use notify_debouncer_full::notify::{EventKind, RecursiveMode};
 use notify_debouncer_full::{DebounceEventResult, RecommendedCache, new_debouncer};
+use serde::Deserialize;
 use std::env;
 use std::ffi::{OsStr, OsString};
 use std::path::{Path, PathBuf};
@@ -17,21 +18,29 @@ use std::time::{Duration, Instant};
 
 const WATCH_PATHS: &[&str] = &[
     ".cargo/config.toml",
+    ".nextrs",
     "Cargo.lock",
     "Cargo.toml",
     "app",
     "build.rs",
+    "components",
     "client/package-lock.json",
     "client/package.json",
     "client/src",
-    "client/tsconfig.json",
+    "package-lock.json",
+    "package.json",
     "public",
     "src",
+    "tsconfig.json",
 ];
 
 const DEFAULT_IGNORES: &[&str] = &[
     "/target/",
     "/node_modules/",
+    "/.nextrs/client/dist/",
+    "/.nextrs/client/node_modules/",
+    "/.nextrs/client/src/generated/",
+    "/.nextrs/openapi.json",
     "/client/node_modules/",
     "/client/src/generated/",
     "/public/dist/",
@@ -72,6 +81,7 @@ const CARGO_BUILD_ENV: &[&str] = &[
 ];
 
 fn main() {
+    eprintln!("warning: `cargo nextrs-dev` is deprecated; use `cargo nextrs dev` or `nextrs dev`");
     if let Err(error) = run() {
         eprintln!("error: {error}");
         std::process::exit(1);
@@ -88,13 +98,25 @@ fn run() -> std::io::Result<()> {
 /// `cargo nextrs dev` while the legacy `cargo-nextrs-dev` binary remains a
 /// compatibility entry point for existing `.cargo/config.toml` aliases.
 pub fn run_with_args(args: impl IntoIterator<Item = OsString>) -> std::io::Result<()> {
-    let options = Options::parse(args)?;
+    let mut options = Options::parse(args)?;
     let root = env::current_dir()?;
-    let app_path = target_binary(&root, &options.bin_name);
+    let (bin_name, inferred_target_dir) = match options.bin_name.take() {
+        Some(bin_name) => (bin_name, None),
+        None => {
+            let metadata = read_cargo_metadata(&root).map_err(|error| {
+                invalid_input(format!(
+                    "could not infer app binary: {error}; pass --bin <name>"
+                ))
+            })?;
+            let bin_name = infer_bin_from_metadata(&metadata, &root)?;
+            (bin_name, Some(metadata.target_directory))
+        }
+    };
+    let app_path = target_binary(&root, &bin_name, inferred_target_dir.as_deref());
     let ignore_filter = IgnoreFilter::new(&root)?;
 
     eprintln!("nextrs-dev watching {} paths", WATCH_PATHS.len());
-    eprintln!("nextrs-dev build: cargo build --bin {}", options.bin_name);
+    eprintln!("nextrs-dev build: cargo build --bin {bin_name}");
     eprintln!("nextrs-dev app: {}", app_path.display());
 
     let shutdown = Arc::new(AtomicBool::new(false));
@@ -116,11 +138,10 @@ pub fn run_with_args(args: impl IntoIterator<Item = OsString>) -> std::io::Resul
         new_debouncer(Duration::from_secs(1), None, tx).map_err(std::io::Error::other)?;
     watch_paths(&root, &mut watcher)?;
 
-    let mut child =
-        match build_until_current(&root, &options.bin_name, &rx, &shutdown, &ignore_filter)? {
-            BuildOutcome::Ready => Some(spawn_app(&app_path, &options.app_args, &active_app_pgid)?),
-            BuildOutcome::Shutdown => return Ok(()),
-        };
+    let mut child = match build_until_current(&root, &bin_name, &rx, &shutdown, &ignore_filter)? {
+        BuildOutcome::Ready => Some(spawn_app(&app_path, &options.app_args, &active_app_pgid)?),
+        BuildOutcome::Shutdown => return Ok(()),
+    };
 
     loop {
         if shutdown.load(Ordering::SeqCst) {
@@ -149,8 +170,7 @@ pub fn run_with_args(args: impl IntoIterator<Item = OsString>) -> std::io::Resul
         match recv_change(&rx, &shutdown, &ignore_filter)? {
             Change::Changed => {
                 eprintln!("nextrs-dev change detected; rebuilding");
-                match build_until_current(&root, &options.bin_name, &rx, &shutdown, &ignore_filter)?
-                {
+                match build_until_current(&root, &bin_name, &rx, &shutdown, &ignore_filter)? {
                     BuildOutcome::Ready => {
                         if let Some(child) = child.as_mut() {
                             stop(child, &active_app_pgid)?;
@@ -177,7 +197,7 @@ pub fn run_with_args(args: impl IntoIterator<Item = OsString>) -> std::io::Resul
 }
 
 struct Options {
-    bin_name: String,
+    bin_name: Option<String>,
     app_args: Vec<OsString>,
 }
 
@@ -219,19 +239,13 @@ impl Options {
             }
         }
 
-        let Some(bin_name) = bin_name else {
-            return Err(invalid_input(
-                "missing --bin <name>; generated apps use `cargo dev` to pass this automatically",
-            ));
-        };
-
         Ok(Self { bin_name, app_args })
     }
 }
 
 fn print_help() {
     println!(
-        "cargo nextrs-dev\n\nUSAGE:\n    cargo nextrs-dev --bin <name> [-- <app-args>...]\n\nBuilds a nextrs app without interrupting in-progress Cargo builds, then runs the built app binary and restarts it after relevant file changes."
+        "cargo nextrs-dev\n\nUSAGE:\n    cargo nextrs-dev [--bin <name>] [-- <app-args>...]\n\nBuilds a nextrs app without interrupting in-progress Cargo builds, then runs the built app binary and restarts it after relevant file changes. When --bin is omitted, the current package's default-run or sole binary is used."
     );
 }
 
@@ -296,7 +310,7 @@ impl IgnoreFilter {
     }
 }
 
-fn target_binary(root: &Path, bin_name: &str) -> PathBuf {
+fn target_binary(root: &Path, bin_name: &str, inferred_target_dir: Option<&Path>) -> PathBuf {
     // CARGO_TARGET_DIR wins if set. Otherwise ask Cargo where the target dir is
     // — for a workspace member (e.g. this repo's `site/`) the build output lands
     // in the *workspace-root* target/, not `<app>/target/`, so a naive
@@ -304,6 +318,7 @@ fn target_binary(root: &Path, bin_name: &str) -> PathBuf {
     // `root/target` only if `cargo metadata` is unavailable.
     let target_dir = env::var_os("CARGO_TARGET_DIR")
         .map(PathBuf::from)
+        .or_else(|| inferred_target_dir.map(Path::to_path_buf))
         .or_else(|| metadata_target_dir(root))
         .unwrap_or_else(|| root.join("target"));
     target_dir
@@ -315,23 +330,151 @@ fn target_binary(root: &Path, bin_name: &str) -> PathBuf {
 /// if cargo can't be invoked or the field is missing, so the caller can fall
 /// back to a sensible default.
 fn metadata_target_dir(root: &Path) -> Option<PathBuf> {
+    read_cargo_metadata(root)
+        .ok()
+        .map(|metadata| metadata.target_directory)
+}
+
+#[derive(Debug, Deserialize)]
+struct CargoMetadata {
+    packages: Vec<MetadataPackage>,
+    #[serde(default)]
+    workspace_members: Vec<String>,
+    #[serde(default)]
+    workspace_default_members: Vec<String>,
+    target_directory: PathBuf,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetadataPackage {
+    id: String,
+    name: String,
+    manifest_path: PathBuf,
+    #[serde(default)]
+    default_run: Option<String>,
+    targets: Vec<MetadataTarget>,
+}
+
+#[derive(Debug, Deserialize)]
+struct MetadataTarget {
+    name: String,
+    kind: Vec<String>,
+}
+
+fn read_cargo_metadata(root: &Path) -> std::io::Result<CargoMetadata> {
     let cargo = env::var_os("CARGO").unwrap_or_else(|| OsString::from("cargo"));
     let output = Command::new(cargo)
         .args(["metadata", "--no-deps", "--format-version", "1"])
         .current_dir(root)
-        .stderr(Stdio::null())
-        .output()
-        .ok()?;
+        .output()?;
     if !output.status.success() {
-        return None;
+        let detail = String::from_utf8_lossy(&output.stderr);
+        let detail = detail.trim();
+        return Err(std::io::Error::other(if detail.is_empty() {
+            format!("`cargo metadata` exited with {}", output.status)
+        } else {
+            format!("`cargo metadata` failed: {detail}")
+        }));
     }
-    let json = String::from_utf8(output.stdout).ok()?;
-    // Minimal extraction — avoids a JSON dependency for one stable string field.
-    let key = "\"target_directory\":\"";
-    let start = json.find(key)? + key.len();
-    let rest = &json[start..];
-    let end = rest.find('"')?;
-    Some(PathBuf::from(rest[..end].replace("\\\\", "\\")))
+    serde_json::from_slice(&output.stdout)
+        .map_err(|error| std::io::Error::other(format!("invalid Cargo metadata: {error}")))
+}
+
+fn infer_bin_from_metadata(metadata: &CargoMetadata, root: &Path) -> std::io::Result<String> {
+    let root = normalize_path(root);
+    let current_package = metadata
+        .packages
+        .iter()
+        .filter_map(|package| {
+            let package_root = package.manifest_path.parent()?;
+            let package_root = normalize_path(package_root);
+            root.starts_with(&package_root)
+                .then_some((package, package_root.components().count()))
+        })
+        .max_by_key(|(_, depth)| *depth)
+        .map(|(package, _)| package);
+
+    if let Some(package) = current_package {
+        return infer_package_bin(package);
+    }
+
+    let member_ids = if metadata.workspace_default_members.is_empty() {
+        &metadata.workspace_members
+    } else {
+        &metadata.workspace_default_members
+    };
+    let packages = metadata
+        .packages
+        .iter()
+        .filter(|package| member_ids.iter().any(|id| id == &package.id))
+        .collect::<Vec<_>>();
+
+    if let [package] = packages.as_slice() {
+        return infer_package_bin(package);
+    }
+
+    let mut bins = packages
+        .iter()
+        .flat_map(|package| {
+            runnable_bins(package)
+                .into_iter()
+                .map(|bin| format!("{}:{bin}", package.name))
+        })
+        .collect::<Vec<_>>();
+    bins.sort();
+    match bins.as_slice() {
+        [only] => Ok(only
+            .split_once(':')
+            .map(|(_, bin)| bin)
+            .unwrap_or(only)
+            .to_string()),
+        [] => Err(invalid_input(
+            "could not infer app binary: the current Cargo workspace has no runnable binary; pass --bin <name>",
+        )),
+        _ => Err(invalid_input(format!(
+            "could not infer app binary: the current Cargo workspace has multiple runnable binaries ({}); pass --bin <name>",
+            bins.join(", ")
+        ))),
+    }
+}
+
+fn infer_package_bin(package: &MetadataPackage) -> std::io::Result<String> {
+    let bins = runnable_bins(package);
+    if let Some(default_run) = &package.default_run {
+        if bins.iter().any(|bin| bin == default_run) {
+            return Ok(default_run.clone());
+        }
+        return Err(invalid_input(format!(
+            "could not infer app binary: package `{}` has default-run `{default_run}`, but no such binary target; pass --bin <name>",
+            package.name
+        )));
+    }
+
+    match bins.as_slice() {
+        [only] => Ok((*only).to_string()),
+        [] => Err(invalid_input(format!(
+            "could not infer app binary: package `{}` has no runnable binary; pass --bin <name>",
+            package.name
+        ))),
+        _ => Err(invalid_input(format!(
+            "could not infer app binary: package `{}` has multiple runnable binaries ({}); set package.default-run or pass --bin <name>",
+            package.name,
+            bins.join(", ")
+        ))),
+    }
+}
+
+fn runnable_bins(package: &MetadataPackage) -> Vec<&str> {
+    package
+        .targets
+        .iter()
+        .filter(|target| target.kind.iter().any(|kind| kind == "bin"))
+        .map(|target| target.name.as_str())
+        .collect()
+}
+
+fn normalize_path(path: &Path) -> PathBuf {
+    path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn watch_paths(
@@ -427,7 +570,7 @@ fn log_watch_result(
         Ok(events) => {
             let mut changed = 0usize;
             for event in events {
-                if should_rebuild(&event.kind) && !event_ignored(&event.paths, ignore_filter) {
+                if event_requests_rebuild(&event.kind, &event.paths, ignore_filter) {
                     changed += 1;
                     if changed <= 8 {
                         eprintln!("nextrs-dev changed: {}", event_paths(&event.paths));
@@ -446,6 +589,14 @@ fn log_watch_result(
             Err(std::io::Error::other("file watcher error"))
         }
     }
+}
+
+fn event_requests_rebuild(
+    kind: &EventKind,
+    paths: &[PathBuf],
+    ignore_filter: &IgnoreFilter,
+) -> bool {
+    should_rebuild(kind) && !event_ignored(paths, ignore_filter)
 }
 
 fn event_ignored(paths: &[PathBuf], ignore_filter: &IgnoreFilter) -> bool {
@@ -654,4 +805,230 @@ fn signal_process_group(pgid: u32, signal: &str) {
 
     #[cfg(not(unix))]
     let _ = signal;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn package(
+        id: &str,
+        name: &str,
+        manifest_path: &str,
+        bins: &[&str],
+        default_run: Option<&str>,
+    ) -> MetadataPackage {
+        MetadataPackage {
+            id: id.to_string(),
+            name: name.to_string(),
+            manifest_path: PathBuf::from(manifest_path),
+            default_run: default_run.map(str::to_string),
+            targets: bins
+                .iter()
+                .map(|name| MetadataTarget {
+                    name: (*name).to_string(),
+                    kind: vec!["bin".to_string()],
+                })
+                .collect(),
+        }
+    }
+
+    fn metadata(
+        packages: Vec<MetadataPackage>,
+        workspace_members: &[&str],
+        default_members: &[&str],
+    ) -> CargoMetadata {
+        CargoMetadata {
+            packages,
+            workspace_members: workspace_members
+                .iter()
+                .map(|id| (*id).to_string())
+                .collect(),
+            workspace_default_members: default_members.iter().map(|id| (*id).to_string()).collect(),
+            target_directory: PathBuf::from("/workspace/target"),
+        }
+    }
+
+    #[test]
+    fn explicit_bin_and_legacy_prefix_are_preserved() {
+        let options = Options::parse([
+            OsString::from("nextrs-dev"),
+            OsString::from("--bin"),
+            OsString::from("demo"),
+            OsString::from("--"),
+            OsString::from("--port"),
+            OsString::from("4000"),
+        ])
+        .unwrap();
+        assert_eq!(options.bin_name.as_deref(), Some("demo"));
+        assert_eq!(
+            options.app_args,
+            [OsString::from("--port"), OsString::from("4000")]
+        );
+    }
+
+    #[test]
+    fn omitted_bin_is_deferred_to_metadata_inference() {
+        let options = Options::parse(Vec::<OsString>::new()).unwrap();
+        assert_eq!(options.bin_name, None);
+        assert!(options.app_args.is_empty());
+    }
+
+    #[test]
+    fn package_default_run_wins_when_multiple_bins_exist() {
+        let metadata = metadata(
+            vec![package(
+                "app-id",
+                "app",
+                "/workspace/app/Cargo.toml",
+                &["app", "index"],
+                Some("app"),
+            )],
+            &["app-id"],
+            &["app-id"],
+        );
+        assert_eq!(
+            infer_bin_from_metadata(&metadata, Path::new("/workspace/app/app/todos")).unwrap(),
+            "app"
+        );
+    }
+
+    #[test]
+    fn sole_package_binary_is_inferred() {
+        let metadata = metadata(
+            vec![package(
+                "app-id",
+                "app",
+                "/workspace/app/Cargo.toml",
+                &["server"],
+                None,
+            )],
+            &["app-id"],
+            &["app-id"],
+        );
+        assert_eq!(
+            infer_bin_from_metadata(&metadata, Path::new("/workspace/app")).unwrap(),
+            "server"
+        );
+    }
+
+    #[test]
+    fn sole_workspace_binary_is_inferred_from_virtual_root() {
+        let metadata = metadata(
+            vec![
+                package(
+                    "library-id",
+                    "library",
+                    "/workspace/library/Cargo.toml",
+                    &[],
+                    None,
+                ),
+                package(
+                    "app-id",
+                    "app",
+                    "/workspace/app/Cargo.toml",
+                    &["server"],
+                    None,
+                ),
+            ],
+            &["library-id", "app-id"],
+            &[],
+        );
+        assert_eq!(
+            infer_bin_from_metadata(&metadata, Path::new("/workspace")).unwrap(),
+            "server"
+        );
+    }
+
+    #[test]
+    fn ambiguous_package_requires_explicit_bin() {
+        let metadata = metadata(
+            vec![package(
+                "app-id",
+                "app",
+                "/workspace/app/Cargo.toml",
+                &["app", "index"],
+                None,
+            )],
+            &["app-id"],
+            &["app-id"],
+        );
+        let error = infer_bin_from_metadata(&metadata, Path::new("/workspace/app")).unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::InvalidInput);
+        assert!(error.to_string().contains("multiple runnable binaries"));
+        assert!(error.to_string().contains("--bin <name>"));
+    }
+
+    #[test]
+    fn watch_paths_cover_modern_and_legacy_project_layouts() {
+        for path in [
+            ".nextrs",
+            "app",
+            "components",
+            "package-lock.json",
+            "package.json",
+            "src",
+            "tsconfig.json",
+        ] {
+            assert!(WATCH_PATHS.contains(&path), "missing watch path: {path}");
+        }
+
+        // Keep watching the old visible generated-client layout during the
+        // migration to `.nextrs/client`.
+        for path in [
+            "client/package-lock.json",
+            "client/package.json",
+            "client/src",
+        ] {
+            assert!(
+                WATCH_PATHS.contains(&path),
+                "missing legacy watch path: {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn generated_outputs_do_not_request_rebuilds() {
+        let root = std::env::temp_dir().join(format!(
+            "nextrs-dev-generated-output-filter-{}",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let filter = IgnoreFilter::new(&root).unwrap();
+
+        for path in [
+            ".nextrs/openapi.json",
+            ".nextrs/client/dist/index.js",
+            ".nextrs/client/dist/index.d.ts",
+            ".nextrs/client/src/generated/fetch/index.ts",
+            ".nextrs/client/src/generated/react-query/index.ts",
+            "public/dist/app.js",
+        ] {
+            let path = root.join(path);
+            assert!(
+                !event_requests_rebuild(&EventKind::Any, &[path], &filter),
+                "generated output unexpectedly requests a rebuild"
+            );
+        }
+
+        for path in [
+            "package.json",
+            "package-lock.json",
+            "components/TodoRow.tsx",
+            ".nextrs/dump-openapi.rs",
+            ".nextrs/client/package.json",
+            ".nextrs/client/orval.config.ts",
+            ".nextrs/client/tsconfig.json",
+            ".nextrs/client/src/index.ts",
+        ] {
+            let path = root.join(path);
+            assert!(
+                event_requests_rebuild(&EventKind::Any, &[path], &filter),
+                "source or configuration input unexpectedly ignored"
+            );
+        }
+
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

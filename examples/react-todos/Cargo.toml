@@ -4,16 +4,20 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 publish = false
-# src/bin/dump-openapi.rs makes `cargo run -p react-todos` ambiguous otherwise.
+# The hidden OpenAPI helper is still a Cargo binary, so keep the local server
+# explicit for plain `cargo run -p react-todos`.
 default-run = "react-todos"
+
+[lib]
+path = "src/app.rs"
 
 [[bin]]
 name = "react-todos"
 path = "src/main.rs"
 
 [[bin]]
-name = "dump-openapi"
-path = "src/bin/dump-openapi.rs"
+name = "react-todos-dump-openapi"
+path = ".nextrs/dump-openapi.rs"
 
 # Vercel deployment entry (serverless function). See vercel.json.
 [[bin]]

@@ -29,15 +29,24 @@ reload fallback. Production should remain static bundles served by the Rust
 app. We will revisit this when live reload becomes painful enough in TSX-heavy
 development.
 
-### App Builder / Scaffolder Command
+### Unified CLI and App Scaffolder
 
-Status: shipped as the `create-nextrs-app` workspace crate.
+Status: shipped in the `cargo-nextrs` workspace crate; first crates.io release
+of the unified package is pending.
 
 Nextrs has a first-class starter command, similar in spirit to `create-next-app`
-or the old `create-react-app`. `create-nextrs-app` generates a React-first
-starter, and the local dev workflow runs through the unified `cargo-nextrs`
-tool (installed with `cargo install cargo-nextrs`), which the scaffold wires
-up as a `cargo dev` alias.
+or the old `create-react-app`. One `cargo install cargo-nextrs` provides both
+`nextrs` and `cargo nextrs`; either can create, run, and regenerate an app:
+
+```bash
+nextrs new my-app                 # or: cargo nextrs new my-app
+nextrs dev                        # or: cargo nextrs dev
+nextrs client generate            # or: cargo nextrs client generate
+```
+
+The scaffold retains `cargo dev` as a project-local alias. The old
+`create-nextrs-app` and `cargo nextrs-dev` executables are deprecated
+compatibility wrappers.
 
 The scaffold is intentionally small but covers the important framework seams:
 
@@ -46,9 +55,14 @@ The scaffold is intentionally small but covers the important framework seams:
   a `prefetch.rs` that returns a `nextrs::QuerySeed` (seeding the React Query cache)
   and a `loading.tsx` streaming fallback.
 - A Rust API route at `app/api/ping/route.rs` using `#[nextrs::api]`, plus a
-  typed React Query client generated into `client/` by orval.
-- The local workflow: `cargo dev` (alias for `nextrs-dev --bin <crate>`) for
-  watch/restart.
+  framework-independent Fetch client and React Query integration generated
+  into the hidden `.nextrs/client` npm workspace.
+- Shared React UI under `components/`, with arbitrary non-route modules also
+  allowed beside convention files in `app/`.
+- The local workflow: `cargo dev` (alias for `nextrs dev --bin <crate>`) for
+  watch/restart, while direct dev commands infer `default-run` when possible.
+- Automatic root `npm install` and client generation for fresh apps, with
+  `--no-install` for a files-only scaffold.
 - The Vercel bundling escape hatch: `NEXTRS_SKIP_BUNDLE=1` for deploy/codegen
   situations, `NEXTRS_SKIP_BUNDLE=0` (the default) for local dev.
 
@@ -58,18 +72,25 @@ Generated starter shape:
 my-app/
 ├── app/
 │   ├── layout.tsx                  # React root layout
-│   ├── page.tsx                    # pure client-rendered React page
+│   ├── page.tsx                    # React page
+│   ├── PingDemo.tsx                # freely colocated non-route component
 │   ├── slow/
 │   │   ├── page.tsx                # React page seeded from Rust props
-│   │   ├── prefetch.rs                # async prefetch() -> nextrs::QuerySeed
+│   │   ├── prefetch.rs             # async prefetch() -> nextrs::QuerySeed
 │   │   └── loading.tsx             # streaming loading fallback
 │   └── api/ping/
 │       └── route.rs                # Rust GET handler with #[nextrs::api]
-├── client/                         # orval-generated typed React Query client
-├── src/main.rs                     # local Axum server
-├── src/bin/dump-openapi.rs         # OpenAPI dump used for client codegen
+├── components/
+│   └── NextrsLogo.tsx              # shared React component
+├── .nextrs/
+│   ├── client/                     # generated package; do not edit
+│   └── dump-openapi.rs             # hidden OpenAPI helper
+├── src/
+│   ├── app.rs                      # shared Rust application/router
+│   └── main.rs                     # local/container entry
+├── api/index.rs                    # Vercel adapter
 ├── build.rs                        # emit_registry + bundle_pages
-└── .cargo/config.toml              # `dev` alias -> cargo-nextrs-dev
+└── .cargo/config.toml              # `dev` alias -> unified nextrs CLI
 ```
 
 ## Framework Surface
@@ -106,6 +127,10 @@ Questions to resolve before enforcing this:
   Vercel allows an explicit `functions["src/main.rs"]` entry, letting generated
   apps avoid the extra deploy-only file.
 - Richer `route.rs` diagnostics and request extraction conventions.
+- Add a `nextrs::server::bind_listener` helper: honor an explicit `PORT`
+  strictly, otherwise try local ports 3000 through 3009. Generated entry
+  points should call the shared helper instead of carrying duplicated binding
+  loops; until then use `PORT=<port> cargo dev` when 3000 is occupied.
 - Nested streaming/Suspense-style boundaries beyond the current single loading
   slot per route.
 - Upstream Vercel adapter support for streaming `text/html`, so

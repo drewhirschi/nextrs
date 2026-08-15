@@ -4,18 +4,12 @@ docs/nextrs-transcripts-backup.zip
 /docs.png
 .env
 .env*.local
-# git — same pattern as examples/react-todos.
-# intentionally committed: Vercel deploys the site without a build-time bundler
 /landing.png
-# Local screenshot/verification scratch (Playwright MCP).
-# (NEXTRS_SKIP_BUNDLE=1 in site/vercel.json), so the prebuilt bundle must be in
 node_modules/
-# `npm install` in site/client symlinks site/node_modules -> client/node_modules
+
+# Local screenshot/browser verification scratch.
 .playwright-mcp/
-# (postinstall) so rolldown resolves bare imports from app/*.tsx; not tracked.
-site/node_modules
-# site/public/dist/ (the page.tsx bundle from nextrs::bundle::bundle_pages) is
 site/style/tailwindcss
 target/
-.vercel
 target-vercel/
+.vercel/

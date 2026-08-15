@@ -1,5 +1,5 @@
 fn main() {
-    nextrs::build::emit_registry("app", "src/main.rs", "nextrs_routes.rs")
+    nextrs::build::emit_registry("app", "src/app.rs", "nextrs_routes.rs")
         .expect("nextrs::build::emit_registry failed");
 
     // Docs: pre-render content/docs/*.md into includable Rust, plus llms.txt
@@ -19,7 +19,8 @@ fn main() {
     // pages stay server-rendered. No-op when there are no .tsx pages.
     let assets = nextrs::bundle::bundle_pages(&nextrs::bundle::BundleConfig {
         app_dir: "app",
-        client_dir: "client",
+        project_dir: Some("."),
+        client_dir: ".nextrs/client",
         client_alias: "@site/client",
         public_dist: "public/dist",
         ..Default::default()

@@ -13,6 +13,8 @@ required=(
   ".doc-index-grid"
   ".group-label"
   ".lead"
+  ".docs-code-block"
+  ".docs-code-title"
   "--accent:#ff5a5f"
 )
 

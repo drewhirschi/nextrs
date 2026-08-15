@@ -9,6 +9,10 @@ nextrs is easiest to understand one layer at a time. Start with the smallest
 React component, then add each backend or data abstraction only when the
 problem in front of you needs it.
 
+Route-local components can sit beside `page.tsx`; shared components can live in
+top-level `components/`. Only exact convention filenames create routes, so
+neither choice changes the URL tree.
+
 This tour deliberately builds the same idea five times. It is also a useful
 demo path: start with almost nothing, put Rust behind an HTTP boundary, and
 then show how that Rust contract keeps the richer client honest.
@@ -81,6 +85,7 @@ After changing the contract, generate the client from the application root:
 
 ```bash
 cargo nextrs client generate
+# equivalent: nextrs client generate
 ```
 
 ## 4. Call Rust directly from TypeScript
@@ -109,7 +114,7 @@ The generated `getApiTodos` function and its result come from the Rust endpoint.
 Rename `title` in Rust, regenerate, and this page stops type-checking at the
 exact place that still expects the old contract.
 
-Use this plain client in event handlers, scripts, tests, or any UI framework.
+Use this plain client in browser modules, event handlers, or any UI framework.
 It is the smallest end-to-end example of TypeScript consuming a Rust-owned API.
 
 ## 5. Add React Query when server state grows
@@ -119,7 +124,7 @@ refetching, mutations, or invalidation. The hook is generated beside the plain
 function from the same contract:
 
 ```tsx
-import { useGetApiTodos } from "@mysite/client";
+import { useGetApiTodos } from "@mysite/client/react-query";
 
 export default function Todos() {
   const { data, isPending } = useGetApiTodos();
@@ -136,6 +141,9 @@ export default function Todos() {
 
 The Rust handler has not changed. The direct function and the hook are two
 ways to consume the same generated API, not two competing backend designs.
+Both imports resolve through the generated package linked in the app's root
+`node_modules`; the package emits JavaScript and declarations for editors and
+type checking.
 
 ## 6. Seed the first render from Rust
 

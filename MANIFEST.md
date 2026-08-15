@@ -16,11 +16,19 @@ Cargo workspace at the repo root — a pure virtual manifest (no root package). 
 |---|---|
 | `crates/nextrs/` | The framework crate (library). Source at `crates/nextrs/src/{lib,conventions,discovery,router,seed,prefetch,openapi,vercel,build,docs,bundle}.rs`. `vercel`, `build` and `docs` (both gated by the `build` feature), and `bundle` (gated by the `tsx` feature) are feature-gated. |
 | `crates/nextrs-macros/` | Proc-macro crate paired with `nextrs`. |
-| `crates/cargo-nextrs-dev/` | The `cargo nextrs-dev` watcher shipped to apps (and used by `site`). |
-| `crates/create-nextrs-app/` | The `create-nextrs-app` React-first scaffolder. |
-| `site/` | Self-contained docs/demo app: dev binary (`src/main.rs`), Vercel entry (`api/index.rs`, the `index` bin), `build.rs`, `vercel.json`, `style/`, `public/`. `cd site && cargo dev` → http://localhost:3000. The Vercel deploy target (project Root Directory = `site`). |
+| `crates/cargo-nextrs/` | Unified CLI. One package installs `cargo-nextrs` (`cargo nextrs`), `nextrs`, and a temporary `cargo-nextrs-dev` compatibility launcher. Owns `new`, `dev`, and `client generate` dispatch. |
+| `crates/cargo-nextrs-dev/` | Dev-runner library used by the unified CLI, plus the deprecated standalone `cargo nextrs-dev` wrapper. |
+| `crates/create-nextrs-app/` | React-first scaffold library used by `nextrs new`, plus the deprecated `create-nextrs-app` wrapper. Scaffold templates live in `src/lib.rs`. |
+| `site/` | Self-contained docs/demo app: shared Rust app (`src/app.rs`), local entry (`src/main.rs`), Vercel adapter (`api/index.rs`), hidden generated client (`.nextrs/client`), React `app/` and `components/`, `build.rs`, and `public/`. `cd site && cargo dev` → http://localhost:3000. The Vercel deploy target uses Root Directory = `site`. |
 
-The framework is a normal Rust library. The user writes only convention files (`app/.../{page,layout,loading}.{rs,html}`); `nextrs::build` (gated by the `build` feature, depended on from `[build-dependencies]`) runs at compile time via a tiny `build.rs` and emits the registry into `$OUT_DIR/nextrs_routes.rs`. The user's `main.rs` (or `api/index.rs`) does `include!(concat!(env!("OUT_DIR"), "/nextrs_routes.rs"))` and calls `generated_registry()`. No `#[path]` mod declarations or `RouteEntry` constructors by hand.
+The framework is a normal Rust library. The user writes convention files under
+`app/`, reusable React UI under `components/`, and Rust application/domain code
+under `src/`. `nextrs::build` (gated by the `build` feature, depended on from
+`[build-dependencies]`) runs at compile time via a tiny `build.rs` and emits the
+registry into `$OUT_DIR/nextrs_routes.rs`. `src/app.rs` includes that registry
+and constructs the shared application; `src/main.rs` and `api/index.rs` are
+small process adapters. No `#[path]` modules or `RouteEntry` constructors are
+written by hand.
 
 ## Conventions
 
@@ -103,7 +111,7 @@ soft-nav prefetch endpoint + shell loaders (0.3.4).
 | Vercel adapter | `crates/nextrs/src/vercel.rs` — `StreamingVercelLayer` (feature-gated by `vercel`). Drop-in replacement for `vercel_runtime::axum::VercelLayer` that doesn't buffer text/html |
 | Progressive demo | `site/app/{simple, with-loading, with-layout}/` — three routes that progressively add `loading.{rs,html}` and `layout.{rs,html}`. The home page (`site/app/page.html`) is an overview with links and a per-route file listing |
 | Codegen | `crates/nextrs/src/build.rs` (feature `build`) — `emit_registry(app_dir, _, out_name)` walks `discover_routes` output and emits Rust source: `#[path]` mods for `.rs` slots, `static_*(include_str!(...))` for `.html` slots, and a `generated_registry()` function. Both paths emitted as absolute (necessary because `#[path]` inside an `include!`-d file resolves relative to the included file's location, not the includer). |
-| Site wiring | `site/build.rs` emits the generated file once; both `site/src/main.rs` (dev bin) and `site/api/index.rs` (Vercel `index` bin) `include!` it and call `generated_registry()`. The Vercel bin wraps it with `StreamingVercelLayer` for `vercel_runtime::run`. |
+| Site wiring | `site/build.rs` emits the generated file once; `site/src/app.rs` includes it and constructs the shared router. `site/src/main.rs` starts the normal server, while `site/api/index.rs` adapts that same app to Vercel with `StreamingVercelLayer`. |
 | Askama config | `site/askama.toml` (dirs = ["app"]) — shared by both bins |
 | Streaming reference doc | `docs/streaming.md` — the model, layout-shell split, local vs Vercel, verification |
 | Vercel deploy plan & results | `docs/vercel-deploy.md` — research findings, latency measurements, the VercelLayer bug story |
@@ -127,6 +135,6 @@ soft-nav prefetch endpoint + shell loaders (0.3.4).
 ## Roadmap
 
 See `ROADMAP.md` for the working roadmap. Current deferred items include React
-HMR/Fast Refresh, a first-class app scaffolder command, `error.{rs,html}`,
-per-route Vercel binaries, richer `route.rs` diagnostics, nested streaming, and
-upstream Vercel adapter support for streaming `text/html`.
+HMR/Fast Refresh, `error.{rs,html}`, per-route Vercel binaries, richer
+`route.rs` diagnostics, nested streaming, and upstream Vercel adapter support
+for streaming `text/html`.
