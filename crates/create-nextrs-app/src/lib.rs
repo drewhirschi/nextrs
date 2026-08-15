@@ -1143,7 +1143,6 @@ vercel deploy --prebuilt "${FLAGS[@]}"
 fn vercel_json() -> String {
     r#"{
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "//": "api/index.rs is a generated Vercel adapter. Application logic lives in src/app.rs; remove the adapter, index Cargo target, Vercel dependencies, and this file together when Vercel is not a deployment target.",
   "installCommand": "npm ci",
   "buildCommand": "npm run client:prepare && cargo build --release --bin index && npm run client:build",
   "functions": {
