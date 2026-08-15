@@ -12,7 +12,7 @@ lives under `src/`, and framework-generated state stays out of sight under
 
 ## Install one CLI and create the app
 
-```bash
+```bash title="Terminal"
 cargo install cargo-nextrs
 nextrs new mysite
 cd mysite
@@ -20,7 +20,7 @@ cd mysite
 
 Cargo subcommand users can run the same operation as:
 
-```bash
+```bash title="Terminal"
 cargo nextrs new mysite
 ```
 
@@ -31,7 +31,7 @@ commands, but new projects should use the unified CLI.
 The scaffolder installs the root JavaScript dependencies and generates the
 typed client before it returns. Its default tree has a deliberate split:
 
-```text
+```text title="Project structure"
 mysite/
 ├── app/                         # URL tree and route-specific code
 │   ├── layout.tsx               # shared React layout
@@ -71,7 +71,7 @@ The mental model is:
 
 `app/page.tsx` is an ordinary React component:
 
-```tsx
+```tsx title="app/page.tsx"
 import { NextrsLogo } from "@/components/NextrsLogo";
 
 export default function HomePage() {
@@ -82,7 +82,7 @@ export default function HomePage() {
 Directories become URL segments, so `app/settings/page.tsx` serves
 `/settings`. You can freely colocate supporting files:
 
-```text
+```text title="Colocated route files"
 app/settings/page.tsx
 app/settings/SettingsForm.tsx
 app/settings/format-preferences.ts
@@ -95,7 +95,7 @@ component to top-level `components/` when several routes share it.
 
 Create `app/api/greeting/route.rs`:
 
-```rust
+```rust title="app/api/greeting/route.rs"
 use axum::Json;
 use serde::Serialize;
 use utoipa::ToSchema;
@@ -117,7 +117,7 @@ Orval generates two stable entry points.
 
 Use the package root for framework-independent fetch functions:
 
-```ts
+```ts title="app/load-greeting.ts"
 import { getApiGreeting } from "@mysite/client";
 
 const response = await getApiGreeting();
@@ -126,7 +126,7 @@ console.log(response.data.message);
 
 Use `/react-query` for hooks, query options, query keys, and mutations:
 
-```tsx
+```tsx title="components/Greeting.tsx"
 import { useGetApiGreeting } from "@mysite/client/react-query";
 
 export function Greeting() {
@@ -137,7 +137,7 @@ export function Greeting() {
 
 After changing an annotated endpoint, regenerate from the project root:
 
-```bash
+```bash title="Terminal"
 cargo nextrs client generate
 # equivalent: nextrs client generate
 ```
@@ -157,13 +157,13 @@ package before TypeScript or the browser build consumes it.
 
 The default shortcut is:
 
-```bash
+```bash title="Terminal"
 cargo dev
 ```
 
 These direct forms run the same watcher:
 
-```bash
+```bash title="Terminal"
 cargo nextrs dev
 nextrs dev
 ```

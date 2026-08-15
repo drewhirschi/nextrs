@@ -47,9 +47,9 @@
 //! section ranks by its lowest `order`), then `order`, then slug.
 //!
 //! Markdown is rendered at build time (tables, strikethrough, footnotes;
-//! headings get slugified `id`s for deep links). Syntax highlighting is a
-//! deliberate non-feature for now — if wanted later, run syntect over the code
-//! blocks inside this same pass so it stays build-time-only.
+//! headings get slugified `id`s for deep links). Fenced code blocks are syntax
+//! highlighted at the same time. Add `title="app/page.tsx"` after the language
+//! to render an attached filename header.
 
 use std::collections::HashMap;
 use std::fmt::Write as _;
@@ -204,7 +204,7 @@ fn split_frontmatter(source: &str) -> Option<(&str, &str)> {
 }
 
 fn render_markdown(md: &str) -> String {
-    use pulldown_cmark::{CowStr, Event, Options, Parser, Tag, TagEnd};
+    use pulldown_cmark::{CodeBlockKind, CowStr, Event, Options, Parser, Tag, TagEnd};
 
     let mut opts = Options::empty();
     opts.insert(Options::ENABLE_TABLES);
@@ -215,8 +215,29 @@ fn render_markdown(md: &str) -> String {
     let mut rewritten: Vec<Event> = Vec::with_capacity(events.len());
     let mut used_ids: HashMap<String, u32> = HashMap::new();
 
-    for (i, event) in events.iter().enumerate() {
+    let mut i = 0;
+    while i < events.len() {
+        let event = &events[i];
         match event {
+            Event::Start(Tag::CodeBlock(CodeBlockKind::Fenced(info))) => {
+                let (language, title) = parse_code_info(info);
+                let mut source = String::new();
+                i += 1;
+                while i < events.len() {
+                    match &events[i] {
+                        Event::End(TagEnd::CodeBlock) => break,
+                        Event::Text(text) | Event::Code(text) => source.push_str(text),
+                        Event::SoftBreak | Event::HardBreak => source.push('\n'),
+                        _ => {}
+                    }
+                    i += 1;
+                }
+                rewritten.push(Event::Html(CowStr::from(render_code_block(
+                    &source,
+                    &language,
+                    title.as_deref(),
+                ))));
+            }
             // Inject a slugified id into headings that don't declare one, so
             // docs get stable deep links.
             Event::Start(Tag::Heading {
@@ -248,11 +269,109 @@ fn render_markdown(md: &str) -> String {
             }
             e => rewritten.push(e.clone()),
         }
+        i += 1;
     }
 
     let mut html = String::new();
     pulldown_cmark::html::push_html(&mut html, rewritten.into_iter());
     html
+}
+
+fn parse_code_info(info: &str) -> (String, Option<String>) {
+    let info = info.trim();
+    let language_end = info.find(char::is_whitespace).unwrap_or(info.len());
+    let language = info[..language_end].to_ascii_lowercase();
+    let metadata = info[language_end..].trim();
+    let title = ["title=\"", "title='"].into_iter().find_map(|prefix| {
+        let start = metadata.find(prefix)? + prefix.len();
+        let quote = prefix.chars().last()?;
+        let end = metadata[start..].find(quote)? + start;
+        Some(metadata[start..end].to_string())
+    });
+    (language, title)
+}
+
+fn render_code_block(source: &str, language: &str, title: Option<&str>) -> String {
+    use syntect::easy::HighlightLines;
+    use syntect::highlighting::ThemeSet;
+    use syntect::html::{IncludeBackground, styled_line_to_highlighted_html};
+    use syntect::parsing::SyntaxSet;
+    use syntect::util::LinesWithEndings;
+
+    static ASSETS: std::sync::OnceLock<(SyntaxSet, ThemeSet)> = std::sync::OnceLock::new();
+    let (syntaxes, themes) = ASSETS.get_or_init(|| {
+        (
+            SyntaxSet::load_defaults_newlines(),
+            ThemeSet::load_defaults(),
+        )
+    });
+    let syntax = syntax_for_language(syntaxes, language);
+    let theme = &themes.themes["base16-ocean.dark"];
+    let mut highlighter = HighlightLines::new(syntax, theme);
+    let mut highlighted = String::new();
+    for line in LinesWithEndings::from(source) {
+        match highlighter.highlight_line(line, &syntaxes) {
+            Ok(ranges) => match styled_line_to_highlighted_html(&ranges, IncludeBackground::No) {
+                Ok(line_html) => highlighted.push_str(&line_html),
+                Err(_) => escape_html_into(line, &mut highlighted),
+            },
+            Err(_) => escape_html_into(line, &mut highlighted),
+        }
+    }
+
+    let language_label = if language.is_empty() {
+        "text"
+    } else {
+        language
+    };
+    let mut html = String::from("<div class=\"docs-code-block\">");
+    if let Some(title) = title {
+        html.push_str("<div class=\"docs-code-header\"><span class=\"docs-code-title\">");
+        escape_html_into(title, &mut html);
+        html.push_str("</span><span class=\"docs-code-language\">");
+        escape_html_into(language_label, &mut html);
+        html.push_str("</span></div>");
+    }
+    html.push_str("<pre class=\"docs-code\"><code class=\"language-");
+    escape_html_into(language_label, &mut html);
+    html.push_str("\">");
+    html.push_str(&highlighted);
+    html.push_str("</code></pre></div>\n");
+    html
+}
+
+fn syntax_for_language<'a>(
+    syntaxes: &'a syntect::parsing::SyntaxSet,
+    language: &str,
+) -> &'a syntect::parsing::SyntaxReference {
+    let token = match language {
+        "html" => "html",
+        "js" | "javascript" => "js",
+        // syntect's bundled JavaScript grammar understands JSX constructs;
+        // the default syntax pack does not expose dedicated JSX/TSX tokens.
+        "jsx" | "tsx" => "js",
+        "rs" | "rust" => "rs",
+        "sh" | "shell" | "bash" => "sh",
+        "ts" | "typescript" => "js",
+        other => other,
+    };
+    syntaxes
+        .find_syntax_by_token(token)
+        .or_else(|| syntaxes.find_syntax_by_extension(token))
+        .unwrap_or_else(|| syntaxes.find_syntax_plain_text())
+}
+
+fn escape_html_into(value: &str, output: &mut String) {
+    for character in value.chars() {
+        match character {
+            '&' => output.push_str("&amp;"),
+            '<' => output.push_str("&lt;"),
+            '>' => output.push_str("&gt;"),
+            '"' => output.push_str("&quot;"),
+            '\'' => output.push_str("&#39;"),
+            _ => output.push(character),
+        }
+    }
 }
 
 fn slugify(text: &str) -> String {
@@ -396,6 +515,37 @@ mod tests {
         let html = render_markdown("## Hello World\n\n## Hello World");
         assert!(html.contains("<h2 id=\"hello-world\">"), "{}", html);
         assert!(html.contains("<h2 id=\"hello-world-1\">"), "{}", html);
+    }
+
+    #[test]
+    fn fenced_code_supports_titles_and_core_web_languages() {
+        let syntaxes = syntect::parsing::SyntaxSet::load_defaults_newlines();
+        for language in ["rust", "tsx", "html"] {
+            let syntax = syntax_for_language(&syntaxes, language);
+            assert_ne!(syntax.name, "Plain Text", "missing {language} syntax");
+        }
+        for (language, marker) in [
+            ("rust", "fn main() {}"),
+            (
+                "tsx",
+                "export function Page() { return <main>Hello</main>; }",
+            ),
+            ("html", "<main>Hello</main>"),
+        ] {
+            let markdown = format!("```{language} title=\"app/example.{language}\"\n{marker}\n```");
+            let html = render_markdown(&markdown);
+            assert!(html.contains("class=\"docs-code-block\""), "{html}");
+            assert!(html.contains(&format!("app/example.{language}")), "{html}");
+            assert!(html.contains(&format!("language-{language}")), "{html}");
+            assert!(html.contains("style=\"color:"), "{html}");
+        }
+    }
+
+    #[test]
+    fn code_titles_and_unknown_languages_are_safely_escaped() {
+        let html = render_markdown("```unknown title=\"<unsafe>&\"\n<a>&\n```");
+        assert!(html.contains("&lt;unsafe&gt;&amp;"), "{html}");
+        assert!(html.contains("&lt;a&gt;&amp;"), "{html}");
     }
 
     #[test]
