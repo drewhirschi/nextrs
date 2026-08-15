@@ -38,3 +38,4 @@ user docs.
 - [PORT and .env consistency](port-and-dotenv-consistency.md)
 - [Scaffold emits an unpublished version](scaffold-version-pin-publish-order.md)
 - [`--here` refuses a directory containing only .git](scaffold-here-allows-git-only-dir.md)
+- [Generated client package resolution and clean scaffold ownership](generated-client-package-resolution.md)

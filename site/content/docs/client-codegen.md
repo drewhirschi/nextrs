@@ -1,233 +1,209 @@
 +++
 title = "Client Generation: Step by Step"
-description = "Turn a small Rust route into typed fetch functions, React Query hooks, and a plain JavaScript client"
+description = "Turn typed Rust path, query, body, response, and error contracts into fetch functions and React Query hooks"
 section = "Client Generation"
 order = 4
 +++
 
-nextrs can turn a Rust API route into client code. The generated client knows
-the URL, request body, query parameters, success response, and documented error
-responses. Start with one endpoint and add the more advanced pieces only when
-you need them.
+This walkthrough starts with one Rust endpoint, then adds the inputs and error
+cases that demonstrate end-to-end inference. The generated client requires no
+`any`, handwritten interface, relative generated import, or module shim.
 
-## 1. Write a small Rust endpoint
+## 1. Write a typed Rust endpoint
 
-Create `app/api/greeting/route.rs`:
+Create `app/api/todos/[id]/route.rs`:
 
 ```rust
-use axum::Json;
-use serde::Serialize;
-use utoipa::ToSchema;
+use axum::{extract::{Path, Query}, http::StatusCode, Json};
+use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
 
-#[derive(Serialize, ToSchema)]
-pub struct Greeting {
-    pub message: String,
+#[derive(Deserialize, IntoParams)]
+pub struct TodoQuery {
+    pub neighbors: Option<bool>,
 }
 
-#[nextrs::api]
-pub async fn get() -> Json<Greeting> {
-    Json(Greeting {
-        message: "Hello from Rust".into(),
-    })
+#[derive(Serialize, ToSchema)]
+pub struct Todo {
+    pub id: u64,
+    pub title: String,
+    pub done: bool,
+}
+
+#[nextrs::api(
+    get,
+    responses(
+        (status = 200, description = "The todo", body = Todo),
+        (status = 404, description = "Not found"),
+    ),
+)]
+pub async fn get(
+    Path(id): Path<u64>,
+    Query(query): Query<TodoQuery>,
+) -> Result<Json<Todo>, StatusCode> {
+    find_todo(id, query.neighbors.unwrap_or(false))
+        .await
+        .map(Json)
+        .ok_or(StatusCode::NOT_FOUND)
 }
 ```
 
-The file location supplies `/api/greeting`; the function name supplies `GET`;
-and `Json<Greeting>` supplies the `200` response body. nextrs derives the
-default operation ID `getApiGreeting` from the method and path. There is no
-contract metadata to repeat.
+The `[id]` directory and `Path<u64>` define the path argument. `Query<TodoQuery>`
+defines query options. The response declarations produce a status union. The
+default operation ID is derived from method and path; set `operation_id` in the
+annotation when you want a shorter public name.
 
-This remains an ordinary Axum handler. `#[nextrs::api]` adds it to the OpenAPI
-document; it does not introduce a separate RPC runtime.
+This remains an ordinary Axum handler. The attribute adds it to the OpenAPI
+document; it does not create a second RPC runtime.
 
-## 2. Generate the client
+## 2. Generate from the app root
 
-Install the nextrs Cargo command once, then generate from the app root:
+Install the unified CLI once:
 
 ```bash
 cargo install cargo-nextrs
 cargo nextrs client generate
 ```
 
-The Cargo command installs the client generator dependencies when they are
-missing. Orval and TypeScript still do the OpenAPI-to-JavaScript work, but they
-are implementation details behind one project-level command.
+`nextrs client generate` is equivalent. Generation refreshes the Rust
+contract, produces both fetch and React Query surfaces, runs the application
+build, and emits JavaScript and `.d.ts` files for the linked client package.
 
-The command follows this path:
+Never run `npm install` in `.nextrs/client`. The root project owns dependencies
+and links this generated workspace.
 
-```text
-route.rs
-   ↓ Rust build and #[nextrs::api]
-OpenAPI document
-   ↓ Orval
-generated TypeScript fetch function + React Query hook
-```
-
-Conceptually, the generated surface looks like this:
+## 3. Call the framework-independent client
 
 ```ts
-declare function getApiGreeting(): Promise<{
-  status: 200;
-  data: { message: string };
-  headers: Headers;
-}>;
+import { getApiTodosById } from "@mysite/client";
 
-declare function useGetApiGreeting(): UseQueryResult<
-  Awaited<ReturnType<typeof getApiGreeting>>
->;
+const response = await getApiTodosById(42, { neighbors: true });
+
+if (response.status === 200) {
+  console.log(response.data.title);
+} else {
+  console.log("Todo was not found");
+}
 ```
 
-Those declarations are illustrative; nextrs and Orval generate the real
-implementation and types. Do not edit `client/src/generated/` by hand.
+The path argument must be a number; `neighbors` must be a boolean when
+present; and the `200` branch carries `Todo`. TypeScript rejects invalid calls
+at the call site.
 
-## 3. Make a direct call
+The package root uses the platform `fetch` API and has no React dependency in
+its public surface. Use it in browser modules, event handlers, or another UI
+framework.
 
-The smallest client usage is a normal async function call:
+## 4. Use React Query integration
 
-```ts
-import { getApiGreeting } from "@mysite/client";
-
-const response = await getApiGreeting();
-console.log(response.data.message);
-```
-
-This does not use React or React Query. It works well in event handlers,
-scripts, tests, and other UI frameworks. Compared with raw `fetch`, there is no
-handwritten URL, response interface, JSON parsing, or type assertion.
-
-## 4. Use the hook when a component needs it
-
-The same endpoint also produces a React Query hook:
+React-specific APIs live at the explicit subpath:
 
 ```tsx
-import { useGetApiGreeting } from "@mysite/client";
+import {
+  getGetApiTodosByIdQueryOptions,
+  useGetApiTodosById,
+} from "@mysite/client/react-query";
 
-export default function GreetingPage() {
-  const greeting = useGetApiGreeting();
+export function TodoDetail({ id }: { id: number }) {
+  const todo = useGetApiTodosById(id, { neighbors: true });
 
-  if (greeting.isPending) return <p>Loading…</p>;
-  return <p>{greeting.data?.data.message}</p>;
+  if (todo.isPending) return <p>Loading…</p>;
+  if (todo.data?.status !== 200) return <p>Not found</p>;
+  return <p>{todo.data.data.title}</p>;
 }
+
+const options = getGetApiTodosByIdQueryOptions(42, { neighbors: true });
 ```
 
-The direct function and hook are two clients for the same Rust contract. Use
-the hook when caching, loading state, refetching, or invalidation is useful;
-otherwise the direct function is enough.
+Query data is inferred from the fetch function. There is no need to write a
+response generic or annotate callback data.
 
-## 5. Watch a Rust change reach the client
+## 5. Add a typed request body and mutation
 
-Rename the response field:
+Add a patch handler to the same `route.rs`:
 
 ```rust
-pub struct Greeting {
-    pub text: String,
-}
-```
-
-Regenerate:
-
-```bash
-cargo nextrs client generate
-```
-
-The old TypeScript expression now fails at the correct line:
-
-```ts
-response.data.message;
-//            ^^^^^^^ Property 'message' does not exist
-```
-
-That failure is the value of code generation: Rust owns the contract, and
-client call sites cannot silently keep using its previous shape.
-
-## 6. Add a typed request body
-
-Request bodies flow in the other direction. Add a POST handler:
-
-```rust
-use serde::Deserialize;
-
 #[derive(Deserialize, ToSchema)]
-pub struct CreateGreeting {
-    pub name: String,
+pub struct UpdateTodoRequest {
+    pub done: bool,
 }
 
-#[nextrs::api]
-pub async fn post(Json(body): Json<CreateGreeting>) -> Json<Greeting> {
-    Json(Greeting {
-        text: format!("Hello, {}", body.name),
-    })
+#[nextrs::api(
+    patch,
+    operation_id = "updateTodo",
+    request_body = UpdateTodoRequest,
+    responses((status = 200, description = "Updated todo", body = Todo)),
+)]
+pub async fn patch(
+    Path(id): Path<u64>,
+    Json(body): Json<UpdateTodoRequest>,
+) -> Json<Todo> {
+    Json(update_todo(id, body.done).await)
 }
 ```
 
-After regeneration, the body is checked at the call site:
+Regenerate and use the direct client:
 
 ```ts
-import { postApiGreeting } from "@mysite/client";
+import { updateTodo } from "@mysite/client";
 
-await postApiGreeting({ name: "Ada" }); // valid
-await postApiGreeting({ name: 42 });    // type error
+await updateTodo(42, { done: true });
 ```
 
-## 7. Publish plain JavaScript to another project
+Or let the generated mutation infer its variables:
 
-For a Chrome extension or separate JavaScript project, configure a dedicated
-output directory in `client/nextrs.client.json`:
+```tsx
+import { useUpdateTodo } from "@mysite/client/react-query";
 
-```json
-{
-  "output": "../../extension/generated/nextrs-client",
-  "baseUrl": "https://challenge.example.com"
-}
+const update = useUpdateTodo({
+  mutation: {
+    onSuccess: (_response, variables) => {
+      console.log(variables.id, variables.data.done);
+    },
+  },
+});
+
+update.mutate({ id: 42, data: { done: true } });
 ```
 
-Then run the same command from the app root:
+`variables.id` and `variables.data` are inferred from `Path<u64>` and
+`UpdateTodoRequest`. Do not annotate either as `any`.
+
+## 6. Watch a Rust change reach TypeScript
+
+Rename `Todo.title` to `Todo.label`, then regenerate:
 
 ```bash
 cargo nextrs client generate
 ```
 
-When `client/nextrs.client.json` exists, the command regenerates the internal
-client and publishes the external client in the same pass.
+Every stale `.title` use now fails at the exact consumer. That is the intended
+feedback loop: one Rust-owned contract drives fetch calls, query results,
+mutation variables, status unions, and editor completion.
 
-The destination receives:
+## 7. Use imports from any nested file
 
-```text
-generated/nextrs-client/
-├── client.js       browser-native fetch client; no React dependency
-├── client.d.ts     editor and type-checker declarations
-├── package.json    marks the directory as an ES module package
-└── .nextrs-generated-client
+The generated package is a linked root dependency with explicit exports. A
+new file such as `app/todos/[id]/details/page.tsx` uses the same stable imports:
+
+```tsx
+import { getApiTodosById } from "@mysite/client";
+import { useUpdateTodo } from "@mysite/client/react-query";
 ```
 
-A plain JavaScript file can import it directly:
-
-```js
-// @ts-check
-import { getApiGreeting } from "./generated/nextrs-client/client.js";
-
-const response = await getApiGreeting();
-console.log(response.data.message);
-```
-
-JavaScript executes `client.js`; VS Code and TypeScript read `client.d.ts`.
-The consuming project does not need to compile TypeScript.
-
-The publisher only replaces a non-empty destination bearing the nextrs marker,
-so it will not clean an unrelated directory accidentally. It also rebuilds and
-dumps the Rust contract before publishing, ensuring that the external client
-does not come from a stale OpenAPI file.
+TypeScript reads `.nextrs/client/dist/index.d.ts` and
+`dist/react-query.d.ts`; JavaScript and the browser bundler read the matching
+`.js` files. Resolution does not depend on a page already existing, a nextrs
+runtime alias, or user-authored `tsconfig.paths`.
 
 ## The rule to remember
 
-After changing an annotated Rust API contract, regenerate its clients:
+After changing a `#[nextrs::api]` contract, regenerate from the application
+root:
 
 ```bash
 cargo nextrs client generate
 ```
 
-The external command includes the full Rust-contract refresh, so it can be used
-by itself when only an external consumer needs the client.
-
-For the architecture, contract mapping, generated-file ownership, naming, and
-troubleshooting, return to the [Client Generation Overview](/docs/typesafe-client).
+For package ownership, troubleshooting, and contract mapping, read the
+[Generated TypeScript Client](/docs/typesafe-client) reference.

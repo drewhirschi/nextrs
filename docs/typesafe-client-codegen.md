@@ -2,9 +2,10 @@
 
 > **Status: Option A implemented.** We went with the OpenAPI-first approach
 > (`utoipa` + `orval`) specifically to get generated React Query hooks. See the
-> "Decision" section below and the `site/client/` directory for the working
-> pipeline. The rest of this doc is the original options analysis, kept for
-> context.
+> "Decision" section below and the hidden, linked `site/.nextrs/client/`
+> package for the working pipeline. The rest of this doc is the original
+> options analysis, kept for context; use the maintained
+> `site/content/docs/client-codegen.md` for current setup instructions.
 
 **Target: a TypeScript/JavaScript client.** That crosses the Rust→JS language
 boundary, so the question is which mechanism carries Rust types across it. A

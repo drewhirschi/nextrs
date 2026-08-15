@@ -1,72 +1,97 @@
 +++
 title = "Getting Started"
-description = "Set up a React-first nextrs app and run the Cargo-powered dev loop"
+description = "Create a React-first nextrs app and learn where application and generated code belong"
 section = "Guides"
 order = 1
 +++
 
-nextrs is a React frontend framework with a Rust backend. Routes live in an
-`app/` convention tree, React components use `.tsx`, and Rust `route.rs`
-handlers provide typed APIs. A build step discovers and wires everything.
+nextrs combines a React frontend with a Rust application. URL structure lives
+under `app/`, reusable React UI can live under `components/`, Rust domain logic
+lives under `src/`, and framework-generated state stays out of sight under
+`.nextrs/`.
 
-## Create the app
-
-The fastest start is the scaffold:
+## Install one CLI and create the app
 
 ```bash
-cargo install create-nextrs-app
-create-nextrs-app mysite
+cargo install cargo-nextrs
+nextrs new mysite
 cd mysite
 ```
 
-The generated app has this shape:
+Cargo subcommand users can run the same operation as:
+
+```bash
+cargo nextrs new mysite
+```
+
+One `cargo install` provides both `nextrs` and `cargo nextrs`. The older
+`create-nextrs-app` and `cargo nextrs-dev` launchers remain compatibility
+commands, but new projects should use the unified CLI.
+
+The scaffolder installs the root JavaScript dependencies and generates the
+typed client before it returns. Its default tree has a deliberate split:
 
 ```text
 mysite/
-├── app/
-│   ├── layout.tsx          # shared React layout
-│   ├── page.tsx            # /
+├── app/                         # URL tree and route-specific code
+│   ├── layout.tsx               # shared React layout
+│   ├── page.tsx                 # /
+│   ├── PingDemo.tsx             # ordinary colocated component, not a route
 │   ├── slow/
-│   │   ├── page.tsx        # /slow
-│   │   ├── loading.tsx     # loading UI
-│   │   └── prefetch.rs     # server-warmed React Query data
-│   └── api/ping/route.rs   # typed Axum API
-├── client/                 # generated fetch functions and React Query hooks
-├── public/                 # static assets
-├── build.rs                # route discovery and TSX bundling
-└── src/main.rs             # Axum server
+│   │   ├── page.tsx             # /slow
+│   │   ├── loading.tsx          # pending UI
+│   │   └── prefetch.rs          # server-warmed React Query data
+│   └── api/ping/route.rs        # typed Axum API
+├── components/                  # React UI shared by multiple routes
+├── src/
+│   ├── app.rs                   # shared Rust Router and application wiring
+│   └── main.rs                  # local/container process entry
+├── .nextrs/                     # generated framework state; do not edit
+│   ├── client/                  # linked generated npm package
+│   └── dump-openapi.rs          # hidden code-generation helper
+├── api/index.rs                 # Vercel process adapter
+├── public/                      # static assets
+├── build.rs                     # route discovery and browser bundling
+├── package.json                 # all JavaScript dependencies live here
+└── vercel.json                  # Vercel build and routing configuration
 ```
+
+The mental model is:
+
+- `app/` describes URLs. Only recognized convention filenames create routes.
+  Put a component beside the page that alone uses it.
+- `components/` holds React components shared across routes. It is a useful
+  default, not a restriction.
+- `src/` is the Rust application and domain layer. Add ordinary Rust modules
+  here.
+- `.nextrs/` is generated. Import its package; do not write application code
+  there or run `npm install` inside it.
 
 ## Your first page
 
 `app/page.tsx` is an ordinary React component:
 
 ```tsx
+import { NextrsLogo } from "@/components/NextrsLogo";
+
 export default function HomePage() {
-  return <main>Hello from nextrs</main>;
+  return <main><NextrsLogo /> Hello from nextrs</main>;
 }
 ```
 
 Directories become URL segments, so `app/settings/page.tsx` serves
-`/settings`. A `layout.tsx` wraps the pages beneath it:
+`/settings`. You can freely colocate supporting files:
 
-```tsx
-import type { ReactNode } from "react";
-
-export default function RootLayout({ children }: { children: ReactNode }) {
-  return (
-    <div>
-      <nav>My app</nav>
-      {children}
-    </div>
-  );
-}
+```text
+app/settings/page.tsx
+app/settings/SettingsForm.tsx
+app/settings/format-preferences.ts
 ```
 
-The embedded Rolldown-based build bundles these components. There is no
-separate frontend build command to remember.
+Only `page.tsx` is a convention file; the other two are normal modules. Move a
+component to top-level `components/` when several routes share it.
 
-## Add a typed backend route
+## Add a typed Rust endpoint
 
 Create `app/api/greeting/route.rs`:
 
@@ -86,40 +111,86 @@ pub async fn get() -> Json<Greeting> {
 }
 ```
 
-The annotation opts the handler into client generation. nextrs infers the
-method, URL, status, and response body from the function and its location.
-Generate both direct fetch functions and React Query hooks with:
+`#[nextrs::api]` opts the handler into the generated OpenAPI contract. nextrs
+derives its method and URL from `get` and `app/api/greeting/route.rs`, then
+Orval generates two stable entry points.
+
+Use the package root for framework-independent fetch functions:
+
+```ts
+import { getApiGreeting } from "@mysite/client";
+
+const response = await getApiGreeting();
+console.log(response.data.message);
+```
+
+Use `/react-query` for hooks, query options, query keys, and mutations:
+
+```tsx
+import { useGetApiGreeting } from "@mysite/client/react-query";
+
+export function Greeting() {
+  const greeting = useGetApiGreeting();
+  return <p>{greeting.data?.data.message}</p>;
+}
+```
+
+After changing an annotated endpoint, regenerate from the project root:
 
 ```bash
 cargo nextrs client generate
+# equivalent: nextrs client generate
 ```
 
-See [Client Generation: Step by Step](/docs/client-codegen) for progressive
-usage examples.
+`.nextrs/client` is a genuine npm workspace dependency linked into root
+`node_modules`. Its package exports point to built JavaScript and `.d.ts`
+declarations, so a brand-new nested `.ts` or `.tsx` file resolves both imports
+in TypeScript and VS Code. No relative generated import, declaration shim, or
+`tsconfig.paths` entry is required.
 
-## Server-warm React data
-
-A `prefetch.rs` beside `page.tsx` can fill the page's React Query cache before
-the component mounts. It returns a `nextrs::QuerySeed`; the browser receives
-those entries with the page shell and hydrates the same keys used by generated
-hooks. See [React Pages & Server Prefetch](/docs/react-server-props).
+`nextrs new` also creates the root `.gitignore`. The whole generated
+`.nextrs/client` package is ignored. A small tracked template under
+`.nextrs/template/client` lets `cargo dev` and client generation recreate the
+package before TypeScript or the browser build consumes it.
 
 ## Run the dev loop
 
-One Cargo installation provides both the watcher and client generator:
+The default shortcut is:
 
 ```bash
-cargo install cargo-nextrs
 cargo dev
 ```
 
-The explicit watcher command is `cargo nextrs dev --bin <crate>`. It rebuilds
-and restarts the Rust server when backend or frontend files change. With live
-reload enabled, the browser refreshes after the rebuild.
+These direct forms run the same watcher:
+
+```bash
+cargo nextrs dev
+nextrs dev
+```
+
+`cargo dev` is a scaffolded Cargo alias. The unified dev command refreshes the
+generated client, builds the app, starts it, and watches relevant Rust,
+frontend, template, asset, and environment files.
+
+## Why `app.rs`, `main.rs`, `api/index.rs`, and `build.rs` all exist
+
+- `src/app.rs` constructs the shared Axum `Router`. Application-wide layers
+  and domain wiring belong here.
+- `src/main.rs` only starts the local/container process and calls that shared
+  app.
+- `api/index.rs` is a thin Vercel adapter required by Vercel's current Rust
+  entry convention. Do not put application logic there.
+- `build.rs` is normal Rust build-script infrastructure. It discovers the
+  `app/` tree, generates the route/OpenAPI registry, and bundles React pages.
+
+If Vercel is not a deployment target, remove `api/index.rs`, its `index` Cargo
+target, the Vercel-only dependencies, `vercel.json`, and the prebuilt-deploy
+script together. Keep `src/app.rs`, `src/main.rs`, and `build.rs`.
 
 ## Where to go next
 
 - [Routing Conventions](/docs/conventions)
+- [A Rust-First Tour](/docs/rust-first-tour)
 - [Client Generation: Step by Step](/docs/client-codegen)
 - [Porting an Existing App](/docs/porting)
 - [Deploy to Vercel](/docs/deploy-vercel) or [Deploy with Docker](/docs/deploy-docker)

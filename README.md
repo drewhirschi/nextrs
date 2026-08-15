@@ -7,18 +7,29 @@ and a Rust/Axum backend in one Cargo-driven project.
 > The React frontend is the supported path. Earlier non-React frontend
 > conventions are deprecated and are no longer documented for new apps.
 
-## Quick look
+## Project anatomy
 
 ```text
-app/
-├── layout.tsx                 shared React layout
-├── page.tsx                   /
-├── todos/
-│   ├── page.tsx               /todos
-│   ├── loading.tsx            loading UI
-│   └── prefetch.rs            server-warmed React Query data
-└── api/todos/
-    └── route.rs               typed Axum API
+my-app/
+├── app/
+│   ├── layout.tsx             shared React layout
+│   ├── page.tsx               /
+│   ├── todos/
+│   │   ├── page.tsx           /todos
+│   │   ├── TodoRow.tsx        colocated, non-route component
+│   │   ├── loading.tsx        loading UI
+│   │   └── prefetch.rs        server-warmed React Query data
+│   └── api/todos/route.rs     typed Axum API
+├── components/                shared React components
+├── src/
+│   ├── app.rs                 shared Rust application/router
+│   └── main.rs                local and container process entry
+├── .nextrs/
+│   ├── client/                generated TypeScript package; do not edit
+│   └── dump-openapi.rs        framework codegen helper
+├── api/index.rs               Vercel process adapter
+├── public/                    static assets
+└── build.rs                   Cargo build hook for routes and TSX
 ```
 
 Each directory is a route segment. The supported frontend conventions are:
@@ -31,6 +42,13 @@ Each directory is a route segment. The supported frontend conventions are:
 | `prefetch.rs` | Server-side warming for the page's React Query cache |
 | `middleware.rs` | Rust request guards and transformations |
 | `route.rs` | Rust/Axum API handlers |
+
+Only convention filenames participate in routing. Other modules can be
+colocated freely in `app/`; put React components shared across routes in
+`components/`. Rust domain and application logic belongs in `src/`. Everything
+under `.nextrs/` is framework wiring and should not be edited. The generated
+`.nextrs/client` package is ignored; `nextrs new`, client generation, and
+`cargo dev` materialize it from the small tracked framework template.
 
 The embedded Rolldown-based builder bundles the React frontend. The Rust
 binary serves the application and APIs; no Node server runs in production.
@@ -74,21 +92,32 @@ cargo nextrs client generate
 ## Start an app
 
 ```bash
-cargo install create-nextrs-app
-create-nextrs-app my-app
-cd my-app
-
 cargo install cargo-nextrs
+nextrs new my-app
+cd my-app
 cargo dev
 ```
 
-One `cargo-nextrs` installation provides both the dev watcher and client
-generator:
+`nextrs new` installs the root npm dependencies and generates the typed client.
+Pass `--no-install` to write files only and print the two bootstrap commands.
+
+One `cargo-nextrs` installation provides creation, the dev watcher, and client
+generation. Every command supports both launch forms:
 
 ```bash
-cargo nextrs dev --bin my-app
-cargo nextrs client generate
+nextrs new my-app
+# equivalent: cargo nextrs new my-app
+
+nextrs dev
+# equivalent: cargo nextrs dev
+
+nextrs client generate
+# equivalent: cargo nextrs client generate
 ```
+
+Scaffolded projects retain `cargo dev` as a short Cargo alias. The old
+`create-nextrs-app` and `cargo nextrs-dev` commands remain compatibility
+wrappers but are deprecated.
 
 ## Server-prefetched React data
 
@@ -105,8 +134,9 @@ pattern.
 ```text
 crates/nextrs/             framework and build pipeline
 crates/nextrs-macros/      #[nextrs::api]
-crates/cargo-nextrs/       unified Cargo CLI
-crates/create-nextrs-app/  React-first scaffolder
+crates/cargo-nextrs/       unified `nextrs` / `cargo nextrs` CLI
+crates/create-nextrs-app/  scaffold library + deprecated wrapper
+crates/cargo-nextrs-dev/   dev runner library + deprecated wrapper
 examples/react-todos/      end-to-end example
 site/                      documentation site and demo app
 ```

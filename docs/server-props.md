@@ -2,6 +2,10 @@
 
 **Status:** design exploration — promoted from the "research" line in `react-tsx-support.md` after review discussion. No implementation yet.
 
+> This is a historical design exploration, not a setup guide. Current fetch
+> functions come from `@app/client`; React Query hooks and helpers come from
+> `@app/client/react-query`. See `site/content/docs/typesafe-client.md`.
+
 ## The waterfall problem this solves
 
 A client-rendered `page.tsx` pays this sequence before showing real data:

@@ -1,106 +1,208 @@
 # react-todos
 
-A standalone nextrs app demonstrating **React `page.tsx` pages** with a
-**server-seeded React Query cache** — the list renders on first paint with no
-client fetch, because `prefetch.rs` warmed the cache from the same stream that
-delivered the HTML.
+A standalone nextrs app demonstrating React `page.tsx` pages, typed Rust API
+routes, a generated browser client, and a server-seeded React Query cache. The
+todo list is available on first paint without a client fetch because
+`prefetch.rs` warms the same typed query that the page uses.
 
-```
+## Project layout
+
+```text
 app/
-├── layout.{rs,html}        root layout + hand-written stylesheet
-├── page.tsx                the React page (client-rendered)
-├── prefetch.rs                seeds the open-todos query into the cache
-└── api/todos/
-    ├── route.rs            GET (list) + POST (add)  — #[nextrs::api]
-    └── [id]/route.rs       DELETE (remove)          — #[nextrs::api]
-src/core/todos.rs           in-memory domain layer (the handlers are thin adapters over it)
-client/                     orval-generated typed React Query hooks
+├── layout.tsx                  root React layout
+├── page.tsx                    todo-list page
+├── todo-row.tsx                component colocated with the page that uses it
+├── prefetch.rs                 server-side query seed
+├── about/page.tsx              unseeded page
+├── api/todos/
+│   ├── route.rs                typed GET + POST endpoints
+│   └── [id]/route.rs           typed GET + PATCH + DELETE endpoints
+└── todos/[id]/
+    ├── page.tsx                dynamic detail page
+    ├── prefetch.rs             typed detail-query seed
+    └── test/page.tsx           deep package-resolution and type fixture
 
-api/index.rs                Vercel serverless entry (+ x-cold instrumentation)
-vercel.json                 Rust runtime declaration + catch-all rewrite
-.cargo/config.toml          NEXTRS_SKIP_BUNDLE=1 on Vercel (see Deploy below)
-public/dist/                prebuilt page.tsx bundle (committed; served on Vercel)
+components/
+└── NextrsLogo.tsx              application-wide shared React component
+
+src/
+├── app.rs                      shared Rust application constructor
+├── main.rs                     local-process adapter
+└── core/todos.rs               framework-independent domain logic
+
+api/index.rs                    Vercel process adapter
+build.rs                        route, seed, and browser-bundle generation
+.nextrs/
+├── dump-openapi.rs             hidden OpenAPI extraction helper
+├── openapi.json                generated API contract
+└── client/                     generated local npm package
+    ├── package.json            stable package exports
+    ├── src/                    generated fetch + React Query sources
+    └── dist/                   emitted JavaScript and declarations
 ```
 
-## Run it
+The `app/` directory follows nextrs routing conventions, but it is still
+ordinary application source. Components may be colocated beside a page, as
+`app/todo-row.tsx` is, or shared through a top-level `components/`
+directory. The hidden `.nextrs/client/` directory is generated framework
+output; it is not where user-authored React components belong.
+
+## Install, generate, and run
+
+Run all JavaScript commands from this application root
+(`examples/react-todos/`). Do not install dependencies inside
+`.nextrs/client/`.
 
 ```sh
-# 1. Install the nextrs CLI once, then generate from the Rust API contract
-cargo install cargo-nextrs
-cargo nextrs client generate
-
-# 2. Run the app
+npm ci
+npm run client:generate
 cargo run -p react-todos
 # → http://localhost:3000
 ```
 
-`cargo build` bundles `page.tsx` (via rolldown, from inside the build script)
-into `public/dist/`; `cargo nextrs client generate` regenerates `client/` from the app's
-OpenAPI document.
+The root `package.json` declares `.nextrs/client` as a workspace and links
+it as the real `@react-todos/client` dependency. A root install creates
+`node_modules/@react-todos/client`; this is a genuine local package, not only
+a browser-bundler alias.
 
-Run that command from the workspace root. If you invoke Cargo from inside
-`examples/react-todos/`, its Vercel `.cargo/config.toml` is active; prefix the
-local run with `NEXTRS_SKIP_BUNDLE=0` so the page bundle is regenerated.
+The entire `.nextrs/client` package and `.nextrs/openapi.json` are ignored
+generated state. The tracked `.nextrs/template/client` wiring recreates the
+package before generation; `cargo dev` and `nextrs client generate` repair a
+missing target before TypeScript or the browser build consumes it.
 
-### Publish a client for plain JavaScript
+`npm run client:generate` performs the complete refresh:
 
-To consume these Rust endpoints from another project, copy
-`client/nextrs.client.example.json` to `client/nextrs.client.json`, set its
-dedicated output directory and API `baseUrl`, then run:
+1. Run the hidden Rust helper to write `.nextrs/openapi.json`.
+2. Generate a framework-agnostic fetch client and a separate React Query
+   surface with Orval.
+3. Run the nextrs build step, which adds URL-bound hooks and bundles pages.
+4. Emit package JavaScript and `.d.ts` declarations into
+   `.nextrs/client/dist`.
+
+Run generation again after changing a `#[nextrs::api]` endpoint. Useful
+focused checks are:
 
 ```sh
-cargo nextrs client generate
+npm run client:build
+npm run typecheck
+cargo build -p react-todos
 ```
 
-The destination receives a browser-native, React-free `client.js`, its
-`client.d.ts` type declarations, and a generated-directory marker. The command
-rebuilds the OpenAPI contract first and refuses to clean a non-empty destination
-that it did not previously generate.
+## Use the generated client
+
+Plain fetch functions and wire types come from the framework-agnostic root
+entry:
+
+```ts
+import {
+  getApiTodosById,
+  updateTodo,
+  type TodoDetail,
+} from "@react-todos/client";
+
+const response = await getApiTodosById(42, { neighbors: true });
+if (response.status === 200) {
+  const todo: TodoDetail = response.data;
+  await updateTodo(todo.id, { done: !todo.done });
+}
+```
+
+React Query hooks, option builders, query keys, URL-bound helpers, and
+`useParams` come from the explicit integration entry:
+
+```tsx
+import {
+  getGetApiTodosByIdQueryOptions,
+  useParams,
+  useUpdateTodo,
+} from "@react-todos/client/react-query";
+
+const options = getGetApiTodosByIdQueryOptions(42, { neighbors: true });
+
+function ToggleTodo() {
+  const { id } = useParams<{ id: string }>();
+  const updateTodo = useUpdateTodo();
+
+  return (
+    <button
+      onClick={() =>
+        updateTodo.mutate({ id: Number(id), data: { done: true } })
+      }
+    >
+      Complete
+    </button>
+  );
+}
+```
+
+TypeScript resolves both imports through the package's `exports` and
+`types` declarations. The app does not use `tsconfig.paths`, relative
+imports into generated output, handwritten declaration files, or `any`
+annotations.
+
+`app/todos/[id]/test/page.tsx` is deliberately nested several directories
+deep. It is an ordinary component that imports and uses both package entry
+points without manual client types. The exhaustive compiler checks live where
+tests belong: the colocated `page.test.tsx` covers response and error
+unions, path and query parameters, request bodies, query data, mutation
+variables, invalid inputs, and no-`any` guarantees. The adjacent
+`app/client-resolution.test.js` checks the same package entry points from
+ordinary JavaScript.
+
+## Rust entry points
+
+`src/app.rs` is the library root and the one place that constructs the
+application. Both executable adapters call it:
+
+- `src/main.rs` starts the normal local server.
+- `api/index.rs` adapts the same app to Vercel's Rust runtime and adds
+  deployment instrumentation. It exists because Vercel currently requires
+  that process entry path; applications that do not target Vercel can remove
+  the adapter and its Cargo target.
+
+`build.rs` remains normal Rust build-script wiring. It discovers routes,
+emits the generated registry and seed companions, and bundles the React pages.
+The OpenAPI extraction binary is hidden under `.nextrs/` because it is
+framework plumbing rather than application or domain code.
 
 ## What to look at
 
-- **No fetch on load** — open the network panel: the todo list is there on
-  first paint, seeded by `prefetch.rs`. The component (`page.tsx`) is unaware;
-  it just calls `useGetTodos(...)`.
-- **Mutations reach the seed** — add or delete a todo and the seeded list
-  refreshes, because `prefetch.rs` seeds under the *same* canonical query key the
-  hooks use (`["/api/todos", {...}]`).
-- **One binary** serves the page, the bundle, the static CSS, the API, and
-  `/openapi.json`. No Node at runtime.
-- **Thin handlers** — `route.rs` files only map between the wire and
-  `src/core/todos.rs`, which holds the logic.
+- **No fetch on load** — the todo list is seeded by `prefetch.rs`; the
+  component only calls its generated URL-bound hook.
+- **End-to-end types** — the `#[nextrs::api]` signatures determine the path,
+  query, body, response, error, query-result, and mutation-variable types.
+- **One runtime binary** — Rust serves the React pages, static assets, API, and
+  `/openapi.json`. Node is required for generation and bundling, not at
+  runtime.
+- **Thin adapters** — route handlers translate the wire format and delegate to
+  `src/core/todos.rs`.
+- **Normal component organization** — the example demonstrates both a
+  top-level shared component and a component colocated in `app/`.
 
 ## Deploy to Vercel
 
-Deploying a nextrs **React** app (with the `tsx`/rolldown bundler) to Vercel has
-several non-obvious requirements. They're all already wired up in this example —
-this section explains *why*, so you don't have to rediscover them. The files
-that make it work:
+`vercel.json` installs and generates from the application root before its
+release Cargo build:
 
-| File | Why it's needed |
-|---|---|
-| `api/index.rs` | The serverless entry: wraps the generated router in `StreamingVercelLayer`. |
-| `vercel.json` | Declares the Rust runtime **explicitly** (`functions: { "api/index.rs": { "runtime": "vercel-rust@4.0.11" } }`) and the catch-all rewrite. Without the runtime line the build fails in setup. |
-| `.cargo/config.toml` | Sets `[env] NEXTRS_SKIP_BUNDLE = "1"` so the build script **skips bundling on Vercel** (Vercel never runs `npm install` before `cargo build`, so rolldown would have no React to resolve). Also carries an empty `[build]` table — `vercel-rust` crashes (`Cannot read properties of undefined (reading 'target')`) on a `.cargo/config.toml` without one. Because cargo only reads this file when run *inside* this dir, local `cargo run` from the repo root still bundles normally. |
-| `public/dist/` (committed) | Since bundling is skipped on Vercel, the **prebuilt** bundle is shipped as a static asset. It's deliberately **not** gitignored for this example so `vercel deploy` uploads it. Rebuild it with a release build before deploying (below). |
-| `Cargo.toml` → `nextrs = { version = "0.2", … }` | Depends on the **published** crate (no path dep) so the example builds standalone from its own directory. A `[patch.crates-io]` in the repo-root `Cargo.toml` redirects to local source for development. |
+```json
+{
+  "installCommand": "npm ci",
+  "buildCommand": "npm run client:generate && cargo build --release -p react-todos"
+}
+```
 
-### Steps
+That means Vercel creates the same workspace link, generated declarations, and
+browser bundles as local development. The application does not depend on a
+manually installed hidden client or a prebuilt committed `public/dist/`
+directory.
 
 ```sh
-# 1. Regenerate the client + a fresh *minified* bundle (release profile minifies)
-cargo nextrs client generate
-cargo build --release -p react-todos          # rebuilds public/dist/ minified
-
-# 2. Deploy from THIS directory (it builds standalone via the published crate)
 vercel deploy --prod
 ```
 
-### Gotchas worth remembering
+`.cargo/config.toml` keeps an empty `[build]` table because the current
+`vercel-rust` builder expects that key when a Cargo config exists. Function
+runtime selection and the catch-all rewrite remain in `vercel.json`.
 
-- **First build is slow (~8–15 min)** — Vercel compiles rolldown + oxc (~50 crates) from scratch. It's cached after that, so incremental redeploys are ~40 s.
-- **Function region is a project setting, not `vercel.json`.** `"regions": [...]` in `vercel.json` is ignored; set the region via the dashboard (Settings → Functions) or the API (`PATCH /v9/projects/{id}` with `{"serverlessFunctionRegion":"pdx1"}`), then redeploy. The benchmark fleet expects `pdx1` for both to-do apps so they serve West Coast users from the same location.
-- **The bundle must be rebuilt before deploy** if you changed `page.tsx` — the committed `public/dist/` is what Vercel serves (it won't re-bundle).
-- **Cold-start instrumentation:** `api/index.rs` adds an `x-cold` / `x-init-ms` header on each response so cold vs warm can be measured (Vercel exposes no native signal). See `benchmarks/scripts/bench-cold.sh`.
-
-See `docs/server-props.md` in the repo root for the design writeup.
+See `docs/server-props.md` in the repository root for the server-props and
+streaming design.

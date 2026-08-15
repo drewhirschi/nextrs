@@ -1,5 +1,12 @@
 # Migrating a Next.js App Router App to nextrs
 
+> **Archived implementation playbook.** This document records the original
+> manual migration and still contains pre-unified-CLI paths such as `client/`,
+> `src/bin/dump-openapi.rs`, and TypeScript path aliases. Do not copy that
+> wiring into a current app. Start with `nextrs new --adopt` and use the
+> maintained [Porting guide](../site/content/docs/porting.md), which documents
+> the linked `.nextrs/client` package and current `src/app.rs` layout.
+
 A step-by-step procedure for converting an existing Next.js App Router app to
 nextrs. Written to be followed by a coding agent: every step names the file to
 create, the contract it must satisfy, and how to verify it. The reference

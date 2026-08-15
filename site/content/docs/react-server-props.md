@@ -17,7 +17,7 @@ app/
 ├── layout.tsx          # shared React layout
 └── todos/
     ├── page.tsx        # React page — discovered and routed by the same codegen
-    └── prefetch.rs        # optional: Rust warms your React Query cache
+    └── prefetch.rs     # optional: Rust warms your React Query cache
 ```
 
 `.tsx` pages are client-rendered. The server sends the React shell and script;
@@ -60,7 +60,11 @@ The payoff: **the component has no idea any of this happened.** It's vanilla Rea
 ```tsx
 // app/todos/page.tsx
 import { useQueryClient } from "@tanstack/react-query";
-import { useGetTodos, useAddTodo, getGetTodosQueryKey } from "@site/client";
+import {
+  useGetTodos,
+  useAddTodo,
+  getGetTodosQueryKey,
+} from "@my-app/client/react-query";
 
 export default function Todos() {
   const queryClient = useQueryClient();
@@ -114,7 +118,11 @@ pub async fn get(Query(f): Query<TodosFilter>) -> Json<Vec<Todo>> {
 
 `prefetch.rs` runs on the server, so it *could* call `core::todos::list` directly. It calls the handler instead, on purpose: the seed is a cache entry **keyed by URL** — it impersonates a response from `GET /api/todos`, and the client will refetch that endpoint later and overwrite it. The wire shape (the DTO mapping, serde casing, the response envelope) belongs to the HTTP adapter, so producing a cache entry for that endpoint has to go through the adapter — or risk drifting from it and flickering from seed-shape to handler-shape on the first refetch. With a thin handler, calling it costs exactly one DTO mapping more than calling the service, and that mapping is the part the seed can't safely skip.
 
-Server data that *isn't* endpoint-shaped — session user, feature flags, a precomputed view model — impersonates nothing, so it skips the HTTP adapter entirely: that's the design's second mode, plain typed initial props (`usePageProps<T>()`), with the TypeScript type generated from the Rust struct through the same OpenAPI pipeline. One rule, two lanes: data that belongs to an endpoint goes through the endpoint's adapter; data that belongs to the page goes through the page's.
+The supported seed contract is endpoint-shaped on purpose. For session data,
+feature flags, or a page-specific view model, expose the typed endpoint whose
+wire representation the browser will later refetch, then seed that same
+endpoint. This keeps first-paint data and subsequent client data on one typed
+path.
 
 ## End-to-end type safety
 
@@ -122,9 +130,13 @@ The same property the typed client has, extended to seeds and props: the Rust st
 
 ## What ships today
 
-- **Client-rendered `page.tsx`** — discovery, routing, and bundling all run in `cargo build`. The bundler is an embedded rolldown, built into the framework and gated behind the `tsx` cargo feature — no external Node build step. A dev watcher rebuilds bundles in milliseconds without restarting the server.
+- **Client-rendered `page.tsx`** — discovery, routing, and bundling run in `cargo build`. The bundler is embedded Rolldown, gated behind the `tsx` cargo feature. Root JavaScript dependencies still supply React and the generated-client toolchain; there is no separate application frontend server.
 - **`prefetch.rs` React Query cache seeding** — exactly as shown above: the server streams seed entries into the HTML and the client loads them into the cache before mount.
 - **`loading.tsx` skeletons** — a loading component mounts immediately while the page bundle loads.
+
+Generated hooks come from `@my-app/client/react-query`; direct fetch functions
+come from `@my-app/client`. Both are normal package exports backed by emitted
+JavaScript and declarations.
 
 Still on the roadmap: build-time prerendering — static `.tsx` pages rendered to HTML during the build (Node at build time only) and hydrated in the browser.
 
