@@ -1,6 +1,7 @@
 .claude/*
 !.claude/skills/
 docs/nextrs-transcripts-backup.zip
+/docs/nextrs-apps-build-audit.md
 /docs.png
 .env
 .env*.local
