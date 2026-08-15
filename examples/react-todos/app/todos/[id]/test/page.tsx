@@ -1,14 +1,14 @@
 import { getApiTodosById } from "@react-todos/client";
 import {
   useGetApiTodosById,
-  useUpdateTodo,
+  usePatchApiTodosById,
 } from "@react-todos/client/react-query";
 
 const todoId = 7;
 
 export default function GeneratedClientExample() {
   const query = useGetApiTodosById(todoId, { neighbors: true });
-  const updateTodo = useUpdateTodo();
+  const updateTodo = usePatchApiTodosById();
   const todo = query.data?.status === 200 ? query.data.data : undefined;
 
   async function fetchDirectly() {

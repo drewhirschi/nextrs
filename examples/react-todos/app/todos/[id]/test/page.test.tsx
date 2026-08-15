@@ -1,14 +1,15 @@
 // Compile-time contract tests for the generated client used by page.tsx.
 import {
-  addTodo,
+  postApiTodos,
   getApiTodosById,
-  getTodos,
-  updateTodo,
+  getApiTodos,
+  patchApiTodosById,
 } from "@react-todos/client";
+import type { ApiError } from "@react-todos/client";
 import {
   getGetApiTodosByIdQueryOptions,
   useGetApiTodosById,
-  useUpdateTodo,
+  usePatchApiTodosById,
 } from "@react-todos/client/react-query";
 
 type Assert<T extends true> = T;
@@ -26,14 +27,16 @@ type QueryFunctionData<T> = T extends (...args: never[]) => infer Result
 
 type DetailResponse = Awaited<ReturnType<typeof getApiTodosById>>;
 type DetailSuccess = Extract<DetailResponse, { status: 200 }>;
-type DetailError = Extract<DetailResponse, { status: 404 }>;
+// Non-200s carry the framework's typed error body (`ApiError`), inferred from
+// the handler's `Result<Json<TodoDetail>, ApiError>` — no responses(...) block.
+type DetailError = Exclude<DetailResponse, { status: 200 }>;
 type DetailPath = Parameters<typeof getApiTodosById>[0];
 type DetailQuery = NonNullable<Parameters<typeof getApiTodosById>[1]>;
-type AddBody = Parameters<typeof addTodo>[0];
-type UpdateBody = Parameters<typeof updateTodo>[1];
+type AddBody = Parameters<typeof postApiTodos>[0];
+type UpdateBody = Parameters<typeof patchApiTodosById>[1];
 
 type _ResponseInference = Assert<Equal<DetailSuccess["data"]["id"], number>>;
-type _ErrorInference = Assert<Equal<DetailError["data"], void>>;
+type _ErrorInference = Assert<Equal<DetailError["data"], ApiError>>;
 type _PathInference = Assert<Equal<DetailPath, number>>;
 type _QueryInference = Assert<
   Equal<DetailQuery["neighbors"], boolean | null | undefined>
@@ -48,7 +51,7 @@ type DetailQueryData = Awaited<
   QueryFunctionData<NonNullable<typeof detailOptions.queryFn>>
 >;
 type UpdateVariables = Parameters<
-  ReturnType<typeof useUpdateTodo>["mutate"]
+  ReturnType<typeof usePatchApiTodosById>["mutate"]
 >[0];
 
 type _QueryOptionsInference = Assert<
@@ -74,18 +77,18 @@ function inferredQueryHookData() {
 }
 
 function rejectedInputsStayRejected(
-  mutation: ReturnType<typeof useUpdateTodo>,
+  mutation: ReturnType<typeof usePatchApiTodosById>,
 ) {
   // @ts-expect-error path parameters are generated as numbers
   void getApiTodosById("7");
   // @ts-expect-error query parameters are generated as booleans
   void getApiTodosById(7, { neighbors: "yes" });
   // @ts-expect-error list query parameters are generated as strings
-  void getTodos({ status: 1 });
+  void getApiTodos({ status: 1 });
   // @ts-expect-error request bodies require a title
-  void addTodo({});
+  void postApiTodos({});
   // @ts-expect-error request-body fields keep their generated type
-  void updateTodo(7, { done: "yes" });
+  void patchApiTodosById(7, { done: "yes" });
   // @ts-expect-error React Query options keep the same typed path parameter
   void getGetApiTodosByIdQueryOptions("7");
   // @ts-expect-error mutation variables infer both path and body types

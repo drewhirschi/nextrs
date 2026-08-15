@@ -1,5 +1,5 @@
 //! Server prefetch for the todos page. The filter is URL state (`?status=open`
-//! — see the page's `useGetTodosFromUrl`), so the seed derives from the SAME
+//! — see the page's `useGetApiTodosFromUrl`), so the seed derives from the SAME
 //! query string the client hook reads: `nextrs::search_params` parses it into
 //! the handler's `TodosFilter`, and the typed companion keys the entry exactly
 //! like the hook keys the request. A shared filtered link therefore renders

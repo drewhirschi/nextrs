@@ -4,10 +4,10 @@
 // prefetch.rs (soft navigations too, via the app shell's /__nx/prefetch).
 import {
   useGetApiTodosByIdFromUrl,
-  useUpdateTodo,
+  usePatchApiTodosById,
   useParams,
   getGetApiTodosByIdQueryKey,
-  getGetTodosQueryKey,
+  getGetApiTodosQueryKey,
 } from "@react-todos/client/react-query";
 import { useQueryClient } from "@tanstack/react-query";
 
@@ -38,11 +38,11 @@ export default function TodoDetail({ params }: { params: { id: string } }) {
   // (whose key is a different URL, so it's not a prefix of this one). With
   // soft navigation the list stays cached across pages — invalidate both, or
   // going back shows a stale badge.
-  const updateTodo = useUpdateTodo({
+  const updateTodo = usePatchApiTodosById({
     mutation: {
       onSuccess: () => {
         queryClient.invalidateQueries({ queryKey: getGetApiTodosByIdQueryKey(id) });
-        queryClient.invalidateQueries({ queryKey: getGetTodosQueryKey() });
+        queryClient.invalidateQueries({ queryKey: getGetApiTodosQueryKey() });
       },
     },
   });

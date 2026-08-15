@@ -1,9 +1,9 @@
 import { useQueryClient } from "@tanstack/react-query";
 import {
-  useGetTodosFromUrl,
-  useAddTodo,
-  useUpdateTodo,
-  getGetTodosQueryKey,
+  useGetApiTodosFromUrl,
+  usePostApiTodos,
+  usePatchApiTodosById,
+  getGetApiTodosQueryKey,
   getGetApiTodosByIdQueryKey,
 } from "@react-todos/client/react-query";
 import { useState } from "react";
@@ -16,7 +16,7 @@ export default function Todos() {
   // Any mutation refreshes every /api/todos variant — including the
   // server-seeded entry — because they all share the canonical query key.
   const invalidate = () =>
-    queryClient.invalidateQueries({ queryKey: getGetTodosQueryKey() });
+    queryClient.invalidateQueries({ queryKey: getGetApiTodosQueryKey() });
 
   // URL-bound: the filter lives in the page URL (?status=open), not in
   // useState — so a shared link shows the same view, back/forward walks
@@ -29,9 +29,9 @@ export default function Todos() {
     isFetching,
     params,
     setParams,
-  } = useGetTodosFromUrl();
+  } = useGetApiTodosFromUrl();
 
-  const addTodo = useAddTodo({
+  const addTodo = usePostApiTodos({
     mutation: {
       onSuccess: () => {
         invalidate();
@@ -43,7 +43,7 @@ export default function Todos() {
   // The toggled todo also lives in the detail page's cache entry (a different
   // URL key, not a prefix of the list's) — invalidate it too, or its page
   // shows a stale badge after soft-navigating there.
-  const updateTodo = useUpdateTodo({
+  const updateTodo = usePatchApiTodosById({
     mutation: {
       onSuccess: (_data, variables) => {
         invalidate();

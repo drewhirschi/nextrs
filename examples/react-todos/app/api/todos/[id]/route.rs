@@ -10,6 +10,7 @@
 use axum::extract::{Path, Query};
 use axum::http::StatusCode;
 use axum::{Extension, Json};
+use nextrs::ApiError;
 use react_todos::core::todos::TodosCtx;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -39,21 +40,21 @@ pub struct DetailQuery {
     pub neighbors: Option<bool>,
 }
 
-// Fallible, like real handlers: `Result<Json<T>, E>` gets a seed companion
-// too (an Err just seeds nothing and the client fetches/handles it normally).
-#[nextrs::api(
-    get,
-    responses(
-        (status = 200, description = "The todo", body = TodoDetail),
-        (status = 404, description = "No todo with that id"),
-    ),
-)]
+// Fallible, like real handlers: `Result<Json<T>, ApiError>` is the framework's
+// recommended shape. The macro infers the 200 from `Json<TodoDetail>` AND a
+// `default` error response with the `ApiError` schema — no `responses(...)`
+// block — so the generated client's error side is typed too. (It also gets a
+// seed companion: an Err seeds nothing and the client fetches normally.)
+#[nextrs::api]
 pub async fn get(
     Extension(ctx): Extension<TodosCtx>,
     Path(id): Path<u64>,
     Query(q): Query<DetailQuery>,
-) -> Result<Json<TodoDetail>, StatusCode> {
-    let todo = ctx.get(id).await.ok_or(StatusCode::NOT_FOUND)?;
+) -> Result<Json<TodoDetail>, ApiError> {
+    let todo = ctx
+        .get(id)
+        .await
+        .ok_or_else(|| ApiError::not_found("no todo with that id").with_code("todo_not_found"))?;
     let (prev, next) = if q.neighbors.unwrap_or(false) {
         ctx.neighbors(id).await
     } else {
@@ -74,14 +75,10 @@ pub struct UpdateTodoRequest {
     pub done: bool,
 }
 
-// The `{id}` path param is inferred from the signature; the body is declared
-// like any utoipa request_body.
-#[nextrs::api(
-    patch,
-    operation_id = "updateTodo",
-    request_body = UpdateTodoRequest,
-    responses((status = 200, description = "The updated todo, or null if unknown", body = Option<TodoDetail>)),
-)]
+// Also fully inferred: the `{id}` path param from `Path<u64>`, the request
+// body from `Json<UpdateTodoRequest>`, the nullable 200 from
+// `Json<Option<TodoDetail>>`.
+#[nextrs::api]
 pub async fn patch(
     Extension(ctx): Extension<TodosCtx>,
     Path(id): Path<u64>,
@@ -100,15 +97,9 @@ pub async fn patch(
     )
 }
 
-#[nextrs::api(
-    delete,
-    operation_id = "deleteTodo",
-    params(("id" = u64, Path, description = "Id of the todo to delete")),
-    responses(
-        (status = 200, description = "Deleted"),
-        (status = 404, description = "No todo with that id"),
-    ),
-)]
+// Effect-only endpoint: a bare `StatusCode` return infers a body-less 200 —
+// the escape hatch for handlers with nothing to serialize.
+#[nextrs::api]
 pub async fn delete(Extension(ctx): Extension<TodosCtx>, Path(id): Path<u64>) -> StatusCode {
     if ctx.remove(id).await {
         StatusCode::OK

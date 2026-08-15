@@ -96,14 +96,14 @@ entry:
 ```ts
 import {
   getApiTodosById,
-  updateTodo,
+  patchApiTodosById,
   type TodoDetail,
 } from "@react-todos/client";
 
 const response = await getApiTodosById(42, { neighbors: true });
 if (response.status === 200) {
   const todo: TodoDetail = response.data;
-  await updateTodo(todo.id, { done: !todo.done });
+  await patchApiTodosById(todo.id, { done: !todo.done });
 }
 ```
 
@@ -114,14 +114,14 @@ React Query hooks, option builders, query keys, URL-bound helpers, and
 import {
   getGetApiTodosByIdQueryOptions,
   useParams,
-  useUpdateTodo,
+  usePatchApiTodosById,
 } from "@react-todos/client/react-query";
 
 const options = getGetApiTodosByIdQueryOptions(42, { neighbors: true });
 
 function ToggleTodo() {
   const { id } = useParams<{ id: string }>();
-  const updateTodo = useUpdateTodo();
+  const updateTodo = usePatchApiTodosById();
 
   return (
     <button
