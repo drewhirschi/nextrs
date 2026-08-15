@@ -525,6 +525,13 @@ header.prose a {
   color: var(--ink);
 }
 
+.docs-main .prose :is(h1, h2, h3) code {
+  padding: 0.12em 0.3em;
+  font-size: 0.68em;
+  font-weight: 650;
+  vertical-align: 0.08em;
+}
+
 .lead,
 .docs-main .prose .lead {
   color: var(--muted);
