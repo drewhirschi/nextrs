@@ -27,7 +27,7 @@ vercel = [
 # markdown content dir. Only depend on this in `[build-dependencies]`, not in
 # `[dependencies]` — it pulls in std::fs APIs and the markdown renderer, which
 # don't belong in the runtime tree.
-build = ["dep:pulldown-cmark", "dep:syntect", "dep:toml"]
+build = ["dep:pulldown-cmark", "dep:syntect", "dep:toml", "dep:two-face"]
 # Enables `nextrs::bundle`: build-time bundling of page.tsx entries via
 # rolldown (all-Rust, the Vite 8 engine). Heavy dependency tree — only enable
 # in [build-dependencies] of apps that actually use .tsx pages.
@@ -78,8 +78,9 @@ futures-core = "0.3.32"
 
 # Optional — only pulled in when the `build` feature is on (build scripts).
 pulldown-cmark = { version = "0.13", default-features = false, features = ["html"], optional = true }
-syntect = { version = "5.2", default-features = false, features = ["default-syntaxes", "default-themes", "html", "regex-fancy"], optional = true }
+syntect = { version = "5.2", default-features = false, features = ["default-themes", "html", "regex-fancy"], optional = true }
 toml = { version = "0.8", optional = true }
+two-face = { version = "0.5.1", default-features = false, features = ["syntect-fancy"], optional = true }
 
 # Optional — only pulled in when the `tsx` feature is on (build scripts).
 # Pinned exactly: the crates.io releases are new (May 2026) and the Rust API

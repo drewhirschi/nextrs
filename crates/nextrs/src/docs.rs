@@ -301,7 +301,7 @@ fn render_code_block(source: &str, language: &str, title: Option<&str>) -> Strin
     static ASSETS: std::sync::OnceLock<(SyntaxSet, ThemeSet)> = std::sync::OnceLock::new();
     let (syntaxes, themes) = ASSETS.get_or_init(|| {
         (
-            SyntaxSet::load_defaults_newlines(),
+            two_face::syntax::extra_newlines(),
             ThemeSet::load_defaults(),
         )
     });
@@ -347,12 +347,11 @@ fn syntax_for_language<'a>(
     let token = match language {
         "html" => "html",
         "js" | "javascript" => "js",
-        // syntect's bundled JavaScript grammar understands JSX constructs;
-        // the default syntax pack does not expose dedicated JSX/TSX tokens.
-        "jsx" | "tsx" => "js",
+        "jsx" => "jsx",
         "rs" | "rust" => "rs",
         "sh" | "shell" | "bash" => "sh",
-        "ts" | "typescript" => "js",
+        "ts" | "typescript" => "ts",
+        "tsx" => "tsx",
         other => other,
     };
     syntaxes
@@ -519,7 +518,7 @@ mod tests {
 
     #[test]
     fn fenced_code_supports_titles_and_core_web_languages() {
-        let syntaxes = syntect::parsing::SyntaxSet::load_defaults_newlines();
+        let syntaxes = two_face::syntax::extra_newlines();
         for language in ["rust", "tsx", "html"] {
             let syntax = syntax_for_language(&syntaxes, language);
             assert_ne!(syntax.name, "Plain Text", "missing {language} syntax");
@@ -538,6 +537,16 @@ mod tests {
             assert!(html.contains(&format!("app/example.{language}")), "{html}");
             assert!(html.contains(&format!("language-{language}")), "{html}");
             assert!(html.contains("style=\"color:"), "{html}");
+            let colors: std::collections::HashSet<&str> = html
+                .split("style=\"color:")
+                .skip(1)
+                .filter_map(|part| part.split(';').next())
+                .collect();
+            let minimum_colors = if language == "html" { 2 } else { 3 };
+            assert!(
+                colors.len() >= minimum_colors,
+                "expected real token colors for {language}, got {colors:?}: {html}"
+            );
         }
     }
 
