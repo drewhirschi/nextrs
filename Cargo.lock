@@ -334,6 +334,8 @@ name = "cargo-nextrs"
 version = "0.1.0"
 dependencies = [
  "cargo-nextrs-dev",
+ "create-nextrs-app",
+ "serde_json",
 ]
 
 [[package]]
@@ -344,6 +346,8 @@ dependencies = [
  "ctrlc",
  "ignore",
  "notify-debouncer-full",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

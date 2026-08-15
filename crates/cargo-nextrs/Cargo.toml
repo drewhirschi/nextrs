@@ -12,8 +12,14 @@ name = "cargo-nextrs"
 path = "src/main.rs"
 
 [[bin]]
+name = "nextrs"
+path = "src/nextrs_main.rs"
+
+[[bin]]
 name = "cargo-nextrs-dev"
 path = "src/dev_main.rs"
 
 [dependencies]
 cargo-nextrs-dev = { path = "../cargo-nextrs-dev", version = "0.1.0" }
+create-nextrs-app = { path = "../create-nextrs-app", version = "0.1.2" }
+serde_json = "1"
