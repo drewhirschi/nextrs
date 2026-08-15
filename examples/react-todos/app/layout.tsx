@@ -3,6 +3,7 @@
 // Router swaps only the page leaf; no document load, the React Query cache
 // survives). React 19 hoists <title>/<meta> into <head>.
 import type { ReactNode } from "react";
+import { NextrsLogo } from "../components/NextrsLogo";
 
 export default function Layout({ children }: { children: ReactNode }) {
   return (
@@ -14,7 +15,7 @@ export default function Layout({ children }: { children: ReactNode }) {
       <nav className="topnav">
         {/* Same wordmark as the docs site (nextrs-docs.vercel.app). */}
         <a href="/" className="wordmark">
-          next<b>rs</b>
+          <NextrsLogo />
         </a>
         <span className="nav-tag">react-todos</span>
         <span className="muted"> · plain anchors, soft navigation</span>

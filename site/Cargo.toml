@@ -1,19 +1,22 @@
 [package]
 name = "site"
-# src/bin/dump-openapi.rs makes `cargo run -p site` ambiguous without this
-# (and the dev watcher's default command relies on it).
+# The hidden OpenAPI helper is still a Cargo binary, so keep the local server
+# explicit for plain `cargo run -p site` and the dev watcher.
 default-run = "site"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
+
+[lib]
+path = "src/app.rs"
 
 [[bin]]
 name = "site"
 path = "src/main.rs"
 
 [[bin]]
-name = "dump-openapi"
-path = "src/bin/dump-openapi.rs"
+name = "site-dump-openapi"
+path = ".nextrs/dump-openapi.rs"
 
 # Vercel deployment entry (serverless function). See vercel.json.
 [[bin]]

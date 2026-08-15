@@ -1,12 +1,27 @@
 {
   "name": "react-todos-app",
   "private": true,
-  "workspaces": ["client"],
+  "workspaces": [".nextrs/client"],
   "scripts": {
-    "client:generate": "npm run gen --workspace=@react-todos/client",
+    "client:ensure": "node .nextrs/ensure-client.mjs",
+    "client:dump": "NEXTRS_SKIP_BUNDLE=1 cargo run -p react-todos --bin react-todos-dump-openapi",
+    "client:orval": "orval --config ./.nextrs/client/orval.config.ts",
+    "client:build": "tsc --project ./.nextrs/client/tsconfig.json && node ./.nextrs/client/scripts/normalize-esm.mjs",
+    "client:prepare": "npm run client:ensure && npm run client:dump && npm run client:orval",
+    "client:generate": "npm run client:prepare && cargo build -p react-todos && npm run client:build",
     "typecheck": "tsc --project tsconfig.json"
   },
   "dependencies": {
-    "@react-todos/client": "file:./client"
+    "@react-todos/client": "file:./.nextrs/client",
+    "@tanstack/react-query": "^5.62.0",
+    "@tanstack/react-router": "^1.87.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "orval": "^7.3.0",
+    "typescript": "^5.7.0"
   }
 }

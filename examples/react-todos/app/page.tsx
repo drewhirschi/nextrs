@@ -5,8 +5,9 @@ import {
   useUpdateTodo,
   getGetTodosQueryKey,
   getGetApiTodosByIdQueryKey,
-} from "@react-todos/client";
+} from "@react-todos/client/react-query";
 import { useState } from "react";
+import { TodoRow } from "./todo-row";
 
 export default function Todos() {
   const queryClient = useQueryClient();
@@ -74,23 +75,13 @@ export default function Todos() {
 
       <ul className="list">
         {todos?.data.map((t) => (
-          <li key={t.id} className={t.done ? "done" : ""}>
-            <button
-              className={`check${t.done ? " checked" : ""}`}
-              aria-label={t.done ? `Reopen ${t.title}` : `Complete ${t.title}`}
-              onClick={() => updateTodo.mutate({ id: t.id, data: { done: !t.done } })}
-            >
-              {t.done ? "✓" : ""}
-            </button>
-            {/* Plain anchor — the app shell intercepts it and soft-navigates
-                to the [id] route (no document load; layout stays mounted). */}
-            <a className="title" href={`/todos/${t.id}`}>
-              {t.title}
-            </a>
-            <span className={`badge ${t.done ? "badge-done" : "badge-open"}`}>
-              {t.done ? "Done" : "Open"}
-            </span>
-          </li>
+          <TodoRow
+            key={t.id}
+            todo={t}
+            onToggle={(todo) =>
+              updateTodo.mutate({ id: todo.id, data: { done: !todo.done } })
+            }
+          />
         ))}
       </ul>
 

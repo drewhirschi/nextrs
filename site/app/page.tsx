@@ -2,7 +2,8 @@
 // into __nx_root__ by the bundle nextrs generates. This page dogfoods the
 // React track; the docs pages under /docs stay server-rendered.
 import * as React from "react";
-import { NextrsMark, useGetColdstartStats, type AppStats } from "@site/client";
+import { NextrsMark } from "../components/NextrsMark";
+import { useGetColdstartStats, type AppStats } from "@site/client/react-query";
 
 const PREFETCH_RS = `// app/prefetch.rs — runs on the server, streaming
 // data into the React Query cache before mount.

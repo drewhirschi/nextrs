@@ -18,8 +18,9 @@
     "app/**/*.jsx",
     "app/**/*.ts",
     "app/**/*.tsx",
-    "client/src/**/*.ts",
-    "client/src/**/*.tsx",
-    "client/orval.config.ts"
+    "components/**/*.js",
+    "components/**/*.jsx",
+    "components/**/*.ts",
+    "components/**/*.tsx"
   ]
 }
