@@ -43,6 +43,12 @@ pub fn api(args: TokenStream, item: TokenStream) -> TokenStream {
         .unwrap_or_default();
     let (method, extra_args) = split_method(args_str, &fn_method);
 
+    if let Some(func) = &func {
+        if let Err(error) = validate_path_extractors(func, &url) {
+            return error.into_compile_error().into();
+        }
+    }
+
     let mut parts = vec![method.clone(), format!("path = \"{url}\"")];
     if !extra_args.is_empty() {
         parts.push(extra_args.to_string());
@@ -450,6 +456,93 @@ fn infer_params(func: &syn::ItemFn, url: &str) -> Option<String> {
     } else {
         Some(entries.join(", "))
     }
+}
+
+/// Reject path extractor shapes that cannot deserialize the file-derived URL.
+///
+/// A named `Path<MyParams>` remains valid for any non-zero segment count: a
+/// proc macro cannot resolve `MyParams` to inspect its fields, and Axum/Serde
+/// handle that shape. A missing `Path` is also valid because handlers may
+/// intentionally ignore dynamic segments.
+fn validate_path_extractors(func: &syn::ItemFn, url: &str) -> syn::Result<()> {
+    use quote::ToTokens;
+    use syn::spanned::Spanned;
+
+    let path_names: Vec<&str> = url
+        .split('/')
+        .filter_map(|segment| {
+            segment
+                .strip_prefix('{')
+                .and_then(|name| name.strip_suffix('}'))
+        })
+        .map(|name| name.trim_start_matches('*'))
+        .collect();
+    let path_args: Vec<&syn::PatType> = func
+        .sig
+        .inputs
+        .iter()
+        .filter_map(|arg| match arg {
+            syn::FnArg::Typed(arg) if last_path_ident(&arg.ty).as_deref() == Some("Path") => {
+                Some(arg)
+            }
+            _ => None,
+        })
+        .collect();
+
+    if path_args.len() > 1 {
+        return Err(syn::Error::new(
+            path_args[1].ty.span(),
+            format!(
+                "nextrs route `{url}` uses {} separate `Path` extractors; combine them into one `Path<(T1, T2)>` or one named `Path<YourPathStruct>`",
+                path_args.len()
+            ),
+        ));
+    }
+    let Some(path_arg) = path_args.first() else {
+        return Ok(());
+    };
+    let inner = first_generic_arg(&path_arg.ty).ok_or_else(|| {
+        syn::Error::new(
+            path_arg.ty.span(),
+            "`Path` must have an inner type, such as `Path<u64>` or `Path<MyPath>`",
+        )
+    })?;
+
+    if path_names.is_empty() {
+        return Err(syn::Error::new(
+            path_arg.ty.span(),
+            format!(
+                "nextrs route `{url}` has no dynamic path parameters, so `{}` cannot extract a path value",
+                path_arg.ty.to_token_stream()
+            ),
+        ));
+    }
+
+    if let syn::Type::Tuple(tuple) = inner {
+        if tuple.elems.len() != path_names.len() {
+            return Err(syn::Error::new(
+                inner.span(),
+                format!(
+                    "nextrs route `{url}` has {} dynamic path parameters ({}) but this `Path` tuple has {} elements; use one tuple element per segment or a named `Path<YourPathStruct>`",
+                    path_names.len(),
+                    path_names.join(", "),
+                    tuple.elems.len()
+                ),
+            ));
+        }
+    } else if is_primitive(inner) && path_names.len() != 1 {
+        return Err(syn::Error::new(
+            inner.span(),
+            format!(
+                "nextrs route `{url}` has {} dynamic path parameters ({}) but `Path<{}>` extracts one scalar value; use `Path<(T1, T2)>` or a named `Path<YourPathStruct>`",
+                path_names.len(),
+                path_names.join(", "),
+                inner.to_token_stream()
+            ),
+        ));
+    }
+
+    Ok(())
 }
 
 /// Types that read as a single URL segment value rather than a params struct.
@@ -878,6 +971,71 @@ mod tests {
         // Two URL params, a lone scalar Path — don't guess.
         let f = parse_fn("pub async fn get(Path(id): Path<i64>) -> Json<X> { todo!() }");
         assert_eq!(infer_params(&f, "/users/{id}/posts/{postId}"), None);
+    }
+
+    #[test]
+    fn path_validation_accepts_scalar_tuple_struct_and_ignored_params() {
+        for (source, url) in [
+            (
+                "pub async fn get(Path(id): Path<u64>) -> Json<X> { todo!() }",
+                "/users/{id}",
+            ),
+            (
+                "pub async fn get(Path(ids): Path<(u64, String)>) -> Json<X> { todo!() }",
+                "/users/{user_id}/posts/{post_id}",
+            ),
+            (
+                "pub async fn get(Path(path): Path<PostPath>) -> Json<X> { todo!() }",
+                "/users/{user_id}/posts/{post_id}",
+            ),
+            (
+                "pub async fn get() -> Json<X> { todo!() }",
+                "/users/{user_id}/posts/{post_id}",
+            ),
+        ] {
+            assert!(
+                validate_path_extractors(&parse_fn(source), url).is_ok(),
+                "{source} at {url}"
+            );
+        }
+    }
+
+    #[test]
+    fn path_validation_rejects_definitely_invalid_shapes() {
+        let cases = [
+            (
+                "pub async fn get(Path(id): Path<u64>) -> Json<X> { todo!() }",
+                "/users/{user_id}/posts/{post_id}",
+                "has 2 dynamic path parameters (user_id, post_id)",
+            ),
+            (
+                "pub async fn get(Path(ids): Path<(u64, u64, u64)>) -> Json<X> { todo!() }",
+                "/users/{user_id}/posts/{post_id}",
+                "tuple has 3 elements",
+            ),
+            (
+                "pub async fn get(Path(a): Path<u64>, Path(b): Path<u64>) -> Json<X> { todo!() }",
+                "/users/{user_id}/posts/{post_id}",
+                "2 separate `Path` extractors",
+            ),
+            (
+                "pub async fn get(Path(id): Path<u64>) -> Json<X> { todo!() }",
+                "/users",
+                "has no dynamic path parameters",
+            ),
+        ];
+
+        for (source, url, expected) in cases {
+            let error = validate_path_extractors(&parse_fn(source), url).unwrap_err();
+            assert!(
+                error.to_string().contains(expected),
+                "expected {expected:?}, got {error}"
+            );
+            assert!(
+                error.to_string().contains("Path"),
+                "diagnostic should explain the Path fix: {error}"
+            );
+        }
     }
 
     #[test]
