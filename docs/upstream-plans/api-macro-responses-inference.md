@@ -2,7 +2,10 @@
 
 - **Reported-in:** linkedin-challenge (17 annotated routes)
 - **Date:** 2026-08-09
-- **Status:** reported
+- **Status:** partly fixed — problem 1 (merge-not-replace) implemented with
+  [[api-error-convention]] (2026-08-14); problem 2's "document it" mitigation
+  landed in the api-routes guide, the compile warning and tuple inference stay
+  open
 
 ## Problem 1: declaring an error response forces you to restate the success one
 

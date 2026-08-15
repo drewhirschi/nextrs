@@ -63,8 +63,36 @@ pub fn api(args: TokenStream, item: TokenStream) -> TokenStream {
         }
     }
     if !extra_args.contains("responses(") && !extra_args.contains("responses (") {
+        // A body-less `StatusCode` handler still gets a 200 so the operation
+        // doesn't emit an empty `responses: {}` (which reads as "no contract"
+        // downstream). Anything richer needs an explicit block.
+        if func
+            .as_ref()
+            .is_some_and(|f| returns_bare_status_code(f))
+        {
+            parts.push("responses((status = 200, description = \"\"))".to_string());
+        } else if let Some(body) = func.as_ref().and_then(infer_success_body) {
+            // `Result<Json<T>, ApiError>` self-registers its error contract: a
+            // `default` response with the ApiError schema, so the generated
+            // client sees a typed error union with no hand-written block.
+            let error = match func.as_ref().and_then(infer_api_error) {
+                Some(err) => {
+                    format!(", (status = \"default\", description = \"Error\", body = {err})")
+                }
+                None => String::new(),
+            };
+            parts.push(format!("responses((status = 200, body = {body}){error})"));
+        }
+    } else if !declares_success_response(&extra_args) {
+        // The user declared error responses but not the 200 the return type
+        // already states — merge the inferred success in rather than making
+        // one hand-written 404 force restating everything.
         if let Some(body) = func.as_ref().and_then(infer_success_body) {
-            parts.push(format!("responses((status = 200, body = {body}))"));
+            if let Some(idx) = parts.iter().position(|p| p.contains("responses")) {
+                if let Some(merged) = merge_success_into_responses(&parts[idx], &body) {
+                    parts[idx] = merged;
+                }
+            }
         }
     }
     if !extra_args.contains("operation_id") {
@@ -468,6 +496,20 @@ fn first_generic_arg(ty: &syn::Type) -> Option<&syn::Type> {
     })
 }
 
+fn second_generic_arg(ty: &syn::Type) -> Option<&syn::Type> {
+    let syn::Type::Path(p) = ty else { return None };
+    let syn::PathArguments::AngleBracketed(args) = &p.path.segments.last()?.arguments else {
+        return None;
+    };
+    args.args
+        .iter()
+        .filter_map(|a| match a {
+            syn::GenericArgument::Type(t) => Some(t),
+            _ => None,
+        })
+        .nth(1)
+}
+
 /// Accept the old `#[nextrs::api(get, ...)]` spelling, but make the handler
 /// name the default source of truth for the method.
 fn split_method<'a>(args: &'a str, fn_method: &str) -> (String, &'a str) {
@@ -522,6 +564,51 @@ fn infer_success_body(func: &syn::ItemFn) -> Option<String> {
         _ => return None,
     };
     Some(response.to_token_stream().to_string())
+}
+
+/// A handler returning `StatusCode` outright — effect-only, no body.
+fn returns_bare_status_code(func: &syn::ItemFn) -> bool {
+    let syn::ReturnType::Type(_, ret) = &func.sig.output else {
+        return false;
+    };
+    last_path_ident(ret).as_deref() == Some("StatusCode")
+}
+
+/// `Result<Json<T>, E>` where `E`'s last path segment is `ApiError` — the
+/// framework error convention. Returns `E`'s tokens (as written, so a path
+/// qualifier like `nextrs::ApiError` survives) for use as the error body type.
+fn infer_api_error(func: &syn::ItemFn) -> Option<String> {
+    use quote::ToTokens;
+
+    let syn::ReturnType::Type(_, ret) = &func.sig.output else {
+        return None;
+    };
+    if last_path_ident(ret)?.as_str() != "Result" {
+        return None;
+    }
+    let err = second_generic_arg(ret)?;
+    (last_path_ident(err)?.as_str() == "ApiError").then(|| err.to_token_stream().to_string())
+}
+
+/// Does the user's `responses(...)` already declare a success (2xx) response?
+/// Textual, like the rest of the attribute handling: whitespace-insensitive
+/// match on `status = 2xx` / `status = OK` / `status = StatusCode::OK`.
+fn declares_success_response(extra_args: &str) -> bool {
+    let compact: String = extra_args.chars().filter(|c| !c.is_whitespace()).collect();
+    compact.contains("status=2") || compact.contains("status=OK") || compact.contains("::OK")
+}
+
+/// Insert `(status = 200, body = {body})` as the first entry of the
+/// `responses(...)` group inside `args`. Returns `None` if no group is found
+/// (caller keeps the original).
+fn merge_success_into_responses(args: &str, body: &str) -> Option<String> {
+    let start = args.find("responses")?;
+    let open = start + args[start..].find('(')?;
+    let mut out = String::with_capacity(args.len() + body.len() + 32);
+    out.push_str(&args[..=open]);
+    out.push_str(&format!("(status = 200, body = {body}), "));
+    out.push_str(&args[open + 1..]);
+    Some(out)
 }
 
 /// Turn a `route.rs` file path into its URL, mirroring `nextrs::discovery`:
@@ -658,6 +745,54 @@ mod tests {
         assert_eq!(
             infer_success_body(&fallible).as_deref(),
             Some("Vec < Greeting >")
+        );
+    }
+
+    #[test]
+    fn api_error_returns_are_recognized_structurally() {
+        let f = parse_fn("pub async fn get() -> Result<Json<Todo>, ApiError> { todo!() }");
+        assert_eq!(infer_api_error(&f).as_deref(), Some("ApiError"));
+
+        // Path qualifiers survive as written.
+        let f = parse_fn("pub async fn get() -> Result<Json<Todo>, nextrs::ApiError> { todo!() }");
+        assert_eq!(infer_api_error(&f).as_deref(), Some("nextrs :: ApiError"));
+
+        // Other error types don't self-register a schema they may not have.
+        let f = parse_fn("pub async fn get() -> Result<Json<Todo>, StatusCode> { todo!() }");
+        assert_eq!(infer_api_error(&f), None);
+        let f = parse_fn("pub async fn get() -> Json<Todo> { todo!() }");
+        assert_eq!(infer_api_error(&f), None);
+    }
+
+    #[test]
+    fn success_response_detection_is_whitespace_insensitive() {
+        assert!(declares_success_response(
+            "responses((status = 200, body = T))"
+        ));
+        assert!(declares_success_response("responses((status=201))"));
+        assert!(declares_success_response(
+            "responses((status = StatusCode::OK))"
+        ));
+        assert!(!declares_success_response(
+            "responses((status = 404, description = \"missing\"))"
+        ));
+    }
+
+    #[test]
+    fn inferred_success_merges_into_declared_responses() {
+        assert_eq!(
+            merge_success_into_responses(
+                "operation_id = \"getTodo\", responses((status = 404, body = ApiError))",
+                "TodoDetail",
+            )
+            .as_deref(),
+            Some(
+                "operation_id = \"getTodo\", responses((status = 200, body = TodoDetail), (status = 404, body = ApiError))"
+            )
+        );
+        assert_eq!(
+            merge_success_into_responses("operation_id = \"x\"", "T"),
+            None
         );
     }
 
