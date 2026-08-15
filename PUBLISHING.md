@@ -1,15 +1,15 @@
 # Publishing nextrs to crates.io
 
-Status (2026-08-12): the framework and legacy tools are live, but the unified
-CLI has not yet had its first crates.io release.
+Status (2026-08-15): the framework, unified CLI, and compatibility tools are
+published on crates.io.
 
 | crate | workspace | crates.io status |
 | --- | --- | --- |
-| `nextrs` | **0.5.0** | **0.5.0** |
-| `nextrs-macros` | **0.1.6** | **0.1.6** |
-| `cargo-nextrs-dev` | **0.1.0** | **0.1.0**, but that tarball predates its library target |
-| `create-nextrs-app` | **0.1.2** | **0.1.2**, but that tarball predates its library target |
-| `cargo-nextrs` | **0.1.0** | not published yet |
+| `nextrs` | **0.5.1** | **0.5.1** |
+| `nextrs-macros` | **0.1.7** | **0.1.7** |
+| `cargo-nextrs-dev` | **0.1.1** | **0.1.1** |
+| `create-nextrs-app` | **0.1.3** | **0.1.3** |
+| `cargo-nextrs` | **0.1.0** | **0.1.0** |
 
 The intended user install is now exclusively:
 
@@ -33,17 +33,14 @@ cargo publish -p create-nextrs-app  # publish its scaffold library next
 cargo publish -p cargo-nextrs       # unified CLI always goes last
 ```
 
-Before the first `cargo-nextrs` publication, bump `cargo-nextrs-dev` above
-`0.1.0` and `create-nextrs-app` above `0.1.2`, then update the corresponding
-dependency versions in `crates/cargo-nextrs/Cargo.toml`. Published versions are
-immutable, and the existing registry tarballs contain binaries only. If the
-versions are not bumped and published first, `cargo package -p cargo-nextrs`
-warns that both dependencies lack library targets and verification fails.
+When either compatibility library changes, publish it before publishing a new
+`cargo-nextrs` version, then update the corresponding dependency version in
+`crates/cargo-nextrs/Cargo.toml`. Published versions are immutable.
 
 - Bump `nextrs`'s pinned `nextrs-macros = { version = ... }` dep together with the
   macros version.
 - Keep `create-nextrs-app/src/lib.rs`'s emitted `nextrs = "0.x"` in lockstep with the
-  released `nextrs` version (currently `0.5.0`) so the scaffold never pins an
+  released `nextrs` version (currently `0.5.1`) so the scaffold never pins an
   unpublished version. The scaffold tests assert this value.
 - Verify the package contents and install surface before publishing:
 
