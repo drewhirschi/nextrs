@@ -2,4 +2,3 @@ node_modules/
 target/
 target-vercel/
 .nextrs/client/src/generated/
-public/dist/
