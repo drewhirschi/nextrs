@@ -788,9 +788,10 @@ fn exported_names(module: &Path) -> Vec<ModuleExport> {
     let mut exports = Vec::new();
     let mut seen = HashSet::new();
     for line in source.lines() {
-        // Column zero only: indented `export` keywords are inside a namespace or a declaration
-        // body, and are not part of the module's own surface.
-        let Some(rest) = line.strip_prefix("export ") else {
+        // Orval emits most declarations at column zero but indents some blocks (the mutation
+        // hooks), so scan the trimmed line. Generated modules contain no namespaces, so an
+        // indented `export` is still part of the module's surface.
+        let Some(rest) = line.trim_start().strip_prefix("export ") else {
             continue;
         };
         let mut words = rest.split_whitespace();
@@ -2548,8 +2549,8 @@ console.log(Logo(), generated, dependency);
              export interface TodoParams {\n  id: string;\n}\n\
              export const getTodosUrl = () => \"/api/todos\";\n\
              export function useTodos() {\n  return null;\n}\n\
-             // not exported at column zero\n\
-             namespace inner {\n  export const hidden = 1;\n}\n",
+             // indented, as orval emits mutation hooks\n\
+                 export const useIndented = () => null;\n",
         )
         .unwrap();
         let exports = exported_names(&module);
@@ -2564,6 +2565,7 @@ console.log(Logo(), generated, dependency);
                 ("TodoParams", true),
                 ("getTodosUrl", false),
                 ("useTodos", false),
+                ("useIndented", false),
             ]
         );
         // An absent module yields nothing, leaving the caller on a plain star export.
