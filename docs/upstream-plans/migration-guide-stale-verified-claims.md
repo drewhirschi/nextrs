@@ -2,7 +2,7 @@
 
 - **Reported-in:** hhh (via the .nextrs client migration follow-up)
 - **Date:** 2026-08-15
-- **Status:** open
+- **Status:** fixed in 36d6c0b
 
 ## Problem
 
