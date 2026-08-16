@@ -40,3 +40,4 @@ user docs.
 - [`--here` refuses a directory containing only .git](scaffold-here-allows-git-only-dir.md)
 - [`ApiError` — typed error convention for API routes](api-error-convention.md)
 - [Generated client package resolution and clean scaffold ownership](generated-client-package-resolution.md)
+- [A second tag returning typed errors makes the generated barrel ambiguous](barrel-duplicate-tag-exports.md)
