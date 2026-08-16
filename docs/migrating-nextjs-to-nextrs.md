@@ -6,6 +6,14 @@
 > wiring into a current app. Start with `nextrs new --adopt` and use the
 > maintained [Porting guide](../site/content/docs/porting.md), which documents
 > the linked `.nextrs/client` package and current `src/app.rs` layout.
+>
+> **Known-stale claims (annotated inline, 2026-08-15).** Several assertions
+> below were accurate against nextrs 0.2.x but have since been invalidated by
+> the framework: `layout.tsx` and `loading.tsx` ARE conventions since 0.3.7
+> (2026-06-27), `not-found.tsx` is a convention (PR #22), and client-side soft
+> navigation shipped (PR #29). Where this document says "verified", read
+> "verified against 0.2.1 at the time of writing" — see
+> [conventions](../site/content/docs/conventions.md) for the current table.
 
 A step-by-step procedure for converting an existing Next.js App Router app to
 nextrs. Written to be followed by a coding agent: every step names the file to
@@ -24,7 +32,7 @@ API, the OpenAPI document, and the static assets. Concretely:
 | Styles (Tailwind output, CSS files) | Route Handlers (`route.ts` → `route.rs`) |
 | `public/` assets | `middleware.ts` / `proxy.ts` → `middleware.rs` |
 | Third-party client packages (React Query, better-auth client, radix, …) | Data layer (kysely → sqlx), auth server, S3, image processing |
-| zod-validated *shapes* (become serde structs with the same JSON wire shape) | Layouts (`layout.tsx` → `layout.html`/`layout.rs`) |
+| zod-validated *shapes* (become serde structs with the same JSON wire shape) | ~~Layouts (`layout.tsx` → `layout.html`/`layout.rs`)~~ *(obsolete since 0.3.7 — `layout.tsx` ports as-is)* |
 | Server-action *call sites* (components importing `app/actions/*`) | Server-action *modules* (`"use server"` bodies → fetch shim + `route.rs`, §6.2) |
 
 > hhh-next note: sections marked **[hhh]** carry specifics for the
@@ -81,8 +89,8 @@ not the route list, is the real API surface.
 |---|---|---|
 | `app/**/page.tsx` (client component) | `app/**/page.tsx` | Ports nearly unchanged (§4.2). Client-rendered, same as today. |
 | `app/**/page.tsx` (server component) | `app/**/page.tsx` (client) + `app/**/prefetch.rs` + a `route.rs` API | The server half is rewritten in Rust (§4.3). |
-| `app/**/layout.tsx` | `app/**/layout.html` or `layout.rs` + `layout.html` (Askama) | **`layout.tsx` is not a convention** — verified: discovery only picks up `.rs`/`.html` for the layout slot. Port the JSX to HTML (§5). |
-| `app/**/loading.tsx` | `app/**/loading.html` (or `loading.rs`) | **`loading.tsx` is not a convention** (phase 3, unimplemented). Hand-render the skeleton JSX to static HTML — it's request-independent by definition, and it never hydrates (the slot is swapped out). |
+| `app/**/layout.tsx` | `app/**/layout.tsx` | **Update 2026-08-15:** ports as-is since nextrs 0.3.7. The original claim here ("not a convention — verified") was true only of 0.2.x; discovery now picks up `.tsx` for the layout slot. §5's `layout.html` procedure is a legacy path. |
+| `app/**/loading.tsx` | `app/**/loading.tsx` | **Update 2026-08-15:** ports as-is since nextrs 0.3.7 (the "phase 3, unimplemented" claim is obsolete). `loading.html` remains a legacy alternative. |
 | `app/api/**/route.ts` | `app/api/**/route.rs` | §6. |
 | `middleware.ts` / `proxy.ts` (Next 16) | `app/middleware.rs` + nested `app/<seg>/middleware.rs` | No `matcher` config — scoping is by directory placement (§7). |
 | `app/[param]/` | `app/[param]/` | Same directory convention. Becomes `/{param}` in Axum syntax. Verified for pages and API routes (`examples/react-todos/app/api/todos/[id]/`). |
@@ -90,7 +98,7 @@ not the route list, is the real API surface.
 | `app/(group)/` (route groups) | **Unsupported** | A `(group)` directory becomes a literal `(group)` URL segment. Flatten the tree; if two sibling groups had different layouts, give each subtree its own real segment or push the layout difference down. |
 | `app/@slot/`, `(.)intercept` | **Unsupported** | No parallel/intercepting routes. Restructure as normal routes. |
 | `app/error.tsx`, `global-error.tsx` | **No convention** | Use a client-side `ErrorBoundary` inside each `page.tsx` (the error component is a client component already — reuse it). Server-side failures: see §13 gaps. |
-| `app/not-found.tsx` | **No convention** | The router 404s with an empty default. App-level workaround: add a custom fallback in `main.rs`/`api/index.rs` (§13). |
+| `app/not-found.tsx` | `app/not-found.tsx` | **Update 2026-08-15:** now a convention (PR #22) — ports as-is. The original workaround (custom fallback in `main.rs`/`api/index.rs`, §13) is no longer needed. |
 | `app/**/template.tsx`, `default.tsx` | **Unsupported** | Restructure. |
 | Server Actions (`"use server"`) | `/api/actions/**` POST endpoints + same-signature client shim | §6.2. Call sites don't change; no backport. |
 | `metadata` / `generateMetadata` | Static `<head>` in `layout.html`; per-page `document.title` in the client | See §13. |
@@ -630,6 +638,12 @@ targets must exist — a `page.tsx` rendering the old `not-found.tsx` markup.
 ## 5. Layouts and loading
 
 ### 5.1 Layouts
+
+> **Update 2026-08-15: this whole section is obsolete for nextrs ≥ 0.3.7.**
+> `layout.tsx` is a first-class convention now — keep the React layout as-is,
+> including interactive ones; the "static frame + mount from the page bundle"
+> pattern below is no longer necessary. The `layout.html`/`layout.rs`
+> procedure remains only for apps pinned to 0.2.x.
 
 `layout.tsx` must become `layout.html` (static) or `layout.rs` + Askama
 template (dynamic). The root layout is where `<html>`, `<head>`, stylesheet
@@ -1427,24 +1441,26 @@ cookie) and diff status, headers that matter (`set-cookie`, `location`,
 - [ ] Deployed: streaming verified on Vercel (`curl --no-buffer`), static
       assets show `x-vercel-cache: HIT`, region as intended.
 
-## 13. Framework gaps (verified against `nextrs` source)
+## 13. Framework gaps (verified against `nextrs` 0.2.1 source, June 2026)
 
-Things Next.js does that nextrs currently cannot. Each verified by reading
-`nextrs/src/{discovery,build,router,bundle}.rs` and `nextrs-macros` — not
-guessed. Gaps marked **framework-first** should be fixed in nextrs before (or
-during) a conversion that needs them.
+Things Next.js did that nextrs 0.2.1 could not. Each was verified by reading
+the then-current `nextrs/src/{discovery,build,router,bundle}.rs` and
+`nextrs-macros` — but "verified" here is a snapshot, not a permanent fact:
+struck-through rows have since been fixed in the framework. Gaps marked
+**framework-first** should be fixed in nextrs before (or during) a conversion
+that needs them.
 
 | Gap | Evidence | Workaround |
 |---|---|---|
 | **Catch-all segments `[...x]`** | `discovery.rs::dir_name_to_segment` only handles `[x]` → `{x}`; `[...all]` emits `{...all}`, which Axum rejects at router build | Enumerate concrete endpoint dirs (works for better-auth, §10.2). **Framework-first** if true wildcards are needed: map `[...x]` → `{*x}`. |
-| **`layout.tsx` / `loading.tsx`** | `discovery.rs` sets `tsx: None` for both slots; react-tsx doc phase 3 unimplemented | Hand-port to `layout.html`/`.rs` and `loading.html` (§5). Exact for skeletons; interactive layouts need restructuring. |
+| ~~**`layout.tsx` / `loading.tsx`**~~ | **Fixed in 0.3.7 (2026-06-27):** both are conventions; the `tsx: None` evidence described 0.2.x `discovery.rs` | No workaround needed — port both files as-is. |
 | **`error.tsx` / error boundaries for server failures** | README "Not yet"; with a loading slot the 200 + headers are committed before `props()`/page run, so a late failure can't change the status | Client `ErrorBoundary` for render errors; make `props()` infallible-ish (seed nothing on error → page falls back to fetch-on-mount, which surfaces errors through the hooks); guard auth/404-able conditions in middleware, *before* streaming. |
-| **`not-found.tsx` / custom 404** | Router has no 404 convention; fallback is ServeDir (or default 404) | App-level: wrap the public dir fallback — `ServeDir::new(dir).not_found_service(your_404_handler)` in `main.rs`/`api/index.rs`. On Vercel, also ensure the function (not the CDN) answers misses — it does, via the catch-all rewrite. |
+| ~~**`not-found.tsx` / custom 404**~~ | **Fixed (PR #22):** `not-found.tsx` is a convention | No workaround needed. |
 | **Route groups `(g)`, parallel `@slot`, intercepting routes** | No special-casing anywhere in discovery | Flatten/restructure the tree. |
 | **Server Actions** | No concept; POST handlers are `route.rs` | Same-signature fetch shim over `/api/actions/**` endpoints (§6.2) — call sites unchanged, nothing to backport. |
 | **Metadata API (`metadata`, `generateMetadata`)** | Nothing reads page metadata; the tsx shell is a fixed mount div | Static `<head>` per layout segment (`layout.html` nests, so `/admin/**` can have its own `<title>`); truly per-page/dynamic titles via `document.title` in the page (SEO-relevant pages: consider a `layout.rs` that derives title from the path). |
 | **SSR/SEO for React pages** | Hard constraint: no JS runtime in the server (`react-tsx-support.md`) | Content that must be in initial HTML for SEO belongs in a Rust page (`page.rs` + Askama) — a real frontend rewrite for that route, or accept CSR. The seeds JSON *is* in the initial HTML but isn't rendered markup. |
-| **Client-side navigation / prefetch** | Documented non-goal (MPA semantics); fresh `QueryClient` per page load | Accept full-page navigations (`next/link` shim = `<a>`); cross-page cache invalidation is replaced by re-seeding server-fresh data each load. |
+| ~~**Client-side navigation / prefetch**~~ | **Fixed (PR #29):** transparent soft navigation with server-seeded caches shipped | No workaround needed — plain `<a>` links soft-navigate. |
 | **`next/image` optimization** | No image endpoint | `<img>` shim (§4.4); pre-size assets; the avatar pipeline (§10.3) covers user uploads. |
 | **Mode-1 typed page props (`usePageProps`)** | `build.rs::emit_page_slot` only accepts `props()` → `QuerySeed` and calls `.to_script_tag()`; no bespoke-props injection, no `nextrs/client` helper exists | Model page-shaped data (session, flags) as a small GET endpoint and seed it like everything else. **Framework-first** if that's too contorted. |
 | **Seed companions limited to zero-arg / single-`Query` GET returning `Json<T>`** | `nextrs-macros::seed_companion` match arms; `build.rs::get_is_seed_eligible` | Path-param or multi-extractor handlers: build `SeedEntry` manually with `nextrs::seed_key` (§4.3), reusing the handler's wire DTO to avoid shape drift. |
