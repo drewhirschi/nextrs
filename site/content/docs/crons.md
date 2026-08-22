@@ -58,6 +58,16 @@ providers must be harmless — write handlers idempotently (compute a
 deterministic time slot and tolerate redelivery rather than assuming exactly
 one call per tick).
 
+**Do the work foreground and let the status code tell the truth.** A cron has
+no user waiting, so there is no reason to respond early: run the job inline
+and return 200 only when it actually completed. The status code is your
+delivery receipt — it lands in the Worker's log and your Vercel logs, so a
+failing job shows up as a failing tick. Responding 200 immediately and
+pushing the work into `WaitUntil` makes every tick report success even when
+the job blew up. (Cost is a wash: Vercel bills active CPU, not wall clock.)
+Reach for background execution only when the work can exceed the function's
+execution window or needs retry semantics of its own.
+
 ## Generate and deploy
 
 ```bash
