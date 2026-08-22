@@ -6,6 +6,8 @@ use std::process::{Command, ExitCode};
 
 use serde_json::Value;
 
+mod cron;
+
 const DEFAULT_CLIENT_DIR: &str = ".nextrs/client";
 
 /// Run a nextrs CLI launcher and translate its result into a process exit code.
@@ -36,6 +38,16 @@ pub fn run_with_args(args: impl IntoIterator<Item = OsString>) -> Result<(), Str
             cargo_nextrs_dev::run_with_args(args).map_err(io_error)
         }
         CommandLine::ClientGenerate(options) => generate_client(options),
+        CommandLine::CronGenerate { root } => {
+            let root = cron::resolve_root(root)?;
+            let summary = cron::generate(&root)?;
+            eprintln!("nextrs: generated {summary}");
+            Ok(())
+        }
+        CommandLine::CronDeploy { root } => {
+            let root = cron::resolve_root(root)?;
+            cron::deploy(&root)
+        }
     }
 }
 
@@ -45,6 +57,8 @@ enum CommandLine {
     New(Vec<OsString>),
     Dev(Vec<OsString>),
     ClientGenerate(GenerateOptions),
+    CronGenerate { root: Option<PathBuf> },
+    CronDeploy { root: Option<PathBuf> },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -72,6 +86,27 @@ impl CommandLine {
         }
         if first == "dev" {
             return Ok(Self::Dev(args.collect()));
+        }
+        if first == "cron" {
+            let Some(action) = args.next() else {
+                return Err("missing cron command; expected `generate` or `deploy`".into());
+            };
+            let mut root = None;
+            while let Some(arg) = args.next() {
+                match arg.to_str() {
+                    Some("--root") => root = Some(required_path(&mut args, "--root")?),
+                    Some("-h" | "--help") => return Ok(Self::Help),
+                    _ => return Err(format!("unexpected argument `{}`", arg.to_string_lossy())),
+                }
+            }
+            return match action.to_str() {
+                Some("generate") => Ok(Self::CronGenerate { root }),
+                Some("deploy") => Ok(Self::CronDeploy { root }),
+                _ => Err(format!(
+                    "unknown cron command `{}`; expected `generate` or `deploy`",
+                    action.to_string_lossy()
+                )),
+            };
         }
         if first != "client" {
             return Err(format!("unknown command `{}`", first.to_string_lossy()));
@@ -614,7 +649,7 @@ fn io_error(error: std::io::Error) -> String {
 
 fn print_help() {
     println!(
-        "nextrs\n\nUSAGE:\n    nextrs new <PATH> [OPTIONS]\n    nextrs dev [--bin <NAME>] [-- <APP_ARGS>]\n    nextrs client generate [OPTIONS]\n\nRun the same commands as `cargo nextrs ...` or `nextrs ...`.\n\nCLIENT OPTIONS:\n    --root <PATH>        nextrs application root (default: current directory)\n    --client-dir <PATH>  generated package relative to the app root (default: .nextrs/client)\n    --config <PATH>      external-client config; defaults to .nextrs/client/nextrs.client.json when present\n    -h, --help           Print help\n\nClient dependencies are installed once at the application root; never run\n`npm install` inside the generated client directory. Generation validates and\nrepairs the root workspace link, then verifies both JS and declaration exports.\n\nOne `cargo install cargo-nextrs` provides both launchers, the dev server,\nthe legacy `cargo-nextrs-dev` compatibility binary, and client generation."
+        "nextrs\n\nUSAGE:\n    nextrs new <PATH> [OPTIONS]\n    nextrs dev [--bin <NAME>] [-- <APP_ARGS>]\n    nextrs client generate [OPTIONS]\n    nextrs cron generate [--root <PATH>]\n    nextrs cron deploy [--root <PATH>]\n\nRun the same commands as `cargo nextrs ...` or `nextrs ...`.\n\nCLIENT OPTIONS:\n    --root <PATH>        nextrs application root (default: current directory)\n    --client-dir <PATH>  generated package relative to the app root (default: .nextrs/client)\n    --config <PATH>      external-client config; defaults to .nextrs/client/nextrs.client.json when present\n    -h, --help           Print help\n\nClient dependencies are installed once at the application root; never run\n`npm install` inside the generated client directory. Generation validates and\nrepairs the root workspace link, then verifies both JS and declaration exports.\n\nOne `cargo install cargo-nextrs` provides both launchers, the dev server,\nthe legacy `cargo-nextrs-dev` compatibility binary, and client generation.\n\nCRON:\n    Declare schedules in nextrs.toml ([app] name/url + [[crons]] path/schedule).\n    `cron generate` writes the Cloudflare Worker shim to .nextrs/cloudflare/ and\n    merges vercel-provider crons into vercel.json. `cron deploy` runs generate,\n    then `wrangler deploy` and syncs CRON_SECRET from the environment."
     );
 }
 
