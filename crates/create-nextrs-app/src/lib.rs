@@ -175,6 +175,7 @@ fn scaffold(target: &Path, nextrs_path: Option<&Path>, no_install: bool) -> io::
     println!("  /          React page");
     println!("  /slow      React page + Rust prefetch + loading.tsx");
     println!("  /api/ping  Rust API route");
+    println!("  /items     paginated list with its state in the URL (the house style)");
 
     Ok(())
 }
@@ -480,6 +481,9 @@ fn adopt_template_files(
                     | "app/slow/loading.tsx"
                     | "app/slow/prefetch.rs"
                     | "app/api/ping/route.rs"
+                    | "app/items/page.tsx"
+                    | "app/items/prefetch.rs"
+                    | "app/api/items/route.rs"
                     | "public/style.css"
             )
         })
@@ -644,6 +648,9 @@ fn template_files(
         ("app/slow/loading.tsx", slow_loading_tsx()),
         ("app/slow/prefetch.rs", slow_prefetch_rs()),
         ("app/api/ping/route.rs", ping_route_rs()),
+        ("app/items/page.tsx", items_page_tsx(client_alias)),
+        ("app/items/prefetch.rs", items_prefetch_rs()),
+        ("app/api/items/route.rs", items_route_rs()),
         (".nextrs/ensure-client.mjs", ensure_client_mjs()),
         (
             ".nextrs/client/package.json",
@@ -801,6 +808,18 @@ while `src/main.rs` and `api/index.rs` are process adapters.
   OpenAPI, Orval, declaration, and package build steps.
   Guide: <https://nextrs-docs.vercel.app/docs/typesafe-client>
 
+## List state belongs in the URL (house style)
+
+Any list that filters, sorts, searches, or paginates keeps that state in URL
+search params, passed through to the server — never `useState`. The wiring is
+generated: declare the params as a `Query<T>` struct on the API route, and use
+the client's `use...FromUrl` hook (params read from the URL, `setParams`
+soft-navigates); a `prefetch.rs` parsing the same query string via
+`nextrs::search_params` makes every filtered/paginated URL render seeded.
+`app/items/` is the worked example — copy it. For URL state that is not tied
+to a generated endpoint hook, use [nuqs](https://nuqs.dev). Guide:
+<https://nextrs-docs.vercel.app/docs/url-state>
+
 ## Dev loop
 
 ```bash
@@ -954,6 +973,10 @@ fn build_rs(client_alias: &str) -> String {
         r#"fn main() {{
     nextrs::build::emit_registry("app", "src/app.rs", "nextrs_routes.rs")
         .expect("nextrs::build::emit_registry failed");
+
+    // Typed seed companions for prefetch.rs files (React Query cache warming).
+    nextrs::build::emit_seeds("app", "nextrs_seeds.rs")
+        .expect("nextrs::build::emit_seeds failed");
 
     nextrs::bundle::bundle_pages(&nextrs::bundle::BundleConfig {{
         app_dir: "app",
@@ -1234,6 +1257,10 @@ export default function Page() {{
           route handler at <code>/api/ping</code> through a generated typed client.
         </p>
         <PingDemo />
+        <p>
+          More demos: <a href="/items">a paginated list with its state in the
+          URL</a>, and <a href="/slow">a server-prefetched page</a>.
+        </p>
       </section>
     </main>
   );
@@ -1353,6 +1380,130 @@ pub async fn prefetch(_req: http::Request<axum::body::Body>) -> nextrs::QuerySee
             }
         })
         .await
+}
+"#
+    .into()
+}
+
+fn items_page_tsx(client_alias: &str) -> String {
+    format!(
+        r#"// List state belongs in the URL — the house style for every list that
+// filters, sorts, or paginates. `useGetApiItemsFromUrl` reads `?q=&page=`
+// from the page URL, setParams soft-navigates, and prefetch.rs seeds the
+// first render from the SAME query string, so a shared link renders the
+// same slice with no client fetch.
+import {{ useGetApiItemsFromUrl }} from "{client_alias}/react-query";
+
+export default function ItemsPage() {{
+  const {{ data, params, setParams }} = useGetApiItemsFromUrl();
+  const page = data?.data.page ?? 1;
+  const totalPages = data?.data.total_pages ?? 1;
+
+  return (
+    <main className="page">
+      <section className="panel">
+        <p className="eyebrow">URL state</p>
+        <h1>Filter and page live in the URL.</h1>
+        <input
+          aria-label="Filter items"
+          placeholder="Filter items..."
+          value={{params.q ?? ""}}
+          onChange={{(e) =>
+            // A filter change resets pagination; undefined deletes the key.
+            setParams({{ q: e.target.value || undefined, page: undefined }})
+          }}
+        />
+        <ul>
+          {{data?.data.items.map((item) => (
+            <li key={{item}}>{{item}}</li>
+          ))}}
+        </ul>
+        <div className="row">
+          <button disabled={{page <= 1}} onClick={{() => setParams({{ page: page - 1 }})}}>
+            Prev
+          </button>
+          <span>
+            Page {{page}} / {{totalPages}}
+          </span>
+          <button
+            disabled={{page >= totalPages}}
+            onClick={{() => setParams({{ page: page + 1 }})}}
+          >
+            Next
+          </button>
+        </div>
+      </section>
+    </main>
+  );
+}}
+"#
+    )
+}
+
+fn items_prefetch_rs() -> String {
+    r#"//! Server seed for the items list. The filter and page are URL state, so
+//! the seed parses the SAME query string the client hook reads and calls the
+//! real GET handler through its generated companion — the first render of any
+//! `?q=&page=` URL arrives pre-filtered, no client fetch.
+
+include!(concat!(env!("OUT_DIR"), "/nextrs_seeds.rs"));
+
+pub async fn prefetch(req: http::Request<axum::body::Body>) -> nextrs::QuerySeed {
+    let query = nextrs::search_params::<api_items::ItemsQuery, _>(&req)
+        .unwrap_or(api_items::ItemsQuery { q: None, page: None });
+    nextrs::QuerySeed::new()
+        .seed(get_api_items(query, req.extensions()))
+        .await
+}
+"#
+    .into()
+}
+
+fn items_route_rs() -> String {
+    r#"use axum::Json;
+use axum::extract::Query;
+use serde::{Deserialize, Serialize};
+use utoipa::{IntoParams, ToSchema};
+
+const PAGE_SIZE: usize = 10;
+
+/// `skip_serializing_if` matters: seeded query keys drop absent fields, so
+/// serializing `None` as `null` would make the server-built key never match
+/// the client hook's.
+#[derive(Serialize, Deserialize, IntoParams)]
+pub struct ItemsQuery {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub q: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub page: Option<u32>,
+}
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct ItemsPage {
+    pub items: Vec<String>,
+    pub page: u32,
+    pub total_pages: u32,
+}
+
+#[nextrs::api]
+pub async fn get(Query(query): Query<ItemsQuery>) -> Json<ItemsPage> {
+    let needle = query.q.as_deref().unwrap_or("").to_lowercase();
+    let matches: Vec<String> = (1..=57)
+        .map(|i| format!("Item {i:02}"))
+        .filter(|item| item.to_lowercase().contains(&needle))
+        .collect();
+    let total_pages = matches.len().div_ceil(PAGE_SIZE).max(1) as u32;
+    let page = query.page.unwrap_or(1).clamp(1, total_pages);
+    let items = matches
+        .into_iter()
+        .skip((page as usize - 1) * PAGE_SIZE)
+        .take(PAGE_SIZE)
+        .collect();
+    Json(ItemsPage {
+        items,
+        page,
+        total_pages,
+    })
 }
 "#
     .into()
