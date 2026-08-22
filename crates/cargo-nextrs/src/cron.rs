@@ -172,6 +172,8 @@ pub fn deploy(root: &Path) -> Result<(), String> {
         return Ok(());
     }
 
+    preflight(root)?;
+
     let secret = std::env::var("CRON_SECRET")
         .ok()
         .filter(|secret| !secret.is_empty())
@@ -186,6 +188,52 @@ pub fn deploy(root: &Path) -> Result<(), String> {
     )?;
     eprintln!("nextrs: cloudflare cron worker deployed");
     Ok(())
+}
+
+/// Before deploying the trigger, verify the target actually looks like a
+/// deployed nextrs app with fail-closed cron routes: an unauthenticated GET
+/// of each cloudflare-provider path should return 401. Anything else means
+/// the setup is wrong in a way worth flagging — the Worker would either hit
+/// a dead URL every tick or an unprotected route.
+fn preflight(root: &Path) -> Result<(), String> {
+    let config = load_config(root)?;
+    let base = config.app.url.trim_end_matches('/');
+    let mut problems = Vec::new();
+    for cron in config.crons.iter().filter(|c| c.provider() == Provider::Cloudflare) {
+        let url = format!("{base}{}", cron.path);
+        match ureq::get(&url).timeout(std::time::Duration::from_secs(10)).call() {
+            Err(ureq::Error::Status(401, _)) => {
+                eprintln!("nextrs: preflight ok: {url} answers 401 without the secret");
+            }
+            Ok(response) => problems.push(format!(
+                "{url} answered {} WITHOUT authentication — the route is missing its `nextrs::cron::authorize` gate or is not the route you meant",
+                response.status()
+            )),
+            Err(ureq::Error::Status(404, _)) => problems.push(format!(
+                "{url} answered 404 — the route isn't deployed at app.url (stale deploy, or wrong `app.url`/`path` in nextrs.toml)"
+            )),
+            Err(ureq::Error::Status(code, _)) => problems.push(format!(
+                "{url} answered {code} without authentication (expected 401)"
+            )),
+            Err(error) => problems.push(format!(
+                "{url} is unreachable: {error} — check `app.url` in nextrs.toml and that the app is deployed"
+            )),
+        }
+    }
+    if problems.is_empty() {
+        return Ok(());
+    }
+    for problem in &problems {
+        eprintln!("nextrs: preflight warning: {problem}");
+    }
+    if std::env::var_os("NEXTRS_CRON_SKIP_PREFLIGHT").is_some() {
+        eprintln!("nextrs: NEXTRS_CRON_SKIP_PREFLIGHT set; deploying anyway");
+        return Ok(());
+    }
+    Err(
+        "cron preflight failed: the deployed app doesn't look ready for these triggers (see warnings above). Fix nextrs.toml or the deployment, or set NEXTRS_CRON_SKIP_PREFLIGHT=1 to deploy anyway"
+            .into(),
+    )
 }
 
 fn run_wrangler(

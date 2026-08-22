@@ -73,6 +73,13 @@ plus a Cloudflare account: authenticate with `wrangler login`, or set
 with it. Set the same `CRON_SECRET` on the Vercel project
 (`vercel env add CRON_SECRET`) so the app can verify what the Worker sends.
 
+Before touching Cloudflare, `cron deploy` runs a preflight: it fetches each
+cloudflare-provider route at `app.url` **without** credentials and expects a
+401. A 404 means the route isn't deployed there (wrong `app.url` or stale
+deploy); a 200 means the route is missing its `authorize` gate; unreachable
+means the URL is wrong. Any of those aborts the deploy with the specifics —
+`NEXTRS_CRON_SKIP_PREFLIGHT=1` overrides when you know better.
+
 The generated `.nextrs/cloudflare/` directory is disposable — gitignore it and
 regenerate on demand. Vercel-provider crons deploy with the app itself; the
 Worker redeploys with `nextrs cron deploy` whenever schedules change.
