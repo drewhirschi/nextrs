@@ -1,0 +1,14 @@
+# App-level nextrs config. Today this declares cron schedules; the direction
+# is for this file to become the single config source (with vercel.json
+# generated from it).
+
+[app]
+name = "react-todos"
+url = "https://nextrs-react-todos.vercel.app"
+
+# `nextrs cron generate` turns these into provider plumbing. Schedules finer
+# than daily default to a generated Cloudflare Worker trigger
+# (.nextrs/cloudflare/); daily-or-coarser ones go into vercel.json's `crons`.
+[[crons]]
+path = "/api/cron/heartbeat"
+schedule = "*/10 * * * *"

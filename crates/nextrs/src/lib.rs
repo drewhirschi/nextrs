@@ -1,4 +1,5 @@
 pub mod conventions;
+pub mod cron;
 pub mod discovery;
 pub mod error;
 pub mod health;
