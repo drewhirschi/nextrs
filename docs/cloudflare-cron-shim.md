@@ -1,6 +1,6 @@
 # Cloudflare cron shim — generous schedules without leaving Vercel
 
-- **Status:** v1 implemented on `feat/cloudflare-cron` (2026-08-22) — see below
+- **Status:** shipped in ba83462 (merge of feat/cloudflare-cron, 2026-08-22); published as nextrs 0.6.0 / cargo-nextrs 0.2.0 / create-nextrs-app 0.1.4. Remaining validation: redeploy react-todos on 0.6.0 and run a real `nextrs cron deploy` against Cloudflare
 - **Decisions (2026-08-22):** schedules live in a `[[crons]]` section of a new
   app-root `nextrs.toml` (not vercel.json — direction is nextrs.toml becomes
   the single config source and vercel.json gets generated from it; today only
