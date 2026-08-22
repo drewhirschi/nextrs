@@ -166,11 +166,13 @@ pub fn deploy(root: &Path) -> Result<(), String> {
     let summary = generate(root)?;
     eprintln!("nextrs: generated {summary}");
 
-    let wrangler_config = root.join(OUTPUT_DIR).join("wrangler.toml");
-    if !wrangler_config.is_file() {
+    // Absolute: run_wrangler runs with the app root as cwd, so a cwd-relative
+    // root would otherwise be joined twice.
+    let wrangler_config = fs::canonicalize(root.join(OUTPUT_DIR).join("wrangler.toml"));
+    let Ok(wrangler_config) = wrangler_config else {
         eprintln!("nextrs: no cloudflare crons declared; nothing to deploy");
         return Ok(());
-    }
+    };
 
     preflight(root)?;
 
