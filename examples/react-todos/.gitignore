@@ -8,3 +8,4 @@
 .env.*.local
 npm-debug.log*
 Cargo.lock
+/.nextrs/cloudflare/
