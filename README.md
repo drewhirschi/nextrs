@@ -39,6 +39,7 @@ Each directory is a route segment. The supported frontend conventions are:
 | `page.tsx` | React content for a route |
 | `layout.tsx` | Shared React UI around nested routes |
 | `loading.tsx` | Pending UI while route code and data become available |
+| `not-found.tsx` | 404 UI for a route subtree |
 | `prefetch.rs` | Server-side warming for the page's React Query cache |
 | `middleware.rs` | Rust request guards and transformations |
 | `route.rs` | Rust/Axum API handlers |
@@ -82,8 +83,11 @@ pub async fn get() -> Json<Greeting> {
 ```
 
 `#[nextrs::api]` opts the handler into client generation. nextrs infers the
-HTTP method, path, success status, and response body. Generate a direct fetch
-function and React Query hook with:
+HTTP method, path, success status, and response body. Handlers can return
+`Result<Json<T>, nextrs::ApiError>` to expose a typed error response, and
+dynamic segments (`app/api/users/[id]/route.rs`) map to Axum `Path`
+extractors and typed client arguments. Generate a direct fetch function and
+React Query hook with:
 
 ```bash
 cargo nextrs client generate

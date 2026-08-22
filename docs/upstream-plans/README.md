@@ -40,3 +40,7 @@ user docs.
 - [`--here` refuses a directory containing only .git](scaffold-here-allows-git-only-dir.md)
 - [`ApiError` — typed error convention for API routes](api-error-convention.md)
 - [Generated client package resolution and clean scaffold ownership](generated-client-package-resolution.md)
+- [A second tag returning typed errors makes the generated barrel ambiguous](barrel-duplicate-tag-exports.md)
+- [Existing apps have no path from `client/` to `.nextrs/client`](migrating-legacy-client-to-nextrs-layout.md)
+- [Migration guide asserts obsolete conventions as "verified"](migration-guide-stale-verified-claims.md)
+- [The external client config lives inside a directory the framework deletes](external-client-generation-contract.md)
