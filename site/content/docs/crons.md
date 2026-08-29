@@ -37,21 +37,27 @@ anything finer goes to the Cloudflare shim, since Vercel Hobby can't run it.
 
 ## Write the route
 
-A cron target is an ordinary API route, gated by `nextrs::cron::authorize`.
-Both trigger providers send `Authorization: Bearer $CRON_SECRET`; the check is
-fail-closed — if `CRON_SECRET` is unset, every request is rejected.
+A cron target is an ordinary API route with `#[nextrs::cron]` in place of
+`#[nextrs::api]`. The macro is `api` plus the auth gate: both trigger
+providers send `Authorization: Bearer $CRON_SECRET`, and the handler answers
+401 before its body runs unless the secret matches. The check is fail-closed
+— if `CRON_SECRET` is unset, every request is rejected.
 
 ```rust
 // app/api/cron/refresh/route.rs
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::StatusCode;
 use axum::Json;
 
-#[nextrs::api]
-pub async fn get(headers: HeaderMap) -> Result<Json<Report>, StatusCode> {
-    nextrs::cron::authorize(&headers)?;
+#[nextrs::cron]
+pub async fn get() -> Result<Json<Report>, StatusCode> {
     // ... the actual work ...
 }
 ```
+
+The handler must return a `Result` whose error type accepts a `StatusCode`
+(`StatusCode` itself or `nextrs::ApiError`). If you need the check somewhere
+a macro can't reach, `nextrs::cron::authorize(&headers)` is the same gate as
+a plain function.
 
 Delivery is at-least-once and imprecise, and redundant delivery from both
 providers must be harmless — write handlers idempotently (compute a

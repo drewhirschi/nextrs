@@ -43,6 +43,9 @@ pub use wait_until::WaitUntil;
 /// `#[nextrs::api(...)]` — typed API handler with the OpenAPI path derived from
 /// the file location. See [`nextrs_macros::api`].
 pub use nextrs_macros::api;
+/// `#[nextrs::cron]` — `#[nextrs::api]` plus the `CRON_SECRET` bearer gate
+/// for scheduled routes. See [`nextrs_macros::cron`] and [`cron::authorize`].
+pub use nextrs_macros::cron;
 
 #[cfg(feature = "vercel")]
 pub mod vercel;

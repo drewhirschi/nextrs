@@ -131,6 +131,61 @@ pub fn api(args: TokenStream, item: TokenStream) -> TokenStream {
     out
 }
 
+/// Annotate a `route.rs` handler as a cron target: `#[nextrs::api]` plus the
+/// `CRON_SECRET` bearer gate, so a scheduled route cannot forget its auth.
+///
+/// ```ignore
+/// // in app/api/cron/refresh/route.rs
+/// #[nextrs::cron]
+/// pub async fn get(Extension(db): Extension<Db>) -> Result<Json<Report>, StatusCode> {
+///     // runs only when the request carries `Authorization: Bearer $CRON_SECRET`
+/// }
+/// ```
+///
+/// The handler must return `Result<_, E>` where `E: From<StatusCode>` (plain
+/// `StatusCode` or `nextrs::ApiError` both work); an unauthorized request
+/// answers 401 before the body runs. Any `#[nextrs::api]` arguments pass
+/// through unchanged.
+#[proc_macro_attribute]
+pub fn cron(args: TokenStream, item: TokenStream) -> TokenStream {
+    use quote::quote;
+
+    let mut func = match syn::parse::<syn::ItemFn>(item) {
+        Ok(func) => func,
+        Err(error) => return error.into_compile_error().into(),
+    };
+    let returns_result = match &func.sig.output {
+        syn::ReturnType::Type(_, ret) => last_path_ident(ret).as_deref() == Some("Result"),
+        syn::ReturnType::Default => false,
+    };
+    if !returns_result {
+        return syn::Error::new_spanned(
+            &func.sig,
+            "#[nextrs::cron] handlers must return `Result<_, StatusCode>` (or an error type that \
+             implements `From<StatusCode>`) so an unauthorized request can answer 401",
+        )
+        .into_compile_error()
+        .into();
+    }
+
+    // The header extractor is appended last: axum requires the body-consuming
+    // extractor (Json, Form) to be final, and HeaderMap is not one.
+    let headers_ident = quote::format_ident!("__nextrs_cron_headers");
+    let arg: syn::FnArg = syn::parse_quote!(#headers_ident: ::nextrs::http::HeaderMap);
+    func.sig.inputs.push(arg);
+    let gate: syn::Stmt = syn::parse_quote! {
+        ::nextrs::cron::authorize(&#headers_ident)?;
+    };
+    func.block.stmts.insert(0, gate);
+
+    let args = proc_macro2::TokenStream::from(args);
+    quote! {
+        #[::nextrs::api(#args)]
+        #func
+    }
+    .into()
+}
+
 /// Emit `__nextrs_seed_get` next to an eligible GET handler.
 ///
 /// Eligible: a `Json<...>` or `Result<Json<...>, E>` return type and, in any

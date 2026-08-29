@@ -1545,7 +1545,7 @@ dependencies = [
 
 [[package]]
 name = "nextrs"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "askama",
  "async-stream",
@@ -1597,7 +1597,7 @@ dependencies = [
 
 [[package]]
 name = "nextrs-macros"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "proc-macro2",
  "quote",

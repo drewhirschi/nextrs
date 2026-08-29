@@ -320,6 +320,12 @@ fn get_is_seed_eligible(source: &str) -> bool {
     let Some(start) = source.find("pub async fn get") else {
         return false;
     };
+    // `#[nextrs::cron]` appends a HeaderMap arg for the secret gate, which
+    // makes the expanded handler ineligible — and a cron route is never
+    // something a page should seed anyway.
+    if source[..start].contains("#[nextrs::cron") {
+        return false;
+    }
     let sig_region = &source[start..];
     let Some(body_start) = sig_region.find('{') else {
         return false;
@@ -987,7 +993,7 @@ fn fn_decl_index(source: &str, fn_name: &str) -> Option<usize> {
 /// Attribute markers that put a `route.rs` method into the OpenAPI document:
 /// `#[utoipa::path]` directly, or `#[nextrs::api]` (which expands to it with a
 /// derived `path`).
-const OPENAPI_ATTRS: &[&str] = &["#[utoipa::path", "#[nextrs::api"];
+const OPENAPI_ATTRS: &[&str] = &["#[utoipa::path", "#[nextrs::api", "#[nextrs::cron"];
 
 /// The slice of `source` spanning the OpenAPI attribute (`#[utoipa::path]` or
 /// `#[nextrs::api]`) that immediately precedes `fn_name`, if there is one.
@@ -2316,6 +2322,10 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
         // Non-Json return: not eligible.
         assert!(!get_is_seed_eligible(
             "pub async fn get() -> impl IntoResponse { todo!() }"
+        ));
+        // Cron handlers: the macro adds a HeaderMap gate, so never eligible.
+        assert!(!get_is_seed_eligible(
+            "#[nextrs::cron]\npub async fn get() -> Result<Json<X>, StatusCode> { todo!() }"
         ));
         // Multiple extractors: not eligible.
         assert!(!get_is_seed_eligible(
