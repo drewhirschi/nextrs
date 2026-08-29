@@ -1,6 +1,6 @@
 # The docs site is a nextrs app too: vercel.json is generated from this file
-# and `nextrs deploy --root site` ships it. build_from = ".." because the
-# Vercel project is rooted one level up (its Root Directory points here).
+# by `nextrs generate` (the deploy itself uses scripts/deploy-prebuilt.sh from
+# the repo root because the Vercel project's Root Directory is `site`).
 
 [app]
 name = "nextrs-docs"
@@ -8,4 +8,3 @@ url = "https://nextrs.hirschi.dev"
 
 [vercel]
 regions = ["pdx1"]
-build_from = ".."

@@ -67,8 +67,7 @@ where this complete build runs, not what the build contains.
 
 The Vercel project Root Directory and the directory where you run
 `vercel build` must agree. If the project declares a root directory such as
-`site`, set `build_from = ".."` in its `nextrs.toml` and run
-`nextrs deploy --root site` — or link that project and run the repository's deployment wrapper as
+`site`, link that project and run the repository's deployment wrapper as
 documented by the repository. If the app itself is the Vercel root, run its
 generated script inside the app.
 
