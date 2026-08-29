@@ -19,7 +19,7 @@ path = "src/main.rs"
 name = "react-todos-dump-openapi"
 path = ".nextrs/dump-openapi.rs"
 
-# Vercel deployment entry (serverless function). See vercel.json.
+# Vercel deployment entry (serverless function). See nextrs.toml.
 [[bin]]
 name = "index"
 path = "api/index.rs"

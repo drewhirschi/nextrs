@@ -1,6 +1,6 @@
 //! `nextrs deploy` — the whole ship path in one command.
 //!
-//! 1. `generate` (vercel.json + cron plumbing from nextrs.toml, when present)
+//! 1. `generate` (`.nextrs/vercel.json` + cron plumbing from nextrs.toml)
 //! 2. prebuilt Vercel deploy: `vercel pull` → `vercel build` on this machine
 //!    → bundle the compiled function executable into its `.func` dir →
 //!    `vercel deploy --prebuilt`. Skips Vercel's build queue entirely.
@@ -25,9 +25,11 @@ pub struct DeployOptions {
 
 pub fn deploy(root: &Path, options: &DeployOptions) -> Result<(), String> {
     let root = fs::canonicalize(root).map_err(|error| format!("bad --root: {error}"))?;
+    let mut generated_vercel_config = None;
 
     if root.join(cron::CONFIG_FILE).is_file() {
         let summary = cron::generate(&root)?;
+        generated_vercel_config = Some(root.join(cron::VERCEL_CONFIG_FILE));
         eprintln!("nextrs: generated {summary}");
         if !options.preview && !options.skip_cron {
             let crons = cron::discover_crons(&root)?;
@@ -39,7 +41,7 @@ pub fn deploy(root: &Path, options: &DeployOptions) -> Result<(), String> {
         }
     } else {
         eprintln!(
-            "nextrs: no {} — deploying with the existing vercel.json",
+            "nextrs: no {} — deploying with Vercel's default project config",
             cron::CONFIG_FILE
         );
     }
@@ -111,7 +113,11 @@ pub fn deploy(root: &Path, options: &DeployOptions) -> Result<(), String> {
         "==> vercel build {} — local compile, incl. the Rust function",
         prod.join(" ")
     );
-    run(&cwd, &envs, "vercel", &[&["build"][..], prod].concat())?;
+    let local_config = generated_vercel_config
+        .as_ref()
+        .map(|path| path.to_string_lossy().into_owned());
+    let build_args = vercel_build_args(local_config.as_deref(), prod);
+    run(&cwd, &envs, "vercel", &build_args)?;
 
     let functions = cwd.join(".vercel/output/functions");
     let configs = find_files(&functions, ".vc-config.json");
@@ -142,6 +148,15 @@ pub fn deploy(root: &Path, options: &DeployOptions) -> Result<(), String> {
         return Ok(());
     }
     cron::deploy(&root)
+}
+
+fn vercel_build_args<'a>(local_config: Option<&'a str>, prod: &'a [&'a str]) -> Vec<&'a str> {
+    let mut args = vec!["build"];
+    if let Some(path) = local_config {
+        args.extend(["--local-config", path]);
+    }
+    args.extend_from_slice(prod);
+    args
 }
 
 /// vercel-rust records the compiled executable in `filePathMap`, usually as
@@ -235,6 +250,19 @@ fn run(cwd: &Path, envs: &[(&str, PathBuf)], program: &str, args: &[&str]) -> Re
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn build_uses_generated_local_config() {
+        assert_eq!(
+            vercel_build_args(Some("/app/.nextrs/vercel.json"), &["--prod"]),
+            [
+                "build",
+                "--local-config",
+                "/app/.nextrs/vercel.json",
+                "--prod"
+            ]
+        );
+    }
 
     #[test]
     fn bundle_copies_executable_and_drops_file_path_map() {

@@ -65,7 +65,7 @@ execution window or needs retry semantics of its own.
 
 ```bash
 nextrs generate        # writes .nextrs/cloudflare/{worker.js,wrangler.toml},
-                       # and vercel.json (with vercel-provider crons)
+                       # and .nextrs/vercel.json (with Vercel-provider crons)
 nextrs cron deploy     # generate + `wrangler deploy` + sync CRON_SECRET
 ```
 

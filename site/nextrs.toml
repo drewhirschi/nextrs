@@ -1,4 +1,4 @@
-# The docs site is a nextrs app too: vercel.json is generated from this file
+# The docs site is a nextrs app too: .nextrs/vercel.json is generated from this file
 # by `nextrs generate` (the deploy itself uses scripts/deploy-prebuilt.sh from
 # the repo root because the Vercel project's Root Directory is `site`).
 

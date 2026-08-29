@@ -7,7 +7,8 @@
 //!   whose `scheduled()` handler does nothing but fetch the app's route on
 //!   Vercel with `Authorization: Bearer $CRON_SECRET`. All real logic stays
 //!   in the Rust app; the Worker is disposable plumbing.
-//! - `vercel` crons are merged into the app's `vercel.json` `crons` array.
+//! - `vercel` crons are written into the framework-owned
+//!   `.nextrs/vercel.json` used by `nextrs deploy`.
 //!
 //! Vercel is the default provider. Subdaily schedules produce a Hobby-plan
 //! warning with an explicit `provider = "cloudflare"` alternative.
@@ -22,6 +23,8 @@ use serde_json::{Value, json};
 
 pub const CONFIG_FILE: &str = "nextrs.toml";
 pub const OUTPUT_DIR: &str = ".nextrs/cloudflare";
+pub const VERCEL_CONFIG_FILE: &str = ".nextrs/vercel.json";
+const GENERATED_README: &str = ".nextrs/README.md";
 
 /// Wrangler pins Worker runtime behavior to this date; bump deliberately.
 const COMPATIBILITY_DATE: &str = "2026-08-01";
@@ -30,16 +33,14 @@ const COMPATIBILITY_DATE: &str = "2026-08-01";
 #[serde(deny_unknown_fields)]
 pub struct NextrsConfig {
     pub app: AppConfig,
-    /// When present, `vercel.json` is generated wholesale from this table
-    /// (plus discovered crons). When absent, an existing hand-written `vercel.json`
-    /// is left alone except for its `crons` key.
+    /// Optional Vercel overrides. Framework defaults are used when absent.
     pub vercel: Option<VercelConfig>,
 }
 
 /// The knobs a nextrs app's `vercel.json` actually varies on. Everything
 /// else (the Rust function, the catch-all rewrite, immutable `/dist` caching)
 /// is the framework's fixed deploy shape.
-#[derive(Debug, Default, Deserialize)]
+#[derive(Debug, Default, Deserialize, Clone)]
 #[serde(deny_unknown_fields)]
 pub struct VercelConfig {
     /// Function regions, e.g. `["pdx1"]`. Omit for Vercel's default.
@@ -53,8 +54,8 @@ pub struct VercelConfig {
     pub build_command: Option<String>,
     /// Git-push auto-builds. Default `false` — nextrs apps deploy prebuilt.
     pub git_deploys: Option<bool>,
-    /// Raw top-level keys merged into the output last (escape hatch for
-    /// anything the fields above don't model). Also overrides them.
+    /// Raw top-level keys for Vercel features NextRS does not model. Keys
+    /// owned by the framework are rejected rather than overridden.
     #[serde(default)]
     pub extra: toml::Table,
 }
@@ -312,21 +313,23 @@ pub fn generate(root: &Path) -> Result<String, String> {
 
     let mut summary = Vec::new();
 
-    let vercel_json = root.join("vercel.json");
-    if let Some(settings) = &config.vercel {
-        let json = render_vercel_json(settings, &vercel)?;
-        write(
-            &vercel_json,
-            &format!("{}\n", serde_json::to_string_pretty(&json).unwrap()),
-        )?;
-        summary.push(format!(
-            "vercel.json: generated from [vercel] with {} cron(s)",
-            vercel.len()
-        ));
-    } else if !vercel.is_empty() {
-        merge_vercel_crons(&vercel_json, &vercel)?;
-        summary.push(format!("vercel.json: {} cron(s)", vercel.len()));
-    }
+    fs::create_dir_all(root.join(".nextrs"))
+        .map_err(|error| format!("failed to create {}/.nextrs: {error}", root.display()))?;
+    let settings = config.vercel.as_ref().cloned().unwrap_or_default();
+    let vercel_json = root.join(VERCEL_CONFIG_FILE);
+    let json = render_vercel_json(&settings, &vercel)?;
+    write(
+        &vercel_json,
+        &format!("{}\n", serde_json::to_string_pretty(&json).unwrap()),
+    )?;
+    write(
+        &root.join(GENERATED_README),
+        "# Generated NextRS state\n\nFiles in this directory are managed by NextRS. Do not edit `vercel.json` directly; configure deployment in `nextrs.toml` and cron schedules with `#[nextrs::cron(...)]`.\n",
+    )?;
+    summary.push(format!(
+        "{VERCEL_CONFIG_FILE}: generated with {} cron(s)",
+        vercel.len()
+    ));
 
     let out_dir = root.join(OUTPUT_DIR);
     if cloudflare.is_empty() {
@@ -688,33 +691,27 @@ fn render_vercel_json(settings: &VercelConfig, crons: &[&CronEntry]) -> Result<V
         json.insert("crons".into(), Value::Array(entries));
     }
     for (key, value) in &settings.extra {
+        if matches!(
+            key.as_str(),
+            "$schema"
+                | "regions"
+                | "installCommand"
+                | "buildCommand"
+                | "functions"
+                | "headers"
+                | "rewrites"
+                | "git"
+                | "crons"
+        ) {
+            return Err(format!(
+                "[vercel.extra] `{key}` is managed by NextRS and cannot be overridden"
+            ));
+        }
         let value = serde_json::to_value(value)
             .map_err(|error| format!("[vercel.extra] {key}: {error}"))?;
         json.insert(key.clone(), value);
     }
     Ok(Value::Object(json))
-}
-
-/// Replace the `crons` array in `vercel.json`, preserving every other key.
-fn merge_vercel_crons(path: &Path, crons: &[&CronEntry]) -> Result<(), String> {
-    let mut json: Value = if path.is_file() {
-        let text = fs::read_to_string(path)
-            .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
-        serde_json::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?
-    } else {
-        json!({})
-    };
-    let entries: Vec<Value> = crons
-        .iter()
-        .map(|cron| json!({ "path": cron.path, "schedule": cron.schedule }))
-        .collect();
-    json.as_object_mut()
-        .ok_or_else(|| format!("{} must contain a JSON object", path.display()))?
-        .insert("crons".to_string(), Value::Array(entries));
-    write(
-        path,
-        &format!("{}\n", serde_json::to_string_pretty(&json).unwrap()),
-    )
 }
 
 fn worker_js(crons: &[&CronEntry]) -> String {
@@ -776,7 +773,16 @@ crons = [{schedules}]
 }
 
 fn write(path: &Path, content: &str) -> Result<(), String> {
-    fs::write(path, content).map_err(|error| format!("failed to write {}: {error}", path.display()))
+    let temporary = path.with_extension(format!(
+        "{}.tmp",
+        path.extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("")
+    ));
+    fs::write(&temporary, content)
+        .map_err(|error| format!("failed to write {}: {error}", temporary.display()))?;
+    fs::rename(&temporary, path)
+        .map_err(|error| format!("failed to replace {}: {error}", path.display()))
 }
 
 pub fn resolve_root(root: Option<PathBuf>) -> Result<PathBuf, String> {
@@ -861,11 +867,6 @@ url = "https://demo.vercel.app/"
     fn generate_writes_worker_wrangler_and_vercel_json() {
         let dir = tempdir("generate");
         setup(&dir);
-        fs::write(
-            dir.join("vercel.json"),
-            r#"{ "git": { "deploymentEnabled": false } }"#,
-        )
-        .unwrap();
 
         generate(&dir).unwrap();
 
@@ -882,11 +883,17 @@ url = "https://demo.vercel.app/"
         assert!(wrangler.contains(r#"crons = ["*/5 * * * *", "0 7 * * *"]"#));
 
         let vercel: Value =
-            serde_json::from_str(&fs::read_to_string(dir.join("vercel.json")).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(dir.join(VERCEL_CONFIG_FILE)).unwrap())
+                .unwrap();
         assert_eq!(vercel["git"]["deploymentEnabled"], json!(false));
         assert_eq!(
             vercel["crons"],
             json!([{ "path": "/api/cron/digest", "schedule": "0 6 * * *" }])
+        );
+        assert!(
+            fs::read_to_string(dir.join(GENERATED_README))
+                .unwrap()
+                .contains("managed by NextRS")
         );
     }
 
@@ -916,14 +923,19 @@ trailingSlash = false
             "#[nextrs::cron(schedule = \"0 6 * * *\")]\npub async fn get() {}\n",
         )
         .unwrap();
-        // Hand-written content is replaced, not merged.
+        // A hand-written root file is neither read nor changed.
         fs::write(dir.join("vercel.json"), r#"{ "stale": true }"#).unwrap();
 
         generate(&dir).unwrap();
 
         let vercel: Value =
-            serde_json::from_str(&fs::read_to_string(dir.join("vercel.json")).unwrap()).unwrap();
+            serde_json::from_str(&fs::read_to_string(dir.join(VERCEL_CONFIG_FILE)).unwrap())
+                .unwrap();
         assert!(vercel.get("stale").is_none());
+        assert_eq!(
+            fs::read_to_string(dir.join("vercel.json")).unwrap(),
+            r#"{ "stale": true }"#
+        );
         assert_eq!(vercel["regions"], json!(["pdx1"]));
         assert_eq!(vercel["installCommand"], json!("npm ci"));
         assert_eq!(vercel["buildCommand"], json!(DEFAULT_BUILD_COMMAND));
@@ -938,6 +950,26 @@ trailingSlash = false
             vercel["crons"],
             json!([{ "path": "/api/cron/digest", "schedule": "0 6 * * *" }])
         );
+    }
+
+    #[test]
+    fn vercel_extra_rejects_framework_owned_keys() {
+        for key in [
+            "$schema",
+            "regions",
+            "installCommand",
+            "buildCommand",
+            "functions",
+            "headers",
+            "rewrites",
+            "git",
+            "crons",
+        ] {
+            let source = format!("[extra]\n\"{key}\" = []\n");
+            let settings: VercelConfig = toml::from_str(&source).unwrap();
+            let error = render_vercel_json(&settings, &[]).unwrap_err();
+            assert!(error.contains("managed by NextRS"), "{key}: {error}");
+        }
     }
 
     #[test]

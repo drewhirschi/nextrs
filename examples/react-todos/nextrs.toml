@@ -1,5 +1,5 @@
 # App-level nextrs config — the single config source. `nextrs generate`
-# writes vercel.json from the [vercel] table; cron schedules live directly on
+# writes .nextrs/vercel.json from the [vercel] table; cron schedules live directly on
 # #[nextrs::cron] route handlers. Don't edit generated provider files by hand.
 
 [app]
@@ -12,4 +12,4 @@ regions = ["pdx1"]
 # install_command = "npm ci"
 # build_command = "npm run client:prepare && cargo build --release --bin index && npm run client:build"
 # git_deploys = false
-# [vercel.extra]                    # raw keys merged into vercel.json last
+# [vercel.extra]                    # non-framework Vercel keys only

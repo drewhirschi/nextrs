@@ -1,6 +1,6 @@
 +++
 title = "nextrs.toml"
-description = "The app's config source for identity and Vercel settings — vercel.json is generated from it"
+description = "The app's single config source for identity and deployment settings"
 section = "Guides"
 order = 12
 +++
@@ -21,7 +21,7 @@ regions = ["pdx1"]
 # build_command = "npm run client:prepare && cargo build --release --bin index && npm run client:build"
 # git_deploys = false                 # prebuilt deploys; a push ships nothing
 
-# [vercel.extra]                      # raw keys merged into vercel.json last
+# [vercel.extra]                      # non-framework Vercel keys only
 # trailingSlash = false
 ```
 
@@ -30,19 +30,20 @@ Cron schedules are colocated with their protected handlers as
 
 ## What `nextrs generate` writes
 
-- **`vercel.json`** — when a `[vercel]` table is present, the whole file is
-  generated: the Rust function, the catch-all rewrite to it, immutable
+- **`.nextrs/vercel.json`** — generated framework state containing the Rust
+  function, the catch-all rewrite to it, immutable
   caching for `/dist`, git auto-builds off, your regions/commands, and any
-  vercel-provider [crons](/docs/crons). Don't hand-edit it; it's overwritten
-  on the next generate. `[vercel.extra]` is the escape hatch for anything
-  the table doesn't model.
+  Vercel-provider [crons](/docs/crons). It is overwritten atomically on every
+  generation and passed to Vercel with `--local-config`. The adjacent README
+  marks it as generated. `[vercel.extra]` is an escape hatch for Vercel keys
+  the table does not model, but cannot override framework-owned `$schema`,
+  regions, commands, functions, headers, rewrites, git, or crons.
 - **`.nextrs/cloudflare/`** — the Worker shim for cloudflare-provider crons
   (gitignored, regenerated on demand).
 
-Apps that predate `nextrs.toml` can adopt it incrementally: with no
-`[vercel]` table, `generate` only replaces the `crons` key in an existing
-`vercel.json` and leaves everything else untouched. Add the table when
-you're ready to hand the file over.
+The `[vercel]` table is optional; omitting it uses framework defaults. A root
+`vercel.json` is never read or mutated, so it cannot become a second source
+of deployment or cron configuration.
 
 `nextrs deploy` and `nextrs cron deploy` both run `generate` first, so the
 provider files can't drift from the config.

@@ -181,7 +181,7 @@ framework plumbing rather than application or domain code.
 
 ## Deploy to Vercel
 
-`vercel.json` installs and generates from the application root before its
+The generated `.nextrs/vercel.json` installs and generates from the application root before its
 release Cargo build:
 
 ```json
@@ -200,7 +200,8 @@ directory.
 nextrs deploy --root examples/react-todos   # or scripts/deploy-prebuilt.sh examples/react-todos
 ```
 
-`nextrs deploy` regenerates `vercel.json` from `nextrs.toml` (the `[vercel]`
+`nextrs deploy` regenerates the framework-owned `.nextrs/vercel.json` from
+`nextrs.toml` (the `[vercel]`
 table holds the regions; function runtime and the catch-all rewrite are the
 framework's fixed shape), builds locally, uploads the prebuilt output, and
 ships the cron trigger declared on the route: `/api/cron/heartbeat` every 10

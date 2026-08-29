@@ -8,3 +8,5 @@
 .env.*.local
 npm-debug.log*
 /.nextrs/cloudflare/
+/.nextrs/vercel.json
+/.nextrs/README.md

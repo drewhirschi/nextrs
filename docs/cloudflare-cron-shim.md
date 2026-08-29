@@ -5,7 +5,7 @@
   `#[nextrs::cron(schedule = "...")]` GET routes; Vercel is the default and
   Cloudflare is an explicit provider for flexible free scheduling. CLI owns
   the plumbing: `nextrs cron generate` (worker.js + wrangler.toml into
-  `.nextrs/cloudflare/`, vercel-provider crons merged into vercel.json) and
+  `.nextrs/cloudflare/`, Vercel-provider crons in `.nextrs/vercel.json`) and
   `nextrs cron deploy` (generate + `wrangler deploy` + `wrangler secret put
   CRON_SECRET`). Runtime gate is the macro-injected `CronAuth` extractor
   (Bearer CRON_SECRET, structured fail-closed rejection). Demo: react-todos
@@ -13,7 +13,7 @@
   /docs/dependencies.
 - **Follow-ups landed 2026-08-29 (branch feat/cron-followups):**
   `#[nextrs::cron]` macro (macros 0.1.8 / nextrs 0.6.1); `[vercel]` table in
-  nextrs.toml renders the whole vercel.json (`nextrs generate`, /docs/config);
+  nextrs.toml renders the whole managed `.nextrs/vercel.json` (`nextrs generate`, /docs/config);
   Cloudflare-API-direct deploy when CLOUDFLARE_API_TOKEN + ACCOUNT_ID are
   set, wrangler otherwise; `nextrs deploy` = generate + prebuilt Vercel
   deploy + cron deploy (cargo-nextrs 0.3.0); scaffold ships nextrs.toml with
@@ -38,7 +38,7 @@ the same "declare it in one place, the plumbing exists" contract we have with
 Vercel:
 
 - **Declaration.** App declares schedules once. nextrs already knows about
-  `vercel.json`'s `crons` array; extend the entry shape to something like
+  the generated Vercel config's `crons` array; extend the entry shape to something like
   `{ path, schedule, provider: "cloudflare" | "vercel" | "both" }`. Smart
   default: route fine-grained schedules to the CF shim, coarse (daily) ones
   to native Vercel crons, since Hobby caps at 1/day.

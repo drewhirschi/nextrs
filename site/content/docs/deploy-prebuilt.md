@@ -46,14 +46,14 @@ equivalent of:
 
 ```bash
 vercel pull --yes --environment=production
-vercel build --prod
+vercel build --local-config .nextrs/vercel.json --prod
 vercel deploy --prebuilt --prod
 ```
 
 For preview mode, it omits `--prod` from build and deploy.
 
-`vercel build` runs the root `installCommand` and `buildCommand` from
-`vercel.json`. For a generated nextrs app that means:
+`vercel build` runs the `installCommand` and `buildCommand` from the managed
+`.nextrs/vercel.json`. For a generated nextrs app that means:
 
 1. root `npm ci` links `.nextrs/client` and installs React/Orval/TypeScript;
 2. the current Rust OpenAPI contract generates fetch and React Query clients;

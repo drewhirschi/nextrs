@@ -18,6 +18,9 @@ APP="${1:?usage: deploy-prebuilt.sh <app-dir> [--preview]}"
 MODE="${2:---prod}"
 [ "$MODE" = "--preview" ] && PROD_FLAGS=() || PROD_FLAGS=(--prod)
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+APP_CONFIG="$ROOT/$APP/.nextrs/vercel.json"
+
+cargo run --quiet -p cargo-nextrs --bin nextrs -- generate --root "$ROOT/$APP"
 
 # Where to run `vercel build` depends on the project's rootDirectory setting
 # (both learned the hard way — the wrong dir silently falls back to
@@ -45,7 +48,7 @@ echo "==> vercel pull (project settings + env)"
 vercel pull --yes --environment=production > /dev/null
 
 echo "==> vercel build ${PROD_FLAGS[*]:-(preview)} — local compile, incl. the Rust function"
-vercel build "${PROD_FLAGS[@]}"
+vercel build --local-config "$APP_CONFIG" "${PROD_FLAGS[@]}"
 
 # Refuse to ship a function that silently failed to build (the classic
 # cargo-zigbuild-missing failure mode: everything green, no binary).

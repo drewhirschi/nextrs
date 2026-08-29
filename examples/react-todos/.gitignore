@@ -9,3 +9,5 @@
 npm-debug.log*
 Cargo.lock
 /.nextrs/cloudflare/
+/.nextrs/vercel.json
+/.nextrs/README.md

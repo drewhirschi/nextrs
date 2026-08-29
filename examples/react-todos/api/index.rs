@@ -9,7 +9,7 @@
 // On Vercel: set this project's Root Directory to examples/react-todos and
 // enable "Include files outside the Root Directory" (the crate path-depends on
 // ../../nextrs). Static assets (page.tsx bundles + style.css) are served from
-// public/ by the CDN; the catch-all rewrite (vercel.json) sends everything
+// public/ by the CDN; the generated catch-all rewrite sends everything
 // else here.
 
 use nextrs::vercel::StreamingVercelLayer;
