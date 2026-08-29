@@ -362,7 +362,7 @@ fn legacy_vercel_warning(root: &Path) -> Option<String> {
     let legacy = root.join("vercel.json");
     legacy.is_file().then(|| {
         format!(
-            "nextrs: warning: {} is ignored because NextRS generates {}. Move its settings into {} and delete the legacy vercel.json to avoid two apparent configuration sources. See https://nextrs.hirschi.dev/docs/config",
+            "nextrs: warning: {} is ignored because NextRS generates {}. Copy supported deployment settings into the [vercel] table in {}; put other non-framework Vercel settings under [vercel.extra]. See https://nextrs.hirschi.dev/docs/config",
             legacy.display(),
             root.join(VERCEL_CONFIG_FILE).display(),
             root.join(CONFIG_FILE).display(),
@@ -996,9 +996,11 @@ trailingSlash = false
         fs::write(dir.join("vercel.json"), "{}").unwrap();
         let warning = legacy_vercel_warning(&dir).unwrap();
         assert!(warning.contains("vercel.json is ignored"));
-        assert!(warning.contains("Move its settings into"));
+        assert!(warning.contains("Copy supported deployment settings"));
         assert!(warning.contains(CONFIG_FILE));
-        assert!(warning.contains("delete the legacy vercel.json"));
+        assert!(warning.contains("[vercel] table"));
+        assert!(warning.contains("[vercel.extra]"));
+        assert!(!warning.contains("delete"));
     }
 
     #[test]
