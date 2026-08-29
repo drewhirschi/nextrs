@@ -80,3 +80,17 @@ tier embarrasses Vercel's. The generated shim is disposable and regenerable.
 - Interaction with [background-jobs.md](background-jobs.md): scheduled jobs
   are just cron-triggered jobs, so the declaration surface should probably
   be shared rather than two parallel systems.
+
+## Deferred: remote-state reconciliation
+
+The current deploy path creates or updates the declared `<app-name>-cron`
+Worker and replaces its schedules. It does not tear down remote state when
+the final Cloudflare declaration is removed, a route changes to the Vercel
+provider, or `[app].name` changes. In those cases the previous Worker or
+schedule can remain active and must be removed manually in Cloudflare.
+
+A future lifecycle pass should track the last deployed identity and reconcile
+deletions safely. That work needs an explicit policy for destructive remote
+operations, useful partial-failure reporting, and tests covering final-cron
+removal, provider migration, and application renames. It is deliberately not
+part of PR 41's create/update deployment path.
