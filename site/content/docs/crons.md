@@ -107,7 +107,10 @@ The generated `.nextrs/cloudflare/` directory is disposable — gitignore it and
 regenerate on demand. Vercel-provider crons deploy with the app itself; the
 Worker redeploys with `nextrs cron deploy` whenever schedules change.
 
-The worked example is `examples/react-todos`: `nextrs.toml` declares a
-10-minute heartbeat, and `app/api/cron/heartbeat/route.rs` is the gated route.
+Scaffolded apps ship with a daily heartbeat already declared (a native
+Vercel cron, so it deploys with the app and needs no Cloudflare account) and
+`app/api/cron/heartbeat/route.rs` as the gated route to copy from. The
+worked example `examples/react-todos` runs the same route every 10 minutes
+through the Cloudflare shim.
 
 See [dependencies](/docs/dependencies) for the full tooling list.

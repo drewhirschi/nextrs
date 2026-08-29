@@ -11,9 +11,16 @@
   CRON_SECRET`). Runtime gate is `nextrs::cron::authorize` (Bearer
   CRON_SECRET, fail-closed, constant-time). Demo: react-todos
   `/api/cron/heartbeat` every 10 minutes. Docs: site /docs/crons +
-  /docs/dependencies. Deferred: CF-API-direct deploy (dropping the wrangler
-  dependency), a `nextrs deploy` command folding in the prebuilt Vercel
-  deploy, scaffold integration, jobs-sweep wiring.
+  /docs/dependencies.
+- **Follow-ups landed 2026-08-29 (branch feat/cron-followups):**
+  `#[nextrs::cron]` macro (macros 0.1.8 / nextrs 0.6.1); `[vercel]` table in
+  nextrs.toml renders the whole vercel.json (`nextrs generate`, /docs/config);
+  Cloudflare-API-direct deploy when CLOUDFLARE_API_TOKEN + ACCOUNT_ID are
+  set, wrangler otherwise; `nextrs deploy` = generate + prebuilt Vercel
+  deploy + cron deploy (cargo-nextrs 0.3.0); scaffold ships nextrs.toml with
+  a daily heartbeat cron and a `#[nextrs::cron]` route (create-nextrs-app
+  0.1.6). Still deferred: jobs-sweep wiring (see background-jobs.md — Drew
+  wants to be hands-on for that one).
 - **Related:** [background-jobs.md](background-jobs.md) (jobs need a trigger; this is one)
 
 ## Why

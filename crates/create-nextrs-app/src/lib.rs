@@ -176,6 +176,7 @@ fn scaffold(target: &Path, nextrs_path: Option<&Path>, no_install: bool) -> io::
     println!("  /slow      React page + Rust prefetch + loading.tsx");
     println!("  /api/ping  Rust API route");
     println!("  /items     paginated list with its state in the URL (the house style)");
+    println!("  /api/cron/heartbeat  daily cron route (declared in nextrs.toml)");
 
     Ok(())
 }
@@ -481,13 +482,20 @@ fn adopt_template_files(
                     | "app/slow/loading.tsx"
                     | "app/slow/prefetch.rs"
                     | "app/api/ping/route.rs"
+                    | "app/api/cron/heartbeat/route.rs"
+                    | "nextrs.toml"
+                    | "vercel.json"
                     | "app/items/page.tsx"
                     | "app/items/prefetch.rs"
                     | "app/api/items/route.rs"
                     | "public/style.css"
             )
         })
-        .chain([("app/page.tsx", adopt_page_tsx())])
+        .chain([
+            ("app/page.tsx", adopt_page_tsx()),
+            ("nextrs.toml", nextrs_toml(crate_name, false)),
+            ("vercel.json", vercel_json(false)),
+        ])
         .collect()
 }
 
@@ -636,7 +644,8 @@ fn template_files(
         ("src/main.rs", main_rs(crate_name)),
         (".nextrs/dump-openapi.rs", dump_openapi_rs(crate_name)),
         ("api/index.rs", api_index_rs(crate_name)),
-        ("vercel.json", vercel_json()),
+        ("nextrs.toml", nextrs_toml(crate_name, true)),
+        ("vercel.json", vercel_json(true)),
         ("scripts/deploy-prebuilt.sh", deploy_prebuilt_sh()),
         ("package.json", root_package_json(crate_name)),
         ("tsconfig.json", root_tsconfig_json()),
@@ -648,6 +657,7 @@ fn template_files(
         ("app/slow/loading.tsx", slow_loading_tsx()),
         ("app/slow/prefetch.rs", slow_prefetch_rs()),
         ("app/api/ping/route.rs", ping_route_rs()),
+        ("app/api/cron/heartbeat/route.rs", cron_heartbeat_route_rs()),
         ("app/items/page.tsx", items_page_tsx(client_alias)),
         ("app/items/prefetch.rs", items_prefetch_rs()),
         ("app/api/items/route.rs", items_route_rs()),
@@ -808,6 +818,15 @@ while `src/main.rs` and `api/index.rs` are process adapters.
   OpenAPI, Orval, declaration, and package build steps.
   Guide: <https://nextrs-docs.vercel.app/docs/typesafe-client>
 
+## Crons
+
+Schedules live in `nextrs.toml` (`[[crons]]`), never in vercel.json by hand.
+A cron route is `#[nextrs::cron]` instead of `#[nextrs::api]` — that adds
+the `CRON_SECRET` bearer check; `app/api/cron/heartbeat/route.rs` is the
+worked example. Do the work foreground, return 200 only on completion,
+write it idempotently. `nextrs deploy` ships the triggers.
+Guide: <https://nextrs-docs.vercel.app/docs/crons>
+
 ## List state belongs in the URL (house style)
 
 Any list that filters, sorts, searches, or paginates keeps that state in URL
@@ -902,6 +921,7 @@ fn gitignore() -> String {
         "/.vercel\n",
         "/.nextrs/client/\n",
         "/.nextrs/openapi.json\n",
+        "/.nextrs/cloudflare/\n",
         ".env\n",
         ".env.*.local\n",
         "npm-debug.log*\n",
@@ -910,7 +930,7 @@ fn gitignore() -> String {
 }
 
 fn env_example() -> String {
-    "PORT=3000\n".into()
+    "PORT=3000\n# Bearer token cron triggers send; cron routes reject everything without it.\n# Set the same value on Vercel: `vercel env add CRON_SECRET`.\nCRON_SECRET=\n".into()
 }
 
 fn cargo_config_toml(crate_name: &str) -> String {
@@ -1189,34 +1209,120 @@ vercel deploy --prebuilt "${FLAGS[@]}"
     .to_string()
 }
 
-fn vercel_json() -> String {
-    r#"{
+/// The app's single config source. `nextrs generate` (and `nextrs deploy`)
+/// rewrite vercel.json and the cron plumbing from it.
+fn nextrs_toml(crate_name: &str, with_cron: bool) -> String {
+    let cron = if with_cron {
+        r#"
+# Schedules become provider plumbing on `nextrs generate`: daily-or-coarser
+# ones are native Vercel crons in vercel.json; anything finer becomes a
+# generated Cloudflare Worker trigger (.nextrs/cloudflare/, shipped by
+# `nextrs cron deploy`). The route is app/api/cron/heartbeat/route.rs.
+[[crons]]
+path = "/api/cron/heartbeat"
+schedule = "0 6 * * *"
+"#
+    } else {
+        r#"
+# Declare cron schedules here; see https://nextrs-docs.vercel.app/docs/crons
+# [[crons]]
+# path = "/api/cron/refresh"
+# schedule = "*/10 * * * *"
+"#
+    };
+    format!(
+        r#"# App config — the single source `nextrs generate` and `nextrs deploy` read.
+# vercel.json is generated from the [vercel] table; don't edit it by hand.
+# Docs: https://nextrs-docs.vercel.app/docs/config
+
+[app]
+name = "{crate_name}"
+# The deployed app's URL; cron triggers point here. Update after `vercel link`.
+url = "https://{crate_name}.vercel.app"
+
+[vercel]
+# regions = ["pdx1"]
+# runtime = "vercel-rust@4.0.11"
+# git_deploys = false               # prebuilt deploys: a push ships nothing
+# [vercel.extra]                    # raw keys merged into vercel.json last
+{cron}"#
+    )
+}
+
+/// Mirrors what `nextrs generate` renders from the scaffolded nextrs.toml,
+/// so a fresh app deploys before its first `generate` and a `generate`
+/// afterwards is a no-op. Keep the two in sync (cargo-nextrs' cron.rs).
+fn vercel_json(with_cron: bool) -> String {
+    let crons = if with_cron {
+        r#",
+  "crons": [
+    {
+      "path": "/api/cron/heartbeat",
+      "schedule": "0 6 * * *"
+    }
+  ]"#
+    } else {
+        ""
+    };
+    format!(
+        r#"{{
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "installCommand": "npm ci",
   "buildCommand": "npm run client:prepare && cargo build --release --bin index && npm run client:build",
-  "functions": {
-    "api/index.rs": {
+  "functions": {{
+    "api/index.rs": {{
       "runtime": "vercel-rust@4.0.11"
-    }
-  },
-  "git": { "deploymentEnabled": false },
+    }}
+  }},
   "headers": [
-    {
+    {{
       "source": "/dist/(.*)",
       "headers": [
-        {
+        {{
           "key": "Cache-Control",
           "value": "public, max-age=31536000, immutable"
-        }
+        }}
       ]
-    }
+    }}
   ],
   "rewrites": [
-    {
+    {{
       "source": "/(.*)",
       "destination": "/api/index"
-    }
-  ]
+    }}
+  ],
+  "git": {{
+    "deploymentEnabled": false
+  }}{crons}
+}}
+"#
+    )
+}
+
+fn cron_heartbeat_route_rs() -> String {
+    r#"//! Cron demo. Declared in nextrs.toml ([[crons]]); the trigger — a native
+//! Vercel cron or a generated Cloudflare Worker — fetches this route with
+//! `Authorization: Bearer $CRON_SECRET`. `#[nextrs::cron]` is `#[nextrs::api]`
+//! plus that check (fail-closed: no CRON_SECRET, no access).
+//!
+//! Do the work foreground and return 200 only when it finished — the status
+//! code is the delivery receipt in the trigger's logs. Write it idempotently:
+//! delivery is at-least-once and imprecise.
+
+use axum::http::StatusCode;
+use axum::Json;
+use serde::{Deserialize, Serialize};
+use utoipa::ToSchema;
+
+#[derive(Serialize, Deserialize, ToSchema)]
+pub struct Heartbeat {
+    pub ok: bool,
+}
+
+#[nextrs::cron]
+pub async fn get() -> Result<Json<Heartbeat>, StatusCode> {
+    // ... the actual work ...
+    Ok(Json(Heartbeat { ok: true }))
 }
 "#
     .into()
@@ -2405,14 +2511,23 @@ mod tests {
         assert!(names.contains(&"AGENTS.md"));
         assert!(names.contains(&"scripts/deploy-prebuilt.sh"));
         assert!(names.contains(&"vercel.json"));
+        // No demo cron route, so the config must not schedule one.
+        assert!(!names.contains(&"app/api/cron/heartbeat/route.rs"));
+        let toml = &adopt.iter().find(|(n, _)| *n == "nextrs.toml").unwrap().1;
+        assert!(!toml.contains("[[crons]]\npath"));
+        let vercel = &adopt.iter().find(|(n, _)| *n == "vercel.json").unwrap().1;
+        assert!(!vercel.contains("crons"));
+        let fresh_vercel = &fresh.iter().find(|(n, _)| *n == "vercel.json").unwrap().1;
+        assert!(fresh_vercel.contains("/api/cron/heartbeat"));
 
         // The minimal page must build before any typed client exists.
         let page = &adopt.iter().find(|(n, _)| *n == "app/page.tsx").unwrap().1;
         assert!(!page.contains("import"));
 
-        // Everything shared with the fresh scaffold is byte-identical to it.
+        // Everything shared with the fresh scaffold is byte-identical to it
+        // (except the config pair, which drops the demo cron on adopt).
         for (name, body) in &adopt {
-            if *name == "app/page.tsx" {
+            if matches!(*name, "app/page.tsx" | "nextrs.toml" | "vercel.json") {
                 continue;
             }
             let fresh_body = &fresh
