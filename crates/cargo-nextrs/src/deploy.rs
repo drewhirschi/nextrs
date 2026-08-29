@@ -137,6 +137,7 @@ pub fn deploy(root: &Path, options: &DeployOptions) -> Result<(), String> {
         "vercel",
         &[&["deploy", "--prebuilt"][..], prod].concat(),
     )?;
+    eprintln!("nextrs: Vercel application deployed successfully");
 
     if options.skip_cron || !root.join(cron::CONFIG_FILE).is_file() {
         return Ok(());
@@ -147,7 +148,14 @@ pub fn deploy(root: &Path, options: &DeployOptions) -> Result<(), String> {
         );
         return Ok(());
     }
-    cron::deploy(&root)
+    cron::deploy(&root).map_err(|error| cron_recovery_error(&root, &error))
+}
+
+fn cron_recovery_error(root: &Path, error: &str) -> String {
+    format!(
+        "Vercel application deployed successfully, but Cloudflare cron deployment failed: {error}\nFix the cron deployment problem, then retry only that phase with `nextrs cron deploy --root {}`; the application does not need to be redeployed.",
+        root.display()
+    )
 }
 
 fn vercel_build_args<'a>(local_config: Option<&'a str>, prod: &'a [&'a str]) -> Vec<&'a str> {
@@ -262,6 +270,16 @@ mod tests {
                 "--prod"
             ]
         );
+    }
+
+    #[test]
+    fn cron_failure_preserves_app_success_and_gives_retry_command() {
+        let root = Path::new("/repo/apps/demo");
+        let error = cron_recovery_error(root, "cloudflare: set schedules failed");
+        assert!(error.contains("Vercel application deployed successfully"));
+        assert!(error.contains("Cloudflare cron deployment failed"));
+        assert!(error.contains("nextrs cron deploy --root /repo/apps/demo"));
+        assert!(error.contains("does not need to be redeployed"));
     }
 
     #[test]

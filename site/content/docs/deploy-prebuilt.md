@@ -55,6 +55,17 @@ vercel build --local-config .nextrs/vercel.json --prod
 vercel deploy --prebuilt --prod
 ```
 
+The application and cron phases are independently retryable. If Vercel
+succeeds but Cloudflare fails, the command reports that the application is
+already deployed. Fix the credential, preflight, or provider error and run:
+
+```bash
+nextrs cron deploy
+```
+
+That deploys only the Cloudflare cron plumbing and does not rebuild or
+redeploy the application.
+
 For preview mode, it omits `--prod` from build and deploy.
 
 `vercel build` runs the `installCommand` and `buildCommand` from the managed
