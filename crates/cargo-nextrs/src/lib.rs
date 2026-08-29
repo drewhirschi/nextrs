@@ -7,6 +7,7 @@ use std::process::{Command, ExitCode};
 use serde_json::Value;
 
 mod cron;
+mod deploy;
 
 const DEFAULT_CLIENT_DIR: &str = ".nextrs/client";
 
@@ -44,6 +45,10 @@ pub fn run_with_args(args: impl IntoIterator<Item = OsString>) -> Result<(), Str
             eprintln!("nextrs: generated {summary}");
             Ok(())
         }
+        CommandLine::Deploy { root, preview, skip_cron } => {
+            let root = cron::resolve_root(root)?;
+            deploy::deploy(&root, &deploy::DeployOptions { preview, skip_cron })
+        }
         CommandLine::CronDeploy { root } => {
             let root = cron::resolve_root(root)?;
             cron::deploy(&root)
@@ -58,6 +63,7 @@ enum CommandLine {
     Dev(Vec<OsString>),
     ClientGenerate(GenerateOptions),
     Generate { root: Option<PathBuf> },
+    Deploy { root: Option<PathBuf>, preview: bool, skip_cron: bool },
     CronGenerate { root: Option<PathBuf> },
     CronDeploy { root: Option<PathBuf> },
 }
@@ -98,6 +104,19 @@ impl CommandLine {
                 }
             }
             return Ok(Self::Generate { root });
+        }
+        if first == "deploy" {
+            let (mut root, mut preview, mut skip_cron) = (None, false, false);
+            while let Some(arg) = args.next() {
+                match arg.to_str() {
+                    Some("--root") => root = Some(required_path(&mut args, "--root")?),
+                    Some("--preview") => preview = true,
+                    Some("--skip-cron") => skip_cron = true,
+                    Some("-h" | "--help") => return Ok(Self::Help),
+                    _ => return Err(format!("unexpected argument `{}`", arg.to_string_lossy())),
+                }
+            }
+            return Ok(Self::Deploy { root, preview, skip_cron });
         }
         if first == "cron" {
             let Some(action) = args.next() else {
@@ -661,7 +680,7 @@ fn io_error(error: std::io::Error) -> String {
 
 fn print_help() {
     println!(
-        "nextrs\n\nUSAGE:\n    nextrs new <PATH> [OPTIONS]\n    nextrs dev [--bin <NAME>] [-- <APP_ARGS>]\n    nextrs client generate [OPTIONS]\n    nextrs generate [--root <PATH>]\n    nextrs cron generate [--root <PATH>]\n    nextrs cron deploy [--root <PATH>]\n\nRun the same commands as `cargo nextrs ...` or `nextrs ...`.\n\nCLIENT OPTIONS:\n    --root <PATH>        nextrs application root (default: current directory)\n    --client-dir <PATH>  generated package relative to the app root (default: .nextrs/client)\n    --config <PATH>      external-client config; defaults to .nextrs/client/nextrs.client.json when present\n    -h, --help           Print help\n\nClient dependencies are installed once at the application root; never run\n`npm install` inside the generated client directory. Generation validates and\nrepairs the root workspace link, then verifies both JS and declaration exports.\n\nOne `cargo install cargo-nextrs` provides both launchers, the dev server,\nthe legacy `cargo-nextrs-dev` compatibility binary, and client generation.\n\nCONFIG:\n    nextrs.toml is the app's single config source. `generate` writes vercel.json\n    from its [vercel] table (when present; otherwise only the crons key is\n    merged) and the Cloudflare Worker shim to .nextrs/cloudflare/.\n\nCRON:\n    Declare schedules in nextrs.toml ([app] name/url + [[crons]] path/schedule).\n    `cron generate` is an alias of `generate`. `cron deploy` runs generate,\n    then ships the Worker with CRON_SECRET from the environment — via the\n    Cloudflare API when CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID are set,\n    otherwise via wrangler."
+        "nextrs\n\nUSAGE:\n    nextrs new <PATH> [OPTIONS]\n    nextrs dev [--bin <NAME>] [-- <APP_ARGS>]\n    nextrs client generate [OPTIONS]\n    nextrs generate [--root <PATH>]\n    nextrs deploy [--root <PATH>] [--preview] [--skip-cron]\n    nextrs cron generate [--root <PATH>]\n    nextrs cron deploy [--root <PATH>]\n\nRun the same commands as `cargo nextrs ...` or `nextrs ...`.\n\nCLIENT OPTIONS:\n    --root <PATH>        nextrs application root (default: current directory)\n    --client-dir <PATH>  generated package relative to the app root (default: .nextrs/client)\n    --config <PATH>      external-client config; defaults to .nextrs/client/nextrs.client.json when present\n    -h, --help           Print help\n\nClient dependencies are installed once at the application root; never run\n`npm install` inside the generated client directory. Generation validates and\nrepairs the root workspace link, then verifies both JS and declaration exports.\n\nOne `cargo install cargo-nextrs` provides both launchers, the dev server,\nthe legacy `cargo-nextrs-dev` compatibility binary, and client generation.\n\nCONFIG:\n    nextrs.toml is the app's single config source. `generate` writes vercel.json\n    from its [vercel] table (when present; otherwise only the crons key is\n    merged) and the Cloudflare Worker shim to .nextrs/cloudflare/.\n\nDEPLOY:\n    `deploy` runs generate, then a prebuilt Vercel deploy (vercel pull/build on\n    this machine, bundle the function, vercel deploy --prebuilt), then `cron\n    deploy` when cloudflare crons are declared. --preview deploys a preview and\n    skips cron triggers; --skip-cron always skips them.\n\nCRON:\n    Declare schedules in nextrs.toml ([app] name/url + [[crons]] path/schedule).\n    `cron generate` is an alias of `generate`. `cron deploy` runs generate,\n    then ships the Worker with CRON_SECRET from the environment — via the\n    Cloudflare API when CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID are set,\n    otherwise via wrangler."
     );
 }
 

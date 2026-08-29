@@ -861,9 +861,11 @@ Git auto-builds are OFF (`vercel.json` sets `git.deploymentEnabled: false`);
 pushing deploys nothing. The deploy path is:
 
 ```bash
-scripts/deploy-prebuilt.sh             # production
-scripts/deploy-prebuilt.sh --preview   # preview
+nextrs deploy             # production (regenerates config, deploys, ships crons)
+nextrs deploy --preview   # preview
 ```
+
+`scripts/deploy-prebuilt.sh` is the same Vercel steps as a plain script.
 
 Guide: <https://nextrs-docs.vercel.app/docs/deploy-prebuilt>
 

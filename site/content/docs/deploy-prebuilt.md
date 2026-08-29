@@ -33,11 +33,16 @@ function. The generated script explicitly checks the output before upload.
 From the application root:
 
 ```bash
-scripts/deploy-prebuilt.sh           # production
-scripts/deploy-prebuilt.sh --preview # preview
+nextrs deploy             # production (+ cron triggers, if any are declared)
+nextrs deploy --preview   # preview; skips cron triggers
 ```
 
-The script performs the equivalent of:
+`nextrs deploy` first runs [`nextrs generate`](/docs/config), then the
+prebuilt deploy, then `nextrs cron deploy` when cloudflare-provider
+[crons](/docs/crons) are declared (`--skip-cron` to leave those alone).
+Scaffolded apps also carry `scripts/deploy-prebuilt.sh`, the same steps as a
+shell script for environments without the CLI. Either performs the
+equivalent of:
 
 ```bash
 vercel pull --yes --environment=production
