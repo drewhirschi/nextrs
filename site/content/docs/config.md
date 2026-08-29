@@ -20,6 +20,7 @@ regions = ["pdx1"]
 # install_command = "npm ci"
 # build_command = "npm run client:prepare && cargo build --release --bin index && npm run client:build"
 # git_deploys = false                 # prebuilt deploys; a push ships nothing
+# build_from = ".."                   # only when the app sits inside a larger repo
 
 # [vercel.extra]                      # raw keys merged into vercel.json last
 # trailingSlash = false
@@ -47,3 +48,9 @@ you're ready to hand the file over.
 
 `nextrs deploy` and `nextrs cron deploy` both run `generate` first, so the
 provider files can't drift from the config.
+
+If the app lives inside a larger repository and the Vercel project's Root
+Directory points at it, set `build_from` to the repository root relative to
+the app (usually `".."`); `nextrs deploy` then runs the Vercel build from
+there, the way the Vercel CLI expects (this is how the nextrs docs site
+itself deploys).

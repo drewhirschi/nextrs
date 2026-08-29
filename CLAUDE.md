@@ -130,10 +130,10 @@ can adopt it with a one-line change.
   fleet-wide** (2026-07-14, `git.deploymentEnabled: false` in every app's vercel.json —
   cloud builds cost 6-10 min + shared queue). Deploys are prebuilt-only:
   `scripts/deploy-prebuilt.sh site` (local cargo-zigbuild → `vercel deploy --prebuilt`,
-  ~seconds; guide at /docs/deploy-prebuilt). App-root projects use `nextrs deploy`
-  (same steps + `nextrs generate` + cron triggers); `site/` keeps the script because
-  its Vercel Root Directory is `site`. Both apps' `vercel.json` are generated from
-  their `nextrs.toml` — edit the TOML. **A push to main no longer ships anything —
+  ~seconds; guide at /docs/deploy-prebuilt), or equivalently `nextrs deploy --root site`
+  (same steps + `nextrs generate` + cron triggers; `site/nextrs.toml` sets
+  `build_from = ".."` for the monorepo layout). Both apps' `vercel.json` are
+  generated from their `nextrs.toml` — edit the TOML. **A push to main no longer ships anything —
   run the deploy script after docs/site changes.** The Vercel project's Root Directory
   must stay `site` with "Include source files outside the Root Directory" enabled.
 - Full deploy topology and other cross-repo facts live in agent memory, not the repo.

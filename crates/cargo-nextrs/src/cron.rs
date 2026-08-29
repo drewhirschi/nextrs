@@ -57,6 +57,11 @@ pub struct VercelConfig {
     pub build_command: Option<String>,
     /// Git-push auto-builds. Default `false` — nextrs apps deploy prebuilt.
     pub git_deploys: Option<bool>,
+    /// Directory `nextrs deploy` runs the Vercel build from, relative to
+    /// the app (e.g. `".."` when the app sits inside a larger repo whose
+    /// Vercel project has a Root Directory pointing at it). Omit when the
+    /// app dir is the project.
+    pub build_from: Option<String>,
     /// Raw top-level keys merged into the output last (escape hatch for
     /// anything the fields above don't model). Also overrides them.
     #[serde(default)]

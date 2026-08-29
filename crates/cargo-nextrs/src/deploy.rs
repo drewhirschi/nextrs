@@ -26,9 +26,13 @@ pub struct DeployOptions {
 pub fn deploy(root: &Path, options: &DeployOptions) -> Result<(), String> {
     let root = fs::canonicalize(root).map_err(|error| format!("bad --root: {error}"))?;
 
+    let mut build_from = None;
     if root.join(cron::CONFIG_FILE).is_file() {
         let summary = cron::generate(&root)?;
         eprintln!("nextrs: generated {summary}");
+        build_from = cron::load_config(&root)?
+            .vercel
+            .and_then(|vercel| vercel.build_from);
     } else {
         eprintln!("nextrs: no {} — deploying with the existing vercel.json", cron::CONFIG_FILE);
     }
@@ -45,30 +49,39 @@ pub fn deploy(root: &Path, options: &DeployOptions) -> Result<(), String> {
         })?;
 
     // Where `vercel build` runs depends on the project's Root Directory
-    // setting (the wrong dir silently falls back to static-only output):
+    // (the wrong dir silently falls back to static-only output):
     //   - set (monorepo, e.g. "site"): build from the directory the root is
     //     relative to; the CLI descends into it itself.
     //   - unset: the app dir IS the project; build from there, and keep
     //     cargo's target dir inside the upload root so the function's
     //     filePathMap doesn't point outside it.
-    let root_directory = link_json["settings"]["rootDirectory"]
-        .as_str()
-        .filter(|dir| !dir.is_empty())
-        .map(str::to_owned);
+    // `[vercel] build_from` in nextrs.toml says so directly (a path relative
+    // to the app, e.g. ".."); otherwise the link file's copy of the project's
+    // Root Directory setting is walked back to find the same place.
+    let build_dir = match build_from {
+        Some(rel) => Some(fs::canonicalize(root.join(&rel)).map_err(|error| {
+            format!("[vercel] build_from = {rel:?} does not resolve from {}: {error}", root.display())
+        })?),
+        None => link_json["settings"]["rootDirectory"]
+            .as_str()
+            .filter(|dir| !dir.is_empty())
+            .map(|dir| {
+                root.ancestors()
+                    .skip(1)
+                    .find(|anc| fs::canonicalize(anc.join(dir)).ok().as_deref() == Some(&root))
+                    .map(Path::to_path_buf)
+                    .ok_or_else(|| {
+                        format!(
+                            "the Vercel project's Root Directory is `{dir}` but no ancestor of {} contains it at that path",
+                            root.display()
+                        )
+                    })
+            })
+            .transpose()?,
+    };
     let mut envs: Vec<(&str, PathBuf)> = Vec::new();
-    let cwd = match &root_directory {
-        Some(dir) => {
-            let repo = root
-                .ancestors()
-                .skip(1)
-                .find(|anc| fs::canonicalize(anc.join(dir)).ok().as_deref() == Some(&root))
-                .ok_or_else(|| {
-                    format!(
-                        "the Vercel project's Root Directory is `{dir}` but no ancestor of {} contains it at that path",
-                        root.display()
-                    )
-                })?
-                .to_path_buf();
+    let cwd = match build_dir {
+        Some(repo) => {
             fs::create_dir_all(repo.join(".vercel"))
                 .map_err(|error| format!("cannot create {}/.vercel: {error}", repo.display()))?;
             fs::copy(&link, repo.join(".vercel/project.json"))
