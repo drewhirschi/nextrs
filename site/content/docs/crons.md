@@ -14,7 +14,7 @@ route with a bearer secret. Delete it and you lose nothing but the schedule.
 
 ## Declare schedules in `nextrs.toml`
 
-Create `nextrs.toml` at the app root:
+Add them to [`nextrs.toml`](/docs/config) at the app root:
 
 ```toml
 [app]
@@ -77,8 +77,8 @@ execution window or needs retry semantics of its own.
 ## Generate and deploy
 
 ```bash
-nextrs cron generate   # writes .nextrs/cloudflare/{worker.js,wrangler.toml},
-                       # merges vercel-provider crons into vercel.json
+nextrs generate        # writes .nextrs/cloudflare/{worker.js,wrangler.toml},
+                       # and vercel.json (with vercel-provider crons)
 nextrs cron deploy     # generate + `wrangler deploy` + sync CRON_SECRET
 ```
 

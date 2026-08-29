@@ -23,6 +23,6 @@ path = "src/dev_main.rs"
 cargo-nextrs-dev = { path = "../cargo-nextrs-dev", version = "0.1.1" }
 create-nextrs-app = { path = "../create-nextrs-app", version = "0.1.4" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+serde_json = { version = "1", features = ["preserve_order"] }
 toml = "0.8"
 ureq = "2"

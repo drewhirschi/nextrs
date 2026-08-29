@@ -32,9 +32,40 @@ const COMPATIBILITY_DATE: &str = "2026-08-01";
 #[serde(deny_unknown_fields)]
 pub struct NextrsConfig {
     pub app: AppConfig,
+    /// When present, `vercel.json` is generated wholesale from this table
+    /// (plus `crons`). When absent, an existing hand-written `vercel.json`
+    /// is left alone except for its `crons` key.
+    pub vercel: Option<VercelConfig>,
     #[serde(default)]
     pub crons: Vec<CronEntry>,
 }
+
+/// The knobs a nextrs app's `vercel.json` actually varies on. Everything
+/// else (the Rust function, the catch-all rewrite, immutable `/dist` caching)
+/// is the framework's fixed deploy shape.
+#[derive(Debug, Default, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VercelConfig {
+    /// Function regions, e.g. `["pdx1"]`. Omit for Vercel's default.
+    #[serde(default)]
+    pub regions: Vec<String>,
+    /// vercel-rust runtime pin. Default: [`DEFAULT_VERCEL_RUNTIME`].
+    pub runtime: Option<String>,
+    /// Default: `npm ci`.
+    pub install_command: Option<String>,
+    /// Default: [`DEFAULT_BUILD_COMMAND`].
+    pub build_command: Option<String>,
+    /// Git-push auto-builds. Default `false` — nextrs apps deploy prebuilt.
+    pub git_deploys: Option<bool>,
+    /// Raw top-level keys merged into the output last (escape hatch for
+    /// anything the fields above don't model). Also overrides them.
+    #[serde(default)]
+    pub extra: toml::Table,
+}
+
+pub const DEFAULT_VERCEL_RUNTIME: &str = "vercel-rust@4.0.11";
+pub const DEFAULT_BUILD_COMMAND: &str =
+    "npm run client:prepare && cargo build --release --bin index && npm run client:build";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -135,8 +166,16 @@ pub fn generate(root: &Path) -> Result<String, String> {
 
     let mut summary = Vec::new();
 
-    if !vercel.is_empty() {
-        merge_vercel_crons(&root.join("vercel.json"), &vercel)?;
+    let vercel_json = root.join("vercel.json");
+    if let Some(settings) = &config.vercel {
+        let json = render_vercel_json(settings, &vercel)?;
+        write(&vercel_json, &format!("{}\n", serde_json::to_string_pretty(&json).unwrap()))?;
+        summary.push(format!(
+            "vercel.json: generated from [vercel] with {} cron(s)",
+            vercel.len()
+        ));
+    } else if !vercel.is_empty() {
+        merge_vercel_crons(&vercel_json, &vercel)?;
         summary.push(format!("vercel.json: {} cron(s)", vercel.len()));
     }
 
@@ -272,6 +311,58 @@ fn run_wrangler(
     } else {
         Err(format!("wrangler {} failed with {status}", args.join(" ")))
     }
+}
+
+/// The complete `vercel.json` for a nextrs app, from the `[vercel]` table.
+fn render_vercel_json(settings: &VercelConfig, crons: &[&CronEntry]) -> Result<Value, String> {
+    let mut json = serde_json::Map::new();
+    json.insert(
+        "$schema".into(),
+        json!("https://openapi.vercel.sh/vercel.json"),
+    );
+    if !settings.regions.is_empty() {
+        json.insert("regions".into(), json!(settings.regions));
+    }
+    json.insert(
+        "installCommand".into(),
+        json!(settings.install_command.as_deref().unwrap_or("npm ci")),
+    );
+    json.insert(
+        "buildCommand".into(),
+        json!(settings.build_command.as_deref().unwrap_or(DEFAULT_BUILD_COMMAND)),
+    );
+    json.insert(
+        "functions".into(),
+        json!({ "api/index.rs": { "runtime": settings.runtime.as_deref().unwrap_or(DEFAULT_VERCEL_RUNTIME) } }),
+    );
+    json.insert(
+        "headers".into(),
+        json!([{
+            "source": "/dist/(.*)",
+            "headers": [{ "key": "Cache-Control", "value": "public, max-age=31536000, immutable" }]
+        }]),
+    );
+    json.insert(
+        "rewrites".into(),
+        json!([{ "source": "/(.*)", "destination": "/api/index" }]),
+    );
+    json.insert(
+        "git".into(),
+        json!({ "deploymentEnabled": settings.git_deploys.unwrap_or(false) }),
+    );
+    if !crons.is_empty() {
+        let entries: Vec<Value> = crons
+            .iter()
+            .map(|cron| json!({ "path": cron.path, "schedule": cron.schedule }))
+            .collect();
+        json.insert("crons".into(), Value::Array(entries));
+    }
+    for (key, value) in &settings.extra {
+        let value = serde_json::to_value(value)
+            .map_err(|error| format!("[vercel.extra] {key}: {error}"))?;
+        json.insert(key.clone(), value);
+    }
+    Ok(Value::Object(json))
 }
 
 /// Replace the `crons` array in `vercel.json`, preserving every other key.
@@ -433,6 +524,50 @@ provider = "cloudflare"
         let vercel: Value =
             serde_json::from_str(&fs::read_to_string(dir.join("vercel.json")).unwrap()).unwrap();
         assert_eq!(vercel["git"]["deploymentEnabled"], json!(false));
+        assert_eq!(
+            vercel["crons"],
+            json!([{ "path": "/api/cron/digest", "schedule": "0 6 * * *" }])
+        );
+    }
+
+    #[test]
+    fn vercel_table_generates_whole_vercel_json() {
+        let dir = tempdir("vercel-table");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(
+            dir.join(CONFIG_FILE),
+            r#"
+[app]
+name = "demo"
+url = "https://demo.vercel.app"
+
+[vercel]
+regions = ["pdx1"]
+
+[vercel.extra]
+trailingSlash = false
+
+[[crons]]
+path = "/api/cron/digest"
+schedule = "0 6 * * *"
+"#,
+        )
+        .unwrap();
+        // Hand-written content is replaced, not merged.
+        fs::write(dir.join("vercel.json"), r#"{ "stale": true }"#).unwrap();
+
+        generate(&dir).unwrap();
+
+        let vercel: Value =
+            serde_json::from_str(&fs::read_to_string(dir.join("vercel.json")).unwrap()).unwrap();
+        assert!(vercel.get("stale").is_none());
+        assert_eq!(vercel["regions"], json!(["pdx1"]));
+        assert_eq!(vercel["installCommand"], json!("npm ci"));
+        assert_eq!(vercel["buildCommand"], json!(DEFAULT_BUILD_COMMAND));
+        assert_eq!(vercel["functions"]["api/index.rs"]["runtime"], json!(DEFAULT_VERCEL_RUNTIME));
+        assert_eq!(vercel["rewrites"][0]["destination"], json!("/api/index"));
+        assert_eq!(vercel["git"]["deploymentEnabled"], json!(false));
+        assert_eq!(vercel["trailingSlash"], json!(false));
         assert_eq!(
             vercel["crons"],
             json!([{ "path": "/api/cron/digest", "schedule": "0 6 * * *" }])

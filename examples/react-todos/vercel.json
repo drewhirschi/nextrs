@@ -1,6 +1,8 @@
 {
   "$schema": "https://openapi.vercel.sh/vercel.json",
-  "regions": ["pdx1"],
+  "regions": [
+    "pdx1"
+  ],
   "installCommand": "npm ci",
   "buildCommand": "npm run client:prepare && cargo build --release --bin index && npm run client:build",
   "functions": {
