@@ -15,8 +15,9 @@ machinery on your workstation or CI.
 | **Node.js + npm** | the generated TypeScript client, TSX bundling, dev loop | [nodejs.org](https://nodejs.org) (LTS) |
 | **Vercel CLI** | deploys (`vercel deploy --prebuilt`), env management (`vercel env`) | `npm i -g vercel` |
 | **cargo-zigbuild + zig** | [prebuilt deploys](/docs/deploy-prebuilt) — cross-compiling the Vercel function locally for `x86_64-unknown-linux-gnu` | `cargo install cargo-zigbuild` + [ziglang.org](https://ziglang.org/download/) |
-| **wrangler** | [Cloudflare cron triggers](/docs/crons) only — `nextrs cron deploy` | `npm i -g wrangler` |
+| **wrangler** (optional) | [Cloudflare cron triggers](/docs/crons) on a workstation — `nextrs cron deploy` without `CLOUDFLARE_API_TOKEN`; with a token the CLI calls the API directly | `npm i -g wrangler` |
 
 Day-to-day development needs only Rust and Node — `nextrs dev` covers the
 loop. The rest come in when you deploy: the Vercel CLI plus cargo-zigbuild for
-the prebuilt path, and wrangler only if you declare Cloudflare-provider crons.
+the prebuilt path, and wrangler only if you declare Cloudflare-provider crons
+and prefer its login flow over a `CLOUDFLARE_API_TOKEN`.

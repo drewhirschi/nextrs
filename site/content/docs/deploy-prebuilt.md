@@ -9,9 +9,10 @@ Vercel cloud builds can spend minutes compiling Rust and longer waiting for an
 account build slot. A prebuilt deploy runs the same configured Vercel build on
 your machine, then uploads only `.vercel/output`.
 
-New nextrs apps make this the default by setting
-`"git": { "deploymentEnabled": false }` and generating
-`scripts/deploy-prebuilt.sh`. A git push alone does not deploy such a project.
+New NextRS apps make explicit prebuilt deployment the supported path and
+generate `scripts/deploy-prebuilt.sh`. A Git push is not a supported deploy:
+disable automatic deployments for connected repositories in the Vercel
+project settings. See the [Git-preview FAQ](/docs/faq#do-vercels-automatic-git-and-pull-request-previews-work).
 
 ## One-time setup
 
@@ -33,22 +34,42 @@ function. The generated script explicitly checks the output before upload.
 From the application root:
 
 ```bash
-scripts/deploy-prebuilt.sh           # production
-scripts/deploy-prebuilt.sh --preview # preview
+nextrs deploy             # production (+ cron triggers, if any are declared)
+nextrs deploy --preview   # preview; skips cron triggers
 ```
 
-The script performs the equivalent of:
+This explicit preview is supported; Vercel's automatic pull-request previews
+are not, because `.nextrs/vercel.json` is generated locally and ignored by
+Git.
+
+`nextrs deploy` first runs [`nextrs generate`](/docs/config), then the
+prebuilt deploy, then `nextrs cron deploy` when cloudflare-provider
+[crons](/docs/crons) are declared (`--skip-cron` to leave those alone).
+Scaffolded apps also carry `scripts/deploy-prebuilt.sh`, the same steps as a
+shell script for environments without the CLI. Either performs the
+equivalent of:
 
 ```bash
 vercel pull --yes --environment=production
-vercel build --prod
+vercel build --local-config .nextrs/vercel.json --prod
 vercel deploy --prebuilt --prod
 ```
 
+The application and cron phases are independently retryable. If Vercel
+succeeds but Cloudflare fails, the command reports that the application is
+already deployed. Fix the credential, preflight, or provider error and run:
+
+```bash
+nextrs cron deploy
+```
+
+That deploys only the Cloudflare cron plumbing and does not rebuild or
+redeploy the application.
+
 For preview mode, it omits `--prod` from build and deploy.
 
-`vercel build` runs the root `installCommand` and `buildCommand` from
-`vercel.json`. For a generated nextrs app that means:
+`vercel build` runs the `installCommand` and `buildCommand` from the managed
+`.nextrs/vercel.json`. For a generated nextrs app that means:
 
 1. root `npm ci` links `.nextrs/client` and installs React/Orval/TypeScript;
 2. the current Rust OpenAPI contract generates fetch and React Query clients;

@@ -1,19 +1,25 @@
 # Cloudflare cron shim — generous schedules without leaving Vercel
 
 - **Status:** shipped in ba83462 (merge of feat/cloudflare-cron, 2026-08-22); published as nextrs 0.6.0 / cargo-nextrs 0.2.0 / create-nextrs-app 0.1.4. Verified end-to-end 2026-08-22: react-todos redeployed on 0.6.0, `nextrs cron deploy` shipped react-todos-cron to Cloudflare (after the 0.2.1 config-path fix), and the 21:50 UTC tick hit /api/cron/heartbeat with a 200 in the Vercel logs
-- **Decisions (2026-08-22):** schedules live in a `[[crons]]` section of a new
-  app-root `nextrs.toml` (not vercel.json — direction is nextrs.toml becomes
-  the single config source and vercel.json gets generated from it; today only
-  the `crons` key is generated/merged). No scaffold changes for now. CLI owns
+- **Decisions (updated 2026-08-29):** schedules live directly on protected
+  `#[nextrs::cron(schedule = "...")]` GET routes; Vercel is the default and
+  Cloudflare is an explicit provider for flexible free scheduling. CLI owns
   the plumbing: `nextrs cron generate` (worker.js + wrangler.toml into
-  `.nextrs/cloudflare/`, vercel-provider crons merged into vercel.json) and
+  `.nextrs/cloudflare/`, Vercel-provider crons in `.nextrs/vercel.json`) and
   `nextrs cron deploy` (generate + `wrangler deploy` + `wrangler secret put
-  CRON_SECRET`). Runtime gate is `nextrs::cron::authorize` (Bearer
-  CRON_SECRET, fail-closed, constant-time). Demo: react-todos
+  CRON_SECRET`). Runtime gate is the macro-injected `CronAuth` extractor
+  (Bearer CRON_SECRET, structured fail-closed rejection). Demo: react-todos
   `/api/cron/heartbeat` every 10 minutes. Docs: site /docs/crons +
-  /docs/dependencies. Deferred: CF-API-direct deploy (dropping the wrangler
-  dependency), a `nextrs deploy` command folding in the prebuilt Vercel
-  deploy, scaffold integration, jobs-sweep wiring.
+  /docs/dependencies.
+- **Follow-ups landed 2026-08-29 (branch feat/cron-followups):**
+  `#[nextrs::cron]` macro (macros 0.1.8 / nextrs 0.6.1); `[vercel]` table in
+  nextrs.toml renders the whole managed `.nextrs/vercel.json` (`nextrs generate`, /docs/config);
+  Cloudflare-API-direct deploy when CLOUDFLARE_API_TOKEN + ACCOUNT_ID are
+  set, wrangler otherwise; `nextrs deploy` = generate + prebuilt Vercel
+  deploy + cron deploy (cargo-nextrs 0.3.0); scaffold ships nextrs.toml with
+  a daily heartbeat cron and a `#[nextrs::cron]` route (create-nextrs-app
+  0.1.6). Still deferred: jobs-sweep wiring (see background-jobs.md — Drew
+  wants to be hands-on for that one).
 - **Related:** [background-jobs.md](background-jobs.md) (jobs need a trigger; this is one)
 
 ## Why
@@ -32,7 +38,7 @@ the same "declare it in one place, the plumbing exists" contract we have with
 Vercel:
 
 - **Declaration.** App declares schedules once. nextrs already knows about
-  `vercel.json`'s `crons` array; extend the entry shape to something like
+  the generated Vercel config's `crons` array; extend the entry shape to something like
   `{ path, schedule, provider: "cloudflare" | "vercel" | "both" }`. Smart
   default: route fine-grained schedules to the CF shim, coarse (daily) ones
   to native Vercel crons, since Hobby caps at 1/day.
@@ -74,3 +80,17 @@ tier embarrasses Vercel's. The generated shim is disposable and regenerable.
 - Interaction with [background-jobs.md](background-jobs.md): scheduled jobs
   are just cron-triggered jobs, so the declaration surface should probably
   be shared rather than two parallel systems.
+
+## Deferred: remote-state reconciliation
+
+The current deploy path creates or updates the declared `<app-name>-cron`
+Worker and replaces its schedules. It does not tear down remote state when
+the final Cloudflare declaration is removed, a route changes to the Vercel
+provider, or `[app].name` changes. In those cases the previous Worker or
+schedule can remain active and must be removed manually in Cloudflare.
+
+A future lifecycle pass should track the last deployed identity and reconcile
+deletions safely. That work needs an explicit policy for destructive remote
+operations, useful partial-failure reporting, and tests covering final-cron
+removal, provider migration, and application renames. It is deliberately not
+part of PR 41's create/update deployment path.

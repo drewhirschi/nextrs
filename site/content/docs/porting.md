@@ -102,7 +102,7 @@ unit. Do not delete the shared `src/app.rs` or local `src/main.rs`.
 
 ### Deploys are prebuilt
 
-Scaffolded apps ship `scripts/deploy-prebuilt.sh` and a `vercel.json` with git auto-builds disabled: you compile locally (via `cargo-zigbuild`) and upload artifacts; deploys take seconds instead of a cloud cargo build plus queue. The same `vercel.json` also contains a self-sufficient root `npm ci` and client/Cargo build for anyone who deliberately re-enables cloud builds. Guide: [Deploy: Build Locally, Ship Artifacts](/docs/deploy-prebuilt).
+Scaffolded apps deploy with `nextrs deploy` (their `vercel.json`, generated from `nextrs.toml`, has git auto-builds disabled): you compile locally (via `cargo-zigbuild`) and upload artifacts; deploys take seconds instead of a cloud cargo build plus queue. The same `vercel.json` also contains a self-sufficient root `npm ci` and client/Cargo build for anyone who deliberately re-enables cloud builds. Guide: [Deploy: Build Locally, Ship Artifacts](/docs/deploy-prebuilt).
 
 ## Gotchas
 

@@ -355,12 +355,13 @@ dependencies = [
 
 [[package]]
 name = "cargo-nextrs"
-version = "0.2.1"
+version = "0.3.0"
 dependencies = [
  "cargo-nextrs-dev",
  "create-nextrs-app",
  "serde",
  "serde_json",
+ "syn",
  "toml",
  "ureq",
 ]
@@ -499,7 +500,7 @@ dependencies = [
 
 [[package]]
 name = "create-nextrs-app"
-version = "0.1.5"
+version = "0.1.6"
 
 [[package]]
 name = "crossbeam-deque"
@@ -1545,7 +1546,7 @@ dependencies = [
 
 [[package]]
 name = "nextrs"
-version = "0.6.0"
+version = "0.6.1"
 dependencies = [
  "askama",
  "async-stream",
@@ -1597,7 +1598,7 @@ dependencies = [
 
 [[package]]
 name = "nextrs-macros"
-version = "0.1.7"
+version = "0.1.8"
 dependencies = [
  "proc-macro2",
  "quote",
