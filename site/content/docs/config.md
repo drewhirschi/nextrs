@@ -19,7 +19,7 @@ regions = ["pdx1"]
 # runtime = "vercel-rust@4.0.11"      # defaults, shown for reference
 # install_command = "npm ci"
 # build_command = "npm run client:prepare && cargo build --release --bin index && npm run client:build"
-# git_deploys = false                 # prebuilt deploys; a push ships nothing
+# git_deploys = false                 # emitted into generated local config
 
 # [vercel.extra]                      # non-framework Vercel keys only
 # trailingSlash = false

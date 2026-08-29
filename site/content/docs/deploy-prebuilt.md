@@ -9,9 +9,10 @@ Vercel cloud builds can spend minutes compiling Rust and longer waiting for an
 account build slot. A prebuilt deploy runs the same configured Vercel build on
 your machine, then uploads only `.vercel/output`.
 
-New nextrs apps make this the default by setting
-`"git": { "deploymentEnabled": false }` and generating
-`scripts/deploy-prebuilt.sh`. A git push alone does not deploy such a project.
+New NextRS apps make explicit prebuilt deployment the supported path and
+generate `scripts/deploy-prebuilt.sh`. A Git push is not a supported deploy:
+disable automatic deployments for connected repositories in the Vercel
+project settings. See the [Git-preview FAQ](/docs/faq#do-vercels-automatic-git-and-pull-request-previews-work).
 
 ## One-time setup
 
@@ -36,6 +37,10 @@ From the application root:
 nextrs deploy             # production (+ cron triggers, if any are declared)
 nextrs deploy --preview   # preview; skips cron triggers
 ```
+
+This explicit preview is supported; Vercel's automatic pull-request previews
+are not, because `.nextrs/vercel.json` is generated locally and ignored by
+Git.
 
 `nextrs deploy` first runs [`nextrs generate`](/docs/config), then the
 prebuilt deploy, then `nextrs cron deploy` when cloudflare-provider
