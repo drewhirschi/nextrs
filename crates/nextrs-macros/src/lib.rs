@@ -72,10 +72,7 @@ pub fn api(args: TokenStream, item: TokenStream) -> TokenStream {
         // A body-less `StatusCode` handler still gets a 200 so the operation
         // doesn't emit an empty `responses: {}` (which reads as "no contract"
         // downstream). Anything richer needs an explicit block.
-        if func
-            .as_ref()
-            .is_some_and(|f| returns_bare_status_code(f))
-        {
+        if func.as_ref().is_some_and(|f| returns_bare_status_code(f)) {
             parts.push("responses((status = 200, description = \"\"))".to_string());
         } else if let Some(body) = func.as_ref().and_then(infer_success_body) {
             // `Result<Json<T>, ApiError>` self-registers its error contract: a
@@ -136,51 +133,114 @@ pub fn api(args: TokenStream, item: TokenStream) -> TokenStream {
 ///
 /// ```ignore
 /// // in app/api/cron/refresh/route.rs
-/// #[nextrs::cron]
+/// #[nextrs::cron(schedule = "0 3 * * *")]
 /// pub async fn get(Extension(db): Extension<Db>) -> Result<Json<Report>, StatusCode> {
 ///     // runs only when the request carries `Authorization: Bearer $CRON_SECRET`
 /// }
 /// ```
 ///
-/// The handler must return `Result<_, E>` where `E: From<StatusCode>` (plain
-/// `StatusCode` or `nextrs::ApiError` both work); an unauthorized request
-/// answers 401 before the body runs. Any `#[nextrs::api]` arguments pass
-/// through unchanged.
+/// `schedule` is a required five-field UTC cron expression. `provider` is
+/// optional (`"vercel"`, the default, or `"cloudflare"`). The generated
+/// [`nextrs::cron::CronAuth`] extractor rejects unauthorized requests before
+/// body-consuming extractors run, so the handler keeps the same return shapes
+/// as an ordinary `#[nextrs::api]` handler.
 #[proc_macro_attribute]
 pub fn cron(args: TokenStream, item: TokenStream) -> TokenStream {
     use quote::quote;
+    use syn::parse::Parser as _;
+
+    let parser =
+        syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated;
+    let args = match parser.parse2(proc_macro2::TokenStream::from(args)) {
+        Ok(args) => args,
+        Err(error) => return error.into_compile_error().into(),
+    };
+    let mut schedule = None;
+    let mut provider = None;
+    for arg in args {
+        let Some(name) = arg.path.get_ident().map(ToString::to_string) else {
+            return syn::Error::new_spanned(arg.path, "expected `schedule` or `provider`")
+                .into_compile_error()
+                .into();
+        };
+        let syn::Expr::Lit(syn::ExprLit {
+            lit: syn::Lit::Str(value),
+            ..
+        }) = arg.value
+        else {
+            return syn::Error::new_spanned(
+                arg.value,
+                format!("`{name}` must be a string literal"),
+            )
+            .into_compile_error()
+            .into();
+        };
+        match name.as_str() {
+            "schedule" if schedule.is_none() => schedule = Some(value),
+            "provider" if provider.is_none() => provider = Some(value),
+            "schedule" | "provider" => {
+                return syn::Error::new_spanned(arg.path, format!("duplicate `{name}`"))
+                    .into_compile_error()
+                    .into();
+            }
+            _ => {
+                return syn::Error::new_spanned(
+                    arg.path,
+                    "unknown cron option; expected `schedule` or `provider`",
+                )
+                .into_compile_error()
+                .into();
+            }
+        }
+    }
+    let Some(schedule) = schedule else {
+        return syn::Error::new(
+            proc_macro2::Span::call_site(),
+            "#[nextrs::cron] requires `schedule = \"...\"`",
+        )
+        .into_compile_error()
+        .into();
+    };
+    let field_count = schedule.value().split_whitespace().count();
+    if field_count != 5 {
+        return syn::Error::new_spanned(
+            &schedule,
+            format!("cron schedule must have 5 fields, found {field_count}"),
+        )
+        .into_compile_error()
+        .into();
+    }
+    if let Some(provider) = &provider {
+        if !matches!(provider.value().as_str(), "vercel" | "cloudflare") {
+            return syn::Error::new_spanned(
+                provider,
+                "cron provider must be `vercel` or `cloudflare`",
+            )
+            .into_compile_error()
+            .into();
+        }
+    }
 
     let mut func = match syn::parse::<syn::ItemFn>(item) {
         Ok(func) => func,
         Err(error) => return error.into_compile_error().into(),
     };
-    let returns_result = match &func.sig.output {
-        syn::ReturnType::Type(_, ret) => last_path_ident(ret).as_deref() == Some("Result"),
-        syn::ReturnType::Default => false,
-    };
-    if !returns_result {
+    if func.sig.ident != "get" {
         return syn::Error::new_spanned(
             &func.sig,
-            "#[nextrs::cron] handlers must return `Result<_, StatusCode>` (or an error type that \
-             implements `From<StatusCode>`) so an unauthorized request can answer 401",
+            "#[nextrs::cron] handlers must be named `get`; Vercel and generated Cloudflare triggers send GET requests",
         )
         .into_compile_error()
         .into();
     }
 
-    // The header extractor is appended last: axum requires the body-consuming
-    // extractor (Json, Form) to be final, and HeaderMap is not one.
-    let headers_ident = quote::format_ident!("__nextrs_cron_headers");
-    let arg: syn::FnArg = syn::parse_quote!(#headers_ident: ::nextrs::http::HeaderMap);
-    func.sig.inputs.push(arg);
-    let gate: syn::Stmt = syn::parse_quote! {
-        ::nextrs::cron::authorize(&#headers_ident)?;
-    };
-    func.block.stmts.insert(0, gate);
+    // Request-parts extractors must precede a body-consuming final extractor.
+    // CronAuth performs the gate during extraction, before Json/Form/body work.
+    let arg: syn::FnArg = syn::parse_quote!(_: ::nextrs::cron::CronAuth);
+    func.sig.inputs.insert(0, arg);
 
-    let args = proc_macro2::TokenStream::from(args);
     quote! {
-        #[::nextrs::api(#args)]
+        #[::nextrs::api]
         #func
     }
     .into()

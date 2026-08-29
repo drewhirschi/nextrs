@@ -1,15 +1,14 @@
 # Cloudflare cron shim — generous schedules without leaving Vercel
 
 - **Status:** shipped in ba83462 (merge of feat/cloudflare-cron, 2026-08-22); published as nextrs 0.6.0 / cargo-nextrs 0.2.0 / create-nextrs-app 0.1.4. Verified end-to-end 2026-08-22: react-todos redeployed on 0.6.0, `nextrs cron deploy` shipped react-todos-cron to Cloudflare (after the 0.2.1 config-path fix), and the 21:50 UTC tick hit /api/cron/heartbeat with a 200 in the Vercel logs
-- **Decisions (2026-08-22):** schedules live in a `[[crons]]` section of a new
-  app-root `nextrs.toml` (not vercel.json — direction is nextrs.toml becomes
-  the single config source and vercel.json gets generated from it; today only
-  the `crons` key is generated/merged). No scaffold changes for now. CLI owns
+- **Decisions (updated 2026-08-29):** schedules live directly on protected
+  `#[nextrs::cron(schedule = "...")]` GET routes; Vercel is the default and
+  Cloudflare is an explicit provider for flexible free scheduling. CLI owns
   the plumbing: `nextrs cron generate` (worker.js + wrangler.toml into
   `.nextrs/cloudflare/`, vercel-provider crons merged into vercel.json) and
   `nextrs cron deploy` (generate + `wrangler deploy` + `wrangler secret put
-  CRON_SECRET`). Runtime gate is `nextrs::cron::authorize` (Bearer
-  CRON_SECRET, fail-closed, constant-time). Demo: react-todos
+  CRON_SECRET`). Runtime gate is the macro-injected `CronAuth` extractor
+  (Bearer CRON_SECRET, structured fail-closed rejection). Demo: react-todos
   `/api/cron/heartbeat` every 10 minutes. Docs: site /docs/crons +
   /docs/dependencies.
 - **Follow-ups landed 2026-08-29 (branch feat/cron-followups):**

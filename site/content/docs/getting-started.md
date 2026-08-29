@@ -42,7 +42,7 @@ mysite/
 │   │   ├── loading.tsx          # pending UI
 │   │   └── prefetch.rs          # server-warmed React Query data
 │   ├── api/ping/route.rs        # typed Axum API
-│   └── api/cron/heartbeat/route.rs  # #[nextrs::cron] route, scheduled in nextrs.toml
+│   └── api/cron/heartbeat/route.rs  # #[nextrs::cron(schedule = "...")]
 ├── components/                  # React UI shared by multiple routes
 ├── src/
 │   ├── app.rs                   # shared Rust Router and application wiring

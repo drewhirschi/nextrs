@@ -820,11 +820,11 @@ while `src/main.rs` and `api/index.rs` are process adapters.
 
 ## Crons
 
-Schedules live in `nextrs.toml` (`[[crons]]`), never in vercel.json by hand.
-A cron route is `#[nextrs::cron]` instead of `#[nextrs::api]` — that adds
-the `CRON_SECRET` bearer check; `app/api/cron/heartbeat/route.rs` is the
-worked example. Do the work foreground, return 200 only on completion,
-write it idempotently. `nextrs deploy` ships the triggers.
+Schedules live on `#[nextrs::cron(schedule = "...")]` route handlers, never
+in vercel.json by hand. The macro adds the `CRON_SECRET` bearer check;
+`app/api/cron/heartbeat/route.rs` is the worked example. Do the work
+foreground, return 200 only on completion, and write it idempotently.
+`nextrs deploy` ships the triggers.
 Guide: <https://nextrs-docs.vercel.app/docs/crons>
 
 ## List state belongs in the URL (house style)
@@ -1211,25 +1211,7 @@ vercel deploy --prebuilt "${FLAGS[@]}"
 
 /// The app's single config source. `nextrs generate` (and `nextrs deploy`)
 /// rewrite vercel.json and the cron plumbing from it.
-fn nextrs_toml(crate_name: &str, with_cron: bool) -> String {
-    let cron = if with_cron {
-        r#"
-# Schedules become provider plumbing on `nextrs generate`: daily-or-coarser
-# ones are native Vercel crons in vercel.json; anything finer becomes a
-# generated Cloudflare Worker trigger (.nextrs/cloudflare/, shipped by
-# `nextrs cron deploy`). The route is app/api/cron/heartbeat/route.rs.
-[[crons]]
-path = "/api/cron/heartbeat"
-schedule = "0 6 * * *"
-"#
-    } else {
-        r#"
-# Declare cron schedules here; see https://nextrs-docs.vercel.app/docs/crons
-# [[crons]]
-# path = "/api/cron/refresh"
-# schedule = "*/10 * * * *"
-"#
-    };
+fn nextrs_toml(crate_name: &str, _with_cron: bool) -> String {
     format!(
         r#"# App config — the single source `nextrs generate` and `nextrs deploy` read.
 # vercel.json is generated from the [vercel] table; don't edit it by hand.
@@ -1245,7 +1227,7 @@ url = "https://{crate_name}.vercel.app"
 # runtime = "vercel-rust@4.0.11"
 # git_deploys = false               # prebuilt deploys: a push ships nothing
 # [vercel.extra]                    # raw keys merged into vercel.json last
-{cron}"#
+"#
     )
 }
 
@@ -1300,7 +1282,7 @@ fn vercel_json(with_cron: bool) -> String {
 }
 
 fn cron_heartbeat_route_rs() -> String {
-    r#"//! Cron demo. Declared in nextrs.toml ([[crons]]); the trigger — a native
+    r#"//! Cron demo. Its schedule is declared on `#[nextrs::cron]`; the trigger — a native
 //! Vercel cron or a generated Cloudflare Worker — fetches this route with
 //! `Authorization: Bearer $CRON_SECRET`. `#[nextrs::cron]` is `#[nextrs::api]`
 //! plus that check (fail-closed: no CRON_SECRET, no access).
@@ -1319,7 +1301,7 @@ pub struct Heartbeat {
     pub ok: bool,
 }
 
-#[nextrs::cron]
+#[nextrs::cron(schedule = "0 6 * * *")]
 pub async fn get() -> Result<Json<Heartbeat>, StatusCode> {
     // ... the actual work ...
     Ok(Json(Heartbeat { ok: true }))

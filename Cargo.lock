@@ -361,6 +361,7 @@ dependencies = [
  "create-nextrs-app",
  "serde",
  "serde_json",
+ "syn",
  "toml",
  "ureq",
 ]

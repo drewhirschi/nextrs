@@ -29,8 +29,19 @@ pub fn deploy(root: &Path, options: &DeployOptions) -> Result<(), String> {
     if root.join(cron::CONFIG_FILE).is_file() {
         let summary = cron::generate(&root)?;
         eprintln!("nextrs: generated {summary}");
+        if !options.preview && !options.skip_cron {
+            let crons = cron::discover_crons(&root)?;
+            let cloudflare: Vec<_> = crons
+                .iter()
+                .filter(|cron| cron.provider() == cron::Provider::Cloudflare)
+                .collect();
+            cron::preflight_cloudflare_credentials(&cloudflare)?;
+        }
     } else {
-        eprintln!("nextrs: no {} — deploying with the existing vercel.json", cron::CONFIG_FILE);
+        eprintln!(
+            "nextrs: no {} — deploying with the existing vercel.json",
+            cron::CONFIG_FILE
+        );
     }
 
     let link = root.join(".vercel/project.json");
@@ -81,32 +92,53 @@ pub fn deploy(root: &Path, options: &DeployOptions) -> Result<(), String> {
         }
     };
 
-    let environment = if options.preview { "preview" } else { "production" };
+    let environment = if options.preview {
+        "preview"
+    } else {
+        "production"
+    };
     let prod: &[&str] = if options.preview { &[] } else { &["--prod"] };
 
     eprintln!("==> vercel pull (project settings + {environment} env)");
-    run(&cwd, &envs, "vercel", &["pull", "--yes", &format!("--environment={environment}")])?;
+    run(
+        &cwd,
+        &envs,
+        "vercel",
+        &["pull", "--yes", &format!("--environment={environment}")],
+    )?;
 
-    eprintln!("==> vercel build {} — local compile, incl. the Rust function", prod.join(" "));
+    eprintln!(
+        "==> vercel build {} — local compile, incl. the Rust function",
+        prod.join(" ")
+    );
     run(&cwd, &envs, "vercel", &[&["build"][..], prod].concat())?;
 
     let functions = cwd.join(".vercel/output/functions");
     let configs = find_files(&functions, ".vc-config.json");
     if configs.is_empty() {
-        return Err("no function in .vercel/output — is cargo-zigbuild installed and zig reachable?".into());
+        return Err(
+            "no function in .vercel/output — is cargo-zigbuild installed and zig reachable?".into(),
+        );
     }
     for config_path in configs {
         bundle_function(&config_path, &cwd)?;
     }
 
     eprintln!("==> vercel deploy --prebuilt {}", prod.join(" "));
-    run(&cwd, &envs, "vercel", &[&["deploy", "--prebuilt"][..], prod].concat())?;
+    run(
+        &cwd,
+        &envs,
+        "vercel",
+        &[&["deploy", "--prebuilt"][..], prod].concat(),
+    )?;
 
     if options.skip_cron || !root.join(cron::CONFIG_FILE).is_file() {
         return Ok(());
     }
     if options.preview {
-        eprintln!("nextrs: preview deploy — skipping cron triggers (they point at the production URL)");
+        eprintln!(
+            "nextrs: preview deploy — skipping cron triggers (they point at the production URL)"
+        );
         return Ok(());
     }
     cron::deploy(&root)
@@ -132,22 +164,39 @@ fn bundle_function(config_path: &Path, build_dir: &Path) -> Result<(), String> {
         return Ok(());
     };
     if !source.is_file() {
-        return Err(format!("function executable does not exist: {}", source.display()));
+        return Err(format!(
+            "function executable does not exist: {}",
+            source.display()
+        ));
     }
     let destination = config_path.parent().unwrap().join(&handler);
-    fs::copy(&source, &destination)
-        .map_err(|error| format!("cannot copy {} → {}: {error}", source.display(), destination.display()))?;
+    fs::copy(&source, &destination).map_err(|error| {
+        format!(
+            "cannot copy {} → {}: {error}",
+            source.display(),
+            destination.display()
+        )
+    })?;
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mut perms = fs::metadata(&destination).map_err(|e| e.to_string())?.permissions();
+        let mut perms = fs::metadata(&destination)
+            .map_err(|e| e.to_string())?
+            .permissions();
         perms.set_mode(perms.mode() | 0o111);
         fs::set_permissions(&destination, perms).map_err(|e| e.to_string())?;
     }
     config.as_object_mut().unwrap().remove("filePathMap");
-    fs::write(config_path, format!("{}\n", serde_json::to_string_pretty(&config).unwrap()))
-        .map_err(|error| format!("cannot write {}: {error}", config_path.display()))?;
-    eprintln!("==> bundled {} as {}", source.display(), destination.display());
+    fs::write(
+        config_path,
+        format!("{}\n", serde_json::to_string_pretty(&config).unwrap()),
+    )
+    .map_err(|error| format!("cannot write {}: {error}", config_path.display()))?;
+    eprintln!(
+        "==> bundled {} as {}",
+        source.display(),
+        destination.display()
+    );
     Ok(())
 }
 

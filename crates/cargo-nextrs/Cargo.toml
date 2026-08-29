@@ -26,3 +26,4 @@ serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 toml = "0.8"
 ureq = "2"
+syn = { version = "2", features = ["full"] }

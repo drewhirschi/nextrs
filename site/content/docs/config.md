@@ -1,6 +1,6 @@
 +++
 title = "nextrs.toml"
-description = "The app's single config source: app identity, Vercel settings, and cron schedules — vercel.json is generated from it"
+description = "The app's config source for identity and Vercel settings — vercel.json is generated from it"
 section = "Guides"
 order = 12
 +++
@@ -23,11 +23,10 @@ regions = ["pdx1"]
 
 # [vercel.extra]                      # raw keys merged into vercel.json last
 # trailingSlash = false
-
-[[crons]]
-path = "/api/cron/digest"
-schedule = "0 6 * * *"
 ```
+
+Cron schedules are colocated with their protected handlers as
+`#[nextrs::cron(schedule = "...")]`; see [Cron Jobs](/docs/crons).
 
 ## What `nextrs generate` writes
 

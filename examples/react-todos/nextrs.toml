@@ -1,6 +1,6 @@
 # App-level nextrs config — the single config source. `nextrs generate`
-# writes vercel.json from the [vercel] table and the cron trigger plumbing
-# from [[crons]]; don't edit vercel.json by hand.
+# writes vercel.json from the [vercel] table; cron schedules live directly on
+# #[nextrs::cron] route handlers. Don't edit generated provider files by hand.
 
 [app]
 name = "react-todos"
@@ -13,10 +13,3 @@ regions = ["pdx1"]
 # build_command = "npm run client:prepare && cargo build --release --bin index && npm run client:build"
 # git_deploys = false
 # [vercel.extra]                    # raw keys merged into vercel.json last
-
-# `nextrs cron generate` turns these into provider plumbing. Schedules finer
-# than daily default to a generated Cloudflare Worker trigger
-# (.nextrs/cloudflare/); daily-or-coarser ones go into vercel.json's `crons`.
-[[crons]]
-path = "/api/cron/heartbeat"
-schedule = "*/10 * * * *"

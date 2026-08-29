@@ -320,9 +320,7 @@ fn get_is_seed_eligible(source: &str) -> bool {
     let Some(start) = source.find("pub async fn get") else {
         return false;
     };
-    // `#[nextrs::cron]` appends a HeaderMap arg for the secret gate, which
-    // makes the expanded handler ineligible — and a cron route is never
-    // something a page should seed anyway.
+    // A cron route is never something a page should seed.
     if source[..start].contains("#[nextrs::cron") {
         return false;
     }
@@ -2325,7 +2323,7 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
         ));
         // Cron handlers: the macro adds a HeaderMap gate, so never eligible.
         assert!(!get_is_seed_eligible(
-            "#[nextrs::cron]\npub async fn get() -> Result<Json<X>, StatusCode> { todo!() }"
+            "#[nextrs::cron(schedule = \"0 3 * * *\")]\npub async fn get() -> Result<Json<X>, StatusCode> { todo!() }"
         ));
         // Multiple extractors: not eligible.
         assert!(!get_is_seed_eligible(

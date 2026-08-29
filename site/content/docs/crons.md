@@ -1,63 +1,50 @@
 +++
 title = "Cron Jobs"
-description = "Declare schedules once in nextrs.toml; nextrs generates the Vercel and Cloudflare trigger plumbing"
+description = "Declare schedules on protected Rust routes; nextrs generates the Vercel and Cloudflare trigger plumbing"
 section = "Guides"
 order = 13
 +++
 
 Vercel Hobby allows one imprecise cron per day. Cloudflare Workers' free tier
 handles minutely schedules. nextrs lets you use both without leaving your app:
-declare every schedule in one place, and the CLI generates the right trigger
-per provider. Your logic always runs in your Rust app on Vercel — the
-Cloudflare Worker (when one is generated) is a dumb trigger that fetches your
-route with a bearer secret. Delete it and you lose nothing but the schedule.
+declare every schedule on its protected route, and the CLI generates the
+trigger for the selected provider. Your logic always runs in your Rust app on
+Vercel—the Cloudflare Worker (when one is generated) is a dumb trigger that
+fetches your route with a bearer secret. Delete it and you lose nothing but
+the schedule.
 
-## Declare schedules in `nextrs.toml`
+## Declare the protected route and schedule
 
-Add them to [`nextrs.toml`](/docs/config) at the app root:
-
-```toml
-[app]
-name = "myapp"                        # names the generated Worker: myapp-cron
-url = "https://myapp.vercel.app"      # where the triggers point
-
-[[crons]]
-path = "/api/cron/refresh"
-schedule = "*/10 * * * *"
-
-[[crons]]
-path = "/api/cron/digest"
-schedule = "0 6 * * *"
-# provider = "cloudflare" | "vercel"  # optional override
-```
-
-When `provider` is omitted, nextrs routes by granularity: daily-or-coarser
-schedules (fixed minute and hour) become native Vercel crons in `vercel.json`;
-anything finer goes to the Cloudflare shim, since Vercel Hobby can't run it.
-
-## Write the route
-
-A cron target is an ordinary API route with `#[nextrs::cron]` in place of
-`#[nextrs::api]`. The macro is `api` plus the auth gate: both trigger
+A cron target is an ordinary API route with `#[nextrs::cron(schedule = "...")]`
+in place of `#[nextrs::api]`. The macro is `api` plus the auth gate: both trigger
 providers send `Authorization: Bearer $CRON_SECRET`, and the handler answers
-401 before its body runs unless the secret matches. The check is fail-closed
-— if `CRON_SECRET` is unset, every request is rejected.
+with a structured 401 before body extraction unless the secret matches. If
+`CRON_SECRET` is unset, it fails closed with a structured 503.
 
 ```rust
 // app/api/cron/refresh/route.rs
 use axum::http::StatusCode;
 use axum::Json;
 
-#[nextrs::cron]
+#[nextrs::cron(schedule = "0 6 * * *")]
 pub async fn get() -> Result<Json<Report>, StatusCode> {
     // ... the actual work ...
 }
 ```
 
-The handler must return a `Result` whose error type accepts a `StatusCode`
-(`StatusCode` itself or `nextrs::ApiError`). If you need the check somewhere
-a macro can't reach, `nextrs::cron::authorize(&headers)` is the same gate as
-a plain function.
+Vercel is the default provider. For a subdaily schedule, generation warns that
+Vercel Hobby supports only daily crons. Opt into Cloudflare's more flexible
+free scheduling explicitly:
+
+```rust
+#[nextrs::cron(schedule = "*/10 * * * *", provider = "cloudflare")]
+pub async fn get() -> Result<Json<Report>, StatusCode> {
+    // ... the actual work ...
+}
+```
+
+Schedules are five-field UTC cron expressions. Scheduled handlers are GET
+routes because both Vercel and the generated Cloudflare trigger send GET.
 
 Delivery is at-least-once and imprecise, and redundant delivery from both
 providers must be harmless — write handlers idempotently (compute a
@@ -82,7 +69,7 @@ nextrs generate        # writes .nextrs/cloudflare/{worker.js,wrangler.toml},
 nextrs cron deploy     # generate + `wrangler deploy` + sync CRON_SECRET
 ```
 
-`cron deploy` reads `CRON_SECRET` from the environment, deploys the Worker,
+`cron deploy` discovers annotated routes, reads `CRON_SECRET` from the environment, deploys the Worker,
 and stores the secret with it. It talks to Cloudflare one of two ways:
 
 - **API-direct (no wrangler, no Node):** set `CLOUDFLARE_API_TOKEN` (an
@@ -99,7 +86,7 @@ CRON_SECRET`) so the app can verify what the Worker sends.
 Before touching Cloudflare, `cron deploy` runs a preflight: it fetches each
 cloudflare-provider route at `app.url` **without** credentials and expects a
 401. A 404 means the route isn't deployed there (wrong `app.url` or stale
-deploy); a 200 means the route is missing its `authorize` gate; unreachable
+deploy); a 200 means the route is missing its `#[nextrs::cron]` gate; unreachable
 means the URL is wrong. Any of those aborts the deploy with the specifics —
 `NEXTRS_CRON_SKIP_PREFLIGHT=1` overrides when you know better.
 

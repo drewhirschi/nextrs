@@ -1,7 +1,7 @@
 //! Cron declaration, codegen, and deploy.
 //!
-//! Apps declare schedules once in `nextrs.toml`; the CLI turns that into the
-//! provider plumbing:
+//! Apps declare schedules on `#[nextrs::cron]` route handlers; the CLI scans
+//! `app/**/route.rs` and turns those declarations into provider plumbing:
 //!
 //! - `cloudflare` crons become a generated Worker (`.nextrs/cloudflare/`)
 //!   whose `scheduled()` handler does nothing but fetch the app's route on
@@ -9,10 +9,8 @@
 //!   in the Rust app; the Worker is disposable plumbing.
 //! - `vercel` crons are merged into the app's `vercel.json` `crons` array.
 //!
-//! Provider defaults route coarse (daily-or-slower) schedules to native
-//! Vercel crons and anything finer to the Cloudflare shim, because Vercel
-//! Hobby allows only one imprecise cron per day while Cloudflare's free tier
-//! handles minutely schedules.
+//! Vercel is the default provider. Subdaily schedules produce a Hobby-plan
+//! warning with an explicit `provider = "cloudflare"` alternative.
 
 use std::fs;
 use std::io::Write as _;
@@ -33,11 +31,9 @@ const COMPATIBILITY_DATE: &str = "2026-08-01";
 pub struct NextrsConfig {
     pub app: AppConfig,
     /// When present, `vercel.json` is generated wholesale from this table
-    /// (plus `crons`). When absent, an existing hand-written `vercel.json`
+    /// (plus discovered crons). When absent, an existing hand-written `vercel.json`
     /// is left alone except for its `crons` key.
     pub vercel: Option<VercelConfig>,
-    #[serde(default)]
-    pub crons: Vec<CronEntry>,
 }
 
 /// The knobs a nextrs app's `vercel.json` actually varies on. Everything
@@ -76,19 +72,18 @@ pub struct AppConfig {
     pub url: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[serde(deny_unknown_fields)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CronEntry {
     /// Route path on the app, e.g. `/api/cron/refresh`.
     pub path: String,
     /// Five-field cron expression.
     pub schedule: String,
-    /// `cloudflare` | `vercel`; defaults by schedule granularity.
-    pub provider: Option<Provider>,
+    /// `cloudflare` | `vercel`; Vercel is the default.
+    pub provider: Provider,
+    pub source: PathBuf,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Provider {
     Cloudflare,
     Vercel,
@@ -96,13 +91,7 @@ pub enum Provider {
 
 impl CronEntry {
     pub fn provider(&self) -> Provider {
-        self.provider.unwrap_or({
-            if is_daily_or_coarser(&self.schedule) {
-                Provider::Vercel
-            } else {
-                Provider::Cloudflare
-            }
-        })
+        self.provider
     }
 }
 
@@ -123,23 +112,6 @@ pub fn load_config(root: &Path) -> Result<NextrsConfig, String> {
         .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
     let config: NextrsConfig =
         toml::from_str(&text).map_err(|error| format!("{}: {error}", path.display()))?;
-    for cron in &config.crons {
-        if !cron.path.starts_with('/') {
-            return Err(format!(
-                "{}: cron path `{}` must start with `/`",
-                path.display(),
-                cron.path
-            ));
-        }
-        let fields = cron.schedule.split_whitespace().count();
-        if fields != 5 {
-            return Err(format!(
-                "{}: cron schedule `{}` must have 5 fields, found {fields}",
-                path.display(),
-                cron.schedule
-            ));
-        }
-    }
     if !config.app.url.starts_with("https://") && !config.app.url.starts_with("http://") {
         return Err(format!(
             "{}: app.url `{}` must be an absolute http(s) URL",
@@ -150,16 +122,190 @@ pub fn load_config(root: &Path) -> Result<NextrsConfig, String> {
     Ok(config)
 }
 
+/// Discover deployment declarations colocated with protected cron handlers.
+pub fn discover_crons(root: &Path) -> Result<Vec<CronEntry>, String> {
+    let app = root.join("app");
+    let mut route_files = Vec::new();
+    find_named_files(&app, "route.rs", &mut route_files);
+    let mut crons = Vec::new();
+    for file in route_files {
+        let source = fs::read_to_string(&file)
+            .map_err(|error| format!("failed to read {}: {error}", file.display()))?;
+        let syntax = syn::parse_file(&source)
+            .map_err(|error| format!("{}: cannot parse route source: {error}", file.display()))?;
+        for item in syntax.items {
+            let syn::Item::Fn(function) = item else {
+                continue;
+            };
+            for attr in function.attrs.iter().filter(|attr| {
+                let segments = &attr.path().segments;
+                segments
+                    .last()
+                    .is_some_and(|segment| segment.ident == "cron")
+            }) {
+                if function.sig.ident != "get" {
+                    return Err(format!(
+                        "{}: #[nextrs::cron] handler must be named `get`",
+                        file.display()
+                    ));
+                }
+                let parser = syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated;
+                let args = attr.parse_args_with(parser).map_err(|error| {
+                    format!("{}: invalid #[nextrs::cron(...)]: {error}", file.display())
+                })?;
+                let mut schedule = None;
+                let mut provider = Provider::Vercel;
+                for arg in args {
+                    let name = arg
+                        .path
+                        .get_ident()
+                        .map(ToString::to_string)
+                        .ok_or_else(|| {
+                            format!("{}: expected cron `schedule` or `provider`", file.display())
+                        })?;
+                    let syn::Expr::Lit(syn::ExprLit {
+                        lit: syn::Lit::Str(value),
+                        ..
+                    }) = arg.value
+                    else {
+                        return Err(format!(
+                            "{}: cron `{name}` must be a string literal",
+                            file.display()
+                        ));
+                    };
+                    match name.as_str() {
+                        "schedule" if schedule.is_none() => schedule = Some(value.value()),
+                        "provider" => {
+                            provider = match value.value().as_str() {
+                                "vercel" => Provider::Vercel,
+                                "cloudflare" => Provider::Cloudflare,
+                                other => {
+                                    return Err(format!(
+                                        "{}: unknown cron provider `{other}`",
+                                        file.display()
+                                    ));
+                                }
+                            }
+                        }
+                        "schedule" => {
+                            return Err(format!("{}: duplicate cron schedule", file.display()));
+                        }
+                        other => {
+                            return Err(format!(
+                                "{}: unknown cron option `{other}`",
+                                file.display()
+                            ));
+                        }
+                    }
+                }
+                let schedule = schedule.ok_or_else(|| {
+                    format!(
+                        "{}: #[nextrs::cron] requires `schedule = \"...\"`",
+                        file.display()
+                    )
+                })?;
+                let fields = schedule.split_whitespace().count();
+                if fields != 5 {
+                    return Err(format!(
+                        "{}: cron schedule `{schedule}` must have 5 fields, found {fields}",
+                        file.display()
+                    ));
+                }
+                let path = route_path(&app, &file)?;
+                crons.push(CronEntry {
+                    path,
+                    schedule,
+                    provider,
+                    source: file.clone(),
+                });
+            }
+        }
+    }
+    crons.sort_by(|a, b| a.path.cmp(&b.path));
+    Ok(crons)
+}
+
+fn find_named_files(dir: &Path, name: &str, found: &mut Vec<PathBuf>) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.is_dir() {
+            find_named_files(&path, name, found);
+        } else if path.file_name().and_then(|value| value.to_str()) == Some(name) {
+            found.push(path);
+        }
+    }
+}
+
+fn route_path(app: &Path, file: &Path) -> Result<String, String> {
+    let relative = file
+        .parent()
+        .and_then(|parent| parent.strip_prefix(app).ok())
+        .ok_or_else(|| format!("{} is not under {}", file.display(), app.display()))?;
+    let mut segments = Vec::new();
+    for segment in relative.iter().filter_map(|part| part.to_str()) {
+        if segment.starts_with('(') && segment.ends_with(')') {
+            continue;
+        }
+        if segment.starts_with('[') {
+            return Err(format!(
+                "{}: scheduled cron routes cannot contain dynamic path segment `{segment}`",
+                file.display()
+            ));
+        }
+        segments.push(segment);
+    }
+    Ok(if segments.is_empty() {
+        "/".into()
+    } else {
+        format!("/{}", segments.join("/"))
+    })
+}
+
+fn warn_subdaily_vercel(crons: &[CronEntry]) {
+    for cron in crons
+        .iter()
+        .filter(|cron| cron.provider == Provider::Vercel && !is_daily_or_coarser(&cron.schedule))
+    {
+        eprintln!(
+            "nextrs: warning: {} uses subdaily Vercel schedule `{}`; Vercel Hobby supports only daily crons. If this is a Hobby project, add `provider = \"cloudflare\"` to #[nextrs::cron] and configure CRON_SECRET for flexible free scheduling. See https://nextrs.hirschi.dev/docs/crons",
+            cron.path, cron.schedule
+        );
+    }
+}
+
+/// Validate external-provider credentials before a potentially expensive
+/// Vercel build. Returns the secret when Cloudflare cron routes exist.
+pub fn preflight_cloudflare_credentials(crons: &[&CronEntry]) -> Result<Option<String>, String> {
+    if crons.is_empty() {
+        return Ok(None);
+    }
+    let secret = std::env::var("CRON_SECRET").ok().filter(|value| !value.is_empty())
+        .ok_or("Cloudflare cron routes are configured, but CRON_SECRET is missing; set it to the same value configured on the Vercel app")?;
+    let token = std::env::var("CLOUDFLARE_API_TOKEN")
+        .ok()
+        .filter(|value| !value.is_empty());
+    let account = std::env::var("CLOUDFLARE_ACCOUNT_ID")
+        .ok()
+        .filter(|value| !value.is_empty());
+    if token.is_some() != account.is_some() {
+        return Err("set both CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID for API deployment, or neither to use wrangler".into());
+    }
+    Ok(Some(secret))
+}
+
 /// Generate all cron plumbing. Returns a human summary of what was written.
 pub fn generate(root: &Path) -> Result<String, String> {
     let config = load_config(root)?;
-    let cloudflare: Vec<&CronEntry> = config
-        .crons
+    let crons = discover_crons(root)?;
+    warn_subdaily_vercel(&crons);
+    let cloudflare: Vec<&CronEntry> = crons
         .iter()
         .filter(|cron| cron.provider() == Provider::Cloudflare)
         .collect();
-    let vercel: Vec<&CronEntry> = config
-        .crons
+    let vercel: Vec<&CronEntry> = crons
         .iter()
         .filter(|cron| cron.provider() == Provider::Vercel)
         .collect();
@@ -169,7 +315,10 @@ pub fn generate(root: &Path) -> Result<String, String> {
     let vercel_json = root.join("vercel.json");
     if let Some(settings) = &config.vercel {
         let json = render_vercel_json(settings, &vercel)?;
-        write(&vercel_json, &format!("{}\n", serde_json::to_string_pretty(&json).unwrap()))?;
+        write(
+            &vercel_json,
+            &format!("{}\n", serde_json::to_string_pretty(&json).unwrap()),
+        )?;
         summary.push(format!(
             "vercel.json: generated from [vercel] with {} cron(s)",
             vercel.len()
@@ -194,7 +343,10 @@ pub fn generate(root: &Path) -> Result<String, String> {
             &out_dir.join("wrangler.toml"),
             &wrangler_toml(&config.app, &cloudflare),
         )?;
-        summary.push(format!("{OUTPUT_DIR}: worker with {} cron(s)", cloudflare.len()));
+        summary.push(format!(
+            "{OUTPUT_DIR}: worker with {} cron(s)",
+            cloudflare.len()
+        ));
     }
 
     Ok(summary.join(", "))
@@ -212,8 +364,8 @@ pub fn deploy(root: &Path) -> Result<(), String> {
     eprintln!("nextrs: generated {summary}");
 
     let config = load_config(root)?;
-    let cloudflare: Vec<&CronEntry> = config
-        .crons
+    let crons = discover_crons(root)?;
+    let cloudflare: Vec<&CronEntry> = crons
         .iter()
         .filter(|cron| cron.provider() == Provider::Cloudflare)
         .collect();
@@ -222,16 +374,17 @@ pub fn deploy(root: &Path) -> Result<(), String> {
         return Ok(());
     }
 
-    preflight(root)?;
+    preflight(root, &cloudflare)?;
 
-    let secret = std::env::var("CRON_SECRET")
-        .ok()
-        .filter(|secret| !secret.is_empty())
-        .ok_or("CRON_SECRET must be set in the environment to deploy (the Worker sends it, the app verifies it)")?;
+    let secret = preflight_cloudflare_credentials(&cloudflare)?.expect("cloudflare crons exist");
 
     let api = (
-        std::env::var("CLOUDFLARE_API_TOKEN").ok().filter(|v| !v.is_empty()),
-        std::env::var("CLOUDFLARE_ACCOUNT_ID").ok().filter(|v| !v.is_empty()),
+        std::env::var("CLOUDFLARE_API_TOKEN")
+            .ok()
+            .filter(|v| !v.is_empty()),
+        std::env::var("CLOUDFLARE_ACCOUNT_ID")
+            .ok()
+            .filter(|v| !v.is_empty()),
     );
     match api {
         (Some(token), Some(account)) => {
@@ -279,7 +432,10 @@ fn deploy_via_api(
     secret: &str,
 ) -> Result<(), String> {
     let name = worker_name(app);
-    let base = format!("{CLOUDFLARE_API}/accounts/{}/workers/scripts/{name}", api.account);
+    let base = format!(
+        "{CLOUDFLARE_API}/accounts/{}/workers/scripts/{name}",
+        api.account
+    );
 
     let metadata = json!({
         "main_module": "worker.js",
@@ -290,8 +446,18 @@ fn deploy_via_api(
         ],
     });
     let (content_type, body) = multipart(&[
-        ("metadata", None, "application/json", metadata.to_string().as_bytes()),
-        ("worker.js", Some("worker.js"), "application/javascript+module", script.as_bytes()),
+        (
+            "metadata",
+            None,
+            "application/json",
+            metadata.to_string().as_bytes(),
+        ),
+        (
+            "worker.js",
+            Some("worker.js"),
+            "application/javascript+module",
+            script.as_bytes(),
+        ),
     ]);
     cloudflare_call(
         ureq::put(&base)
@@ -305,7 +471,10 @@ fn deploy_via_api(
     let mut schedules: Vec<&str> = crons.iter().map(|cron| cron.schedule.as_str()).collect();
     schedules.sort_unstable();
     schedules.dedup();
-    let triggers: Vec<Value> = schedules.iter().map(|cron| json!({ "cron": cron })).collect();
+    let triggers: Vec<Value> = schedules
+        .iter()
+        .map(|cron| json!({ "cron": cron }))
+        .collect();
     cloudflare_call(
         ureq::put(&format!("{base}/schedules"))
             .set("Authorization", &format!("Bearer {}", api.token))
@@ -336,7 +505,10 @@ fn cloudflare_call(request: ureq::Request, body: Vec<u8>, what: &str) -> Result<
     if json["success"] == json!(true) {
         Ok(())
     } else {
-        Err(format!("cloudflare: {what} failed: {}", cloudflare_errors(&text)))
+        Err(format!(
+            "cloudflare: {what} failed: {}",
+            cloudflare_errors(&text)
+        ))
     }
 }
 
@@ -389,22 +561,22 @@ fn worker_name(app: &AppConfig) -> String {
 /// of each cloudflare-provider path should return 401. Anything else means
 /// the setup is wrong in a way worth flagging — the Worker would either hit
 /// a dead URL every tick or an unprotected route.
-fn preflight(root: &Path) -> Result<(), String> {
+fn preflight(root: &Path, crons: &[&CronEntry]) -> Result<(), String> {
     let config = load_config(root)?;
     let base = config.app.url.trim_end_matches('/');
     let mut problems = Vec::new();
-    for cron in config.crons.iter().filter(|c| c.provider() == Provider::Cloudflare) {
+    for cron in crons {
         let url = format!("{base}{}", cron.path);
         match ureq::get(&url).timeout(std::time::Duration::from_secs(10)).call() {
             Err(ureq::Error::Status(401, _)) => {
                 eprintln!("nextrs: preflight ok: {url} answers 401 without the secret");
             }
             Ok(response) => problems.push(format!(
-                "{url} answered {} WITHOUT authentication — the route is missing its `nextrs::cron::authorize` gate or is not the route you meant",
+                "{url} answered {} WITHOUT authentication — the deployed route is missing #[nextrs::cron] or is not the route you meant",
                 response.status()
             )),
             Err(ureq::Error::Status(404, _)) => problems.push(format!(
-                "{url} answered 404 — the route isn't deployed at app.url (stale deploy, or wrong `app.url`/`path` in nextrs.toml)"
+                "{url} answered 404 — the route isn't deployed at app.url (stale deploy or wrong app.url)"
             )),
             Err(ureq::Error::Status(code, _)) => problems.push(format!(
                 "{url} answered {code} without authentication (expected 401)"
@@ -425,7 +597,7 @@ fn preflight(root: &Path) -> Result<(), String> {
         return Ok(());
     }
     Err(
-        "cron preflight failed: the deployed app doesn't look ready for these triggers (see warnings above). Fix nextrs.toml or the deployment, or set NEXTRS_CRON_SKIP_PREFLIGHT=1 to deploy anyway"
+        "cron preflight failed: the deployed app doesn't look ready for these triggers (see warnings above). Fix the cron route or deployment, or set NEXTRS_CRON_SKIP_PREFLIGHT=1 to deploy anyway"
             .into(),
     )
 }
@@ -482,7 +654,12 @@ fn render_vercel_json(settings: &VercelConfig, crons: &[&CronEntry]) -> Result<V
     );
     json.insert(
         "buildCommand".into(),
-        json!(settings.build_command.as_deref().unwrap_or(DEFAULT_BUILD_COMMAND)),
+        json!(
+            settings
+                .build_command
+                .as_deref()
+                .unwrap_or(DEFAULT_BUILD_COMMAND)
+        ),
     );
     json.insert(
         "functions".into(),
@@ -534,7 +711,10 @@ fn merge_vercel_crons(path: &Path, crons: &[&CronEntry]) -> Result<(), String> {
     json.as_object_mut()
         .ok_or_else(|| format!("{} must contain a JSON object", path.display()))?
         .insert("crons".to_string(), Value::Array(entries));
-    write(path, &format!("{}\n", serde_json::to_string_pretty(&json).unwrap()))
+    write(
+        path,
+        &format!("{}\n", serde_json::to_string_pretty(&json).unwrap()),
+    )
 }
 
 fn worker_js(crons: &[&CronEntry]) -> String {
@@ -549,7 +729,7 @@ fn worker_js(crons: &[&CronEntry]) -> String {
     }
     let routes = serde_json::to_string_pretty(&Value::Object(routes)).unwrap();
     format!(
-        r#"// Generated by `nextrs cron generate` from nextrs.toml — do not edit.
+        r#"// Generated by `nextrs cron generate` from #[nextrs::cron] routes — do not edit.
 // This Worker is a trigger, not a runtime: it only fetches the app's cron
 // routes on Vercel. Delete it and you lose nothing but the schedule.
 const ROUTES = {routes};
@@ -579,7 +759,7 @@ fn wrangler_toml(app: &AppConfig, crons: &[&CronEntry]) -> String {
         .collect::<Vec<_>>()
         .join(", ");
     format!(
-        r#"# Generated by `nextrs cron generate` from nextrs.toml — do not edit.
+        r#"# Generated by `nextrs cron generate` from #[nextrs::cron] routes — do not edit.
 name = "{name}"
 main = "worker.js"
 compatibility_date = "{COMPATIBILITY_DATE}"
@@ -614,24 +794,30 @@ mod tests {
 [app]
 name = "demo"
 url = "https://demo.vercel.app/"
-
-[[crons]]
-path = "/api/cron/sweep"
-schedule = "*/5 * * * *"
-
-[[crons]]
-path = "/api/cron/digest"
-schedule = "0 6 * * *"
-
-[[crons]]
-path = "/api/cron/forced"
-schedule = "0 7 * * *"
-provider = "cloudflare"
 "#;
 
     fn setup(dir: &Path) {
         fs::create_dir_all(dir).unwrap();
         fs::write(dir.join(CONFIG_FILE), CONFIG).unwrap();
+        for (path, attr) in [
+            (
+                "sweep",
+                r#"schedule = "*/5 * * * *", provider = "cloudflare""#,
+            ),
+            ("digest", r#"schedule = "0 6 * * *""#),
+            (
+                "forced",
+                r#"schedule = "0 7 * * *", provider = "cloudflare""#,
+            ),
+        ] {
+            let route = dir.join("app/api/cron").join(path).join("route.rs");
+            fs::create_dir_all(route.parent().unwrap()).unwrap();
+            fs::write(
+                route,
+                format!("#[nextrs::cron({attr})]\npub async fn get() {{}}\n"),
+            )
+            .unwrap();
+        }
     }
 
     fn tempdir(name: &str) -> PathBuf {
@@ -641,13 +827,34 @@ provider = "cloudflare"
     }
 
     #[test]
-    fn provider_defaults_by_granularity() {
+    fn discovers_macro_schedules_and_providers() {
         let dir = tempdir("providers");
         setup(&dir);
-        let config = load_config(&dir).unwrap();
-        assert_eq!(config.crons[0].provider(), Provider::Cloudflare); // */5 minutes
-        assert_eq!(config.crons[1].provider(), Provider::Vercel); // daily
-        assert_eq!(config.crons[2].provider(), Provider::Cloudflare); // forced
+        let crons = discover_crons(&dir).unwrap();
+        assert_eq!(
+            crons
+                .iter()
+                .find(|c| c.path.ends_with("sweep"))
+                .unwrap()
+                .provider(),
+            Provider::Cloudflare
+        );
+        assert_eq!(
+            crons
+                .iter()
+                .find(|c| c.path.ends_with("digest"))
+                .unwrap()
+                .provider(),
+            Provider::Vercel
+        );
+        assert_eq!(
+            crons
+                .iter()
+                .find(|c| c.path.ends_with("forced"))
+                .unwrap()
+                .provider(),
+            Provider::Cloudflare
+        );
     }
 
     #[test]
@@ -699,11 +906,14 @@ regions = ["pdx1"]
 
 [vercel.extra]
 trailingSlash = false
-
-[[crons]]
-path = "/api/cron/digest"
-schedule = "0 6 * * *"
 "#,
+        )
+        .unwrap();
+        let route = dir.join("app/api/cron/digest/route.rs");
+        fs::create_dir_all(route.parent().unwrap()).unwrap();
+        fs::write(
+            route,
+            "#[nextrs::cron(schedule = \"0 6 * * *\")]\npub async fn get() {}\n",
         )
         .unwrap();
         // Hand-written content is replaced, not merged.
@@ -717,7 +927,10 @@ schedule = "0 6 * * *"
         assert_eq!(vercel["regions"], json!(["pdx1"]));
         assert_eq!(vercel["installCommand"], json!("npm ci"));
         assert_eq!(vercel["buildCommand"], json!(DEFAULT_BUILD_COMMAND));
-        assert_eq!(vercel["functions"]["api/index.rs"]["runtime"], json!(DEFAULT_VERCEL_RUNTIME));
+        assert_eq!(
+            vercel["functions"]["api/index.rs"]["runtime"],
+            json!(DEFAULT_VERCEL_RUNTIME)
+        );
         assert_eq!(vercel["rewrites"][0]["destination"], json!("/api/index"));
         assert_eq!(vercel["git"]["deploymentEnabled"], json!(false));
         assert_eq!(vercel["trailingSlash"], json!(false));
@@ -734,11 +947,8 @@ schedule = "0 6 * * *"
         generate(&dir).unwrap();
         assert!(dir.join(OUTPUT_DIR).join("worker.js").is_file());
 
-        fs::write(
-            dir.join(CONFIG_FILE),
-            "[app]\nname = \"demo\"\nurl = \"https://demo.vercel.app\"\n\n[[crons]]\npath = \"/api/cron/digest\"\nschedule = \"0 6 * * *\"\n",
-        )
-        .unwrap();
+        fs::remove_file(dir.join("app/api/cron/sweep/route.rs")).unwrap();
+        fs::remove_file(dir.join("app/api/cron/forced/route.rs")).unwrap();
         generate(&dir).unwrap();
         assert!(!dir.join(OUTPUT_DIR).exists());
     }
@@ -747,9 +957,16 @@ schedule = "0 6 * * *"
     fn multipart_encodes_parts_with_boundary() {
         let (content_type, body) = multipart(&[
             ("metadata", None, "application/json", b"{}"),
-            ("worker.js", Some("worker.js"), "application/javascript+module", b"export default {}"),
+            (
+                "worker.js",
+                Some("worker.js"),
+                "application/javascript+module",
+                b"export default {}",
+            ),
         ]);
-        let boundary = content_type.strip_prefix("multipart/form-data; boundary=").unwrap();
+        let boundary = content_type
+            .strip_prefix("multipart/form-data; boundary=")
+            .unwrap();
         let body = String::from_utf8(body).unwrap();
         assert!(body.starts_with(&format!("--{boundary}\r\nContent-Disposition: form-data; name=\"metadata\"\r\nContent-Type: application/json\r\n\r\n{{}}\r\n")));
         assert!(body.contains("name=\"worker.js\"; filename=\"worker.js\"\r\nContent-Type: application/javascript+module\r\n\r\nexport default {}\r\n"));
@@ -757,26 +974,34 @@ schedule = "0 6 * * *"
     }
 
     #[test]
-    fn rejects_bad_schedules_paths_and_urls() {
-        for (config, message) in [
-            (
-                "[app]\nname = \"a\"\nurl = \"https://a.dev\"\n[[crons]]\npath = \"api/x\"\nschedule = \"* * * * *\"\n",
-                "must start with `/`",
-            ),
-            (
-                "[app]\nname = \"a\"\nurl = \"https://a.dev\"\n[[crons]]\npath = \"/api/x\"\nschedule = \"* * * *\"\n",
-                "must have 5 fields",
-            ),
-            (
-                "[app]\nname = \"a\"\nurl = \"a.dev\"\n",
-                "absolute http(s) URL",
-            ),
-        ] {
-            let dir = tempdir("invalid");
-            fs::create_dir_all(&dir).unwrap();
-            fs::write(dir.join(CONFIG_FILE), config).unwrap();
-            let error = load_config(&dir).unwrap_err();
-            assert!(error.contains(message), "{error}");
-        }
+    fn rejects_bad_schedule_and_url() {
+        let dir = tempdir("invalid-schedule");
+        fs::create_dir_all(dir.join("app/api/cron/x")).unwrap();
+        fs::write(
+            dir.join(CONFIG_FILE),
+            "[app]\nname = \"a\"\nurl = \"https://a.dev\"\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("app/api/cron/x/route.rs"),
+            "#[nextrs::cron(schedule = \"* * * *\")]\npub async fn get() {}\n",
+        )
+        .unwrap();
+        assert!(
+            discover_crons(&dir)
+                .unwrap_err()
+                .contains("must have 5 fields")
+        );
+
+        fs::write(
+            dir.join(CONFIG_FILE),
+            "[app]\nname = \"a\"\nurl = \"a.dev\"\n",
+        )
+        .unwrap();
+        assert!(
+            load_config(&dir)
+                .unwrap_err()
+                .contains("absolute http(s) URL")
+        );
     }
 }
