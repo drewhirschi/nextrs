@@ -187,7 +187,7 @@ release Cargo build:
 ```json
 {
   "installCommand": "npm ci",
-  "buildCommand": "npm run client:generate && cargo build --release -p react-todos"
+  "buildCommand": "npm run client:prepare && cargo build --release --bin index && npm run client:build"
 }
 ```
 
@@ -197,12 +197,20 @@ manually installed hidden client or a prebuilt committed `public/dist/`
 directory.
 
 ```sh
-vercel deploy --prod
+nextrs deploy --root examples/react-todos   # or scripts/deploy-prebuilt.sh examples/react-todos
 ```
 
+`nextrs deploy` regenerates `vercel.json` from `nextrs.toml` (the `[vercel]`
+table holds the regions; function runtime and the catch-all rewrite are the
+framework's fixed shape), builds locally, uploads the prebuilt output, and
+ships the cron trigger declared there: `/api/cron/heartbeat` every 10 minutes
+via a generated Cloudflare Worker. The route uses `#[nextrs::cron]`, so it
+answers 401 unless the request carries `Authorization: Bearer $CRON_SECRET`.
+Set `CRON_SECRET` in the environment for the deploy (it's stored on the
+Worker) and on the Vercel project (`vercel env add CRON_SECRET`).
+
 `.cargo/config.toml` keeps an empty `[build]` table because the current
-`vercel-rust` builder expects that key when a Cargo config exists. Function
-runtime selection and the catch-all rewrite remain in `vercel.json`.
+`vercel-rust` builder expects that key when a Cargo config exists.
 
 See `docs/server-props.md` in the repository root for the server-props and
 streaming design.

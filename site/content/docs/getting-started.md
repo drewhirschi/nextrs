@@ -41,7 +41,8 @@ mysite/
 │   │   ├── page.tsx             # /slow
 │   │   ├── loading.tsx          # pending UI
 │   │   └── prefetch.rs          # server-warmed React Query data
-│   └── api/ping/route.rs        # typed Axum API
+│   ├── api/ping/route.rs        # typed Axum API
+│   └── api/cron/heartbeat/route.rs  # #[nextrs::cron] route, scheduled in nextrs.toml
 ├── components/                  # React UI shared by multiple routes
 ├── src/
 │   ├── app.rs                   # shared Rust Router and application wiring
@@ -53,7 +54,8 @@ mysite/
 ├── public/                      # static assets
 ├── build.rs                     # route discovery and browser bundling
 ├── package.json                 # all JavaScript dependencies live here
-└── vercel.json                  # Vercel build and routing configuration
+├── nextrs.toml                  # app config: Vercel settings + cron schedules
+└── vercel.json                  # generated from nextrs.toml by `nextrs generate`
 ```
 
 The mental model is:
@@ -188,8 +190,8 @@ frontend, template, asset, and environment files.
   `app/` tree, generates the route/OpenAPI registry, and bundles React pages.
 
 If Vercel is not a deployment target, remove `api/index.rs`, its `index` Cargo
-target, the Vercel-only dependencies, `vercel.json`, and the prebuilt-deploy
-script together. Keep `src/app.rs`, `src/main.rs`, and `build.rs`.
+target, the Vercel-only dependencies, `vercel.json` (and the `[vercel]` table
+in `nextrs.toml`), and the prebuilt-deploy script together. Keep `src/app.rs`, `src/main.rs`, and `build.rs`.
 
 ## Where to go next
 

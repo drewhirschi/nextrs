@@ -73,7 +73,10 @@ vercel_runtime = { version = "2", features = ["axum"] }
 
 ## Vercel configuration
 
-The generated `vercel.json` installs and builds from the application root:
+`vercel.json` is generated from the `[vercel]` table in
+[`nextrs.toml`](/docs/config) by `nextrs generate` (which `nextrs deploy`
+runs first) — edit the TOML, not the JSON. What it renders installs and
+builds from the application root:
 
 ```json
 {
@@ -139,14 +142,16 @@ dev = "nextrs dev --bin my-app"
 
 ## Deploy
 
-The default scaffold disables git-triggered builds. Use its prebuilt script:
+The default scaffold disables git-triggered builds. Deploy with the CLI:
 
 ```bash
-scripts/deploy-prebuilt.sh           # production
-scripts/deploy-prebuilt.sh --preview # preview
+nextrs deploy             # production (+ cron triggers, if declared)
+nextrs deploy --preview   # preview
 ```
 
-This runs `vercel build` on your machine and uploads its Build Output. See
+This regenerates config from `nextrs.toml`, runs `vercel build` on your
+machine, and uploads its Build Output (`scripts/deploy-prebuilt.sh` is the
+same Vercel steps as a plain script). See
 [Build Locally, Ship Artifacts](/docs/deploy-prebuilt) for setup.
 
 If you prefer Vercel cloud builds, delete the `git.deploymentEnabled: false`
@@ -214,7 +219,8 @@ If Vercel is not a target, remove the whole adapter surface together:
 - the `index` Cargo target;
 - `vercel_runtime`, `tower` if otherwise unused, and the nextrs `vercel`
   feature if otherwise unused;
-- `vercel.json` and the prebuilt deployment script.
+- `vercel.json`, the `[vercel]` table in `nextrs.toml`, and the prebuilt
+  deployment script.
 
 Keep `src/app.rs`, `src/main.rs`, and `build.rs`: they are the shared
 application, local process, and Rust build infrastructure, not Vercel code.

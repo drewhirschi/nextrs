@@ -7,3 +7,4 @@
 .env
 .env.*.local
 npm-debug.log*
+/.nextrs/cloudflare/
