@@ -82,12 +82,19 @@ nextrs generate        # writes .nextrs/cloudflare/{worker.js,wrangler.toml},
 nextrs cron deploy     # generate + `wrangler deploy` + sync CRON_SECRET
 ```
 
-`cron deploy` needs [wrangler](https://developers.cloudflare.com/workers/wrangler/)
-plus a Cloudflare account: authenticate with `wrangler login`, or set
-`CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in CI. It reads
-`CRON_SECRET` from the environment, deploys the Worker, and stores the secret
-with it. Set the same `CRON_SECRET` on the Vercel project
-(`vercel env add CRON_SECRET`) so the app can verify what the Worker sends.
+`cron deploy` reads `CRON_SECRET` from the environment, deploys the Worker,
+and stores the secret with it. It talks to Cloudflare one of two ways:
+
+- **API-direct (no wrangler, no Node):** set `CLOUDFLARE_API_TOKEN` (an
+  API token with the *Workers Scripts: Edit* permission) and
+  `CLOUDFLARE_ACCOUNT_ID`. The CLI uploads the Worker with the secret as a
+  binding and sets the schedules over HTTPS. This is the CI path.
+- **wrangler:** with neither variable set, the CLI shells out to
+  [wrangler](https://developers.cloudflare.com/workers/wrangler/) and uses
+  its login (`wrangler login`). Convenient on a workstation.
+
+Set the same `CRON_SECRET` on the Vercel project (`vercel env add
+CRON_SECRET`) so the app can verify what the Worker sends.
 
 Before touching Cloudflare, `cron deploy` runs a preflight: it fetches each
 cloudflare-provider route at `app.url` **without** credentials and expects a

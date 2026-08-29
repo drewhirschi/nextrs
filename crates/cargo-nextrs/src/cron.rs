@@ -200,18 +200,27 @@ pub fn generate(root: &Path) -> Result<String, String> {
     Ok(summary.join(", "))
 }
 
-/// Deploy the generated Worker with wrangler and sync `CRON_SECRET`.
+/// Deploy the generated Worker and its `CRON_SECRET`.
+///
+/// Two transports, chosen by environment:
+/// - `CLOUDFLARE_API_TOKEN` + `CLOUDFLARE_ACCOUNT_ID` set → talk to the
+///   Cloudflare API directly (no wrangler or Node needed; the CI-friendly
+///   path). The secret ships as a binding in the same upload.
+/// - otherwise → shell out to `wrangler`, which brings its own login.
 pub fn deploy(root: &Path) -> Result<(), String> {
     let summary = generate(root)?;
     eprintln!("nextrs: generated {summary}");
 
-    // Absolute: run_wrangler runs with the app root as cwd, so a cwd-relative
-    // root would otherwise be joined twice.
-    let wrangler_config = fs::canonicalize(root.join(OUTPUT_DIR).join("wrangler.toml"));
-    let Ok(wrangler_config) = wrangler_config else {
+    let config = load_config(root)?;
+    let cloudflare: Vec<&CronEntry> = config
+        .crons
+        .iter()
+        .filter(|cron| cron.provider() == Provider::Cloudflare)
+        .collect();
+    if cloudflare.is_empty() {
         eprintln!("nextrs: no cloudflare crons declared; nothing to deploy");
         return Ok(());
-    };
+    }
 
     preflight(root)?;
 
@@ -220,15 +229,159 @@ pub fn deploy(root: &Path) -> Result<(), String> {
         .filter(|secret| !secret.is_empty())
         .ok_or("CRON_SECRET must be set in the environment to deploy (the Worker sends it, the app verifies it)")?;
 
-    run_wrangler(root, &wrangler_config, &["deploy"], None)?;
-    run_wrangler(
-        root,
-        &wrangler_config,
-        &["secret", "put", "CRON_SECRET"],
-        Some(&secret),
-    )?;
-    eprintln!("nextrs: cloudflare cron worker deployed");
+    let api = (
+        std::env::var("CLOUDFLARE_API_TOKEN").ok().filter(|v| !v.is_empty()),
+        std::env::var("CLOUDFLARE_ACCOUNT_ID").ok().filter(|v| !v.is_empty()),
+    );
+    match api {
+        (Some(token), Some(account)) => {
+            let auth = CloudflareApi { token, account };
+            let script = fs::read_to_string(root.join(OUTPUT_DIR).join("worker.js"))
+                .map_err(|error| format!("failed to read generated worker.js: {error}"))?;
+            deploy_via_api(&auth, &config.app, &cloudflare, &script, &secret)?;
+            eprintln!("nextrs: cloudflare cron worker deployed (Cloudflare API)");
+        }
+        (Some(_), None) | (None, Some(_)) => {
+            return Err("set both CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID for an API-direct deploy, or neither to use wrangler".into());
+        }
+        (None, None) => {
+            // Absolute: run_wrangler runs with the app root as cwd, so a
+            // cwd-relative root would otherwise be joined twice.
+            let wrangler_config = fs::canonicalize(root.join(OUTPUT_DIR).join("wrangler.toml"))
+                .map_err(|error| format!("generated wrangler.toml missing: {error}"))?;
+            run_wrangler(root, &wrangler_config, &["deploy"], None)?;
+            run_wrangler(
+                root,
+                &wrangler_config,
+                &["secret", "put", "CRON_SECRET"],
+                Some(&secret),
+            )?;
+            eprintln!("nextrs: cloudflare cron worker deployed (wrangler)");
+        }
+    }
     Ok(())
+}
+
+struct CloudflareApi {
+    token: String,
+    account: String,
+}
+
+const CLOUDFLARE_API: &str = "https://api.cloudflare.com/client/v4";
+
+/// Upload the Worker module with its bindings, then set its cron triggers —
+/// the same two calls wrangler makes, minus wrangler.
+fn deploy_via_api(
+    api: &CloudflareApi,
+    app: &AppConfig,
+    crons: &[&CronEntry],
+    script: &str,
+    secret: &str,
+) -> Result<(), String> {
+    let name = worker_name(app);
+    let base = format!("{CLOUDFLARE_API}/accounts/{}/workers/scripts/{name}", api.account);
+
+    let metadata = json!({
+        "main_module": "worker.js",
+        "compatibility_date": COMPATIBILITY_DATE,
+        "bindings": [
+            { "type": "plain_text", "name": "APP_URL", "text": app.url.trim_end_matches('/') },
+            { "type": "secret_text", "name": "CRON_SECRET", "text": secret },
+        ],
+    });
+    let (content_type, body) = multipart(&[
+        ("metadata", None, "application/json", metadata.to_string().as_bytes()),
+        ("worker.js", Some("worker.js"), "application/javascript+module", script.as_bytes()),
+    ]);
+    cloudflare_call(
+        ureq::put(&base)
+            .set("Authorization", &format!("Bearer {}", api.token))
+            .set("Content-Type", &content_type),
+        body,
+        "upload worker",
+    )?;
+    eprintln!("nextrs: uploaded worker {name}");
+
+    let mut schedules: Vec<&str> = crons.iter().map(|cron| cron.schedule.as_str()).collect();
+    schedules.sort_unstable();
+    schedules.dedup();
+    let triggers: Vec<Value> = schedules.iter().map(|cron| json!({ "cron": cron })).collect();
+    cloudflare_call(
+        ureq::put(&format!("{base}/schedules"))
+            .set("Authorization", &format!("Bearer {}", api.token))
+            .set("Content-Type", "application/json"),
+        Value::Array(triggers).to_string().into_bytes(),
+        "set schedules",
+    )?;
+    eprintln!("nextrs: set {} schedule(s) on {name}", schedules.len());
+    Ok(())
+}
+
+fn cloudflare_call(request: ureq::Request, body: Vec<u8>, what: &str) -> Result<(), String> {
+    let response = match request.send_bytes(&body) {
+        Ok(response) => response,
+        Err(ureq::Error::Status(code, response)) => {
+            let text = response.into_string().unwrap_or_default();
+            return Err(format!(
+                "cloudflare: {what} failed with HTTP {code}: {}",
+                cloudflare_errors(&text)
+            ));
+        }
+        Err(error) => return Err(format!("cloudflare: {what} failed: {error}")),
+    };
+    let text = response
+        .into_string()
+        .map_err(|error| format!("cloudflare: {what}: unreadable response: {error}"))?;
+    let json: Value = serde_json::from_str(&text).unwrap_or(Value::Null);
+    if json["success"] == json!(true) {
+        Ok(())
+    } else {
+        Err(format!("cloudflare: {what} failed: {}", cloudflare_errors(&text)))
+    }
+}
+
+/// Flatten the API's `errors: [{code, message}]` for a one-line diagnostic.
+fn cloudflare_errors(text: &str) -> String {
+    let json: Value = serde_json::from_str(text).unwrap_or(Value::Null);
+    let errors: Vec<String> = json["errors"]
+        .as_array()
+        .map(|errors| {
+            errors
+                .iter()
+                .map(|e| format!("{} ({})", e["message"].as_str().unwrap_or("?"), e["code"]))
+                .collect()
+        })
+        .unwrap_or_default();
+    if errors.is_empty() {
+        text.chars().take(300).collect()
+    } else {
+        errors.join("; ")
+    }
+}
+
+/// Encode `multipart/form-data`; returns (Content-Type, body).
+fn multipart(parts: &[(&str, Option<&str>, &str, &[u8])]) -> (String, Vec<u8>) {
+    let boundary = format!("nextrs-{}", std::process::id());
+    let mut body = Vec::new();
+    for (name, filename, content_type, data) in parts {
+        body.extend_from_slice(format!("--{boundary}\r\n").as_bytes());
+        let disposition = match filename {
+            Some(filename) => format!("form-data; name=\"{name}\"; filename=\"{filename}\""),
+            None => format!("form-data; name=\"{name}\""),
+        };
+        body.extend_from_slice(
+            format!("Content-Disposition: {disposition}\r\nContent-Type: {content_type}\r\n\r\n")
+                .as_bytes(),
+        );
+        body.extend_from_slice(data);
+        body.extend_from_slice(b"\r\n");
+    }
+    body.extend_from_slice(format!("--{boundary}--\r\n").as_bytes());
+    (format!("multipart/form-data; boundary={boundary}"), body)
+}
+
+fn worker_name(app: &AppConfig) -> String {
+    format!("{}-cron", app.name)
 }
 
 /// Before deploying the trigger, verify the target actually looks like a
@@ -427,7 +580,7 @@ fn wrangler_toml(app: &AppConfig, crons: &[&CronEntry]) -> String {
         .join(", ");
     format!(
         r#"# Generated by `nextrs cron generate` from nextrs.toml — do not edit.
-name = "{name}-cron"
+name = "{name}"
 main = "worker.js"
 compatibility_date = "{COMPATIBILITY_DATE}"
 
@@ -437,7 +590,7 @@ APP_URL = "{url}"
 [triggers]
 crons = [{schedules}]
 "#,
-        name = app.name,
+        name = worker_name(app),
         url = app.url.trim_end_matches('/'),
     )
 }
@@ -588,6 +741,19 @@ schedule = "0 6 * * *"
         .unwrap();
         generate(&dir).unwrap();
         assert!(!dir.join(OUTPUT_DIR).exists());
+    }
+
+    #[test]
+    fn multipart_encodes_parts_with_boundary() {
+        let (content_type, body) = multipart(&[
+            ("metadata", None, "application/json", b"{}"),
+            ("worker.js", Some("worker.js"), "application/javascript+module", b"export default {}"),
+        ]);
+        let boundary = content_type.strip_prefix("multipart/form-data; boundary=").unwrap();
+        let body = String::from_utf8(body).unwrap();
+        assert!(body.starts_with(&format!("--{boundary}\r\nContent-Disposition: form-data; name=\"metadata\"\r\nContent-Type: application/json\r\n\r\n{{}}\r\n")));
+        assert!(body.contains("name=\"worker.js\"; filename=\"worker.js\"\r\nContent-Type: application/javascript+module\r\n\r\nexport default {}\r\n"));
+        assert!(body.ends_with(&format!("--{boundary}--\r\n")));
     }
 
     #[test]
