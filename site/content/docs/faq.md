@@ -26,4 +26,3 @@ preview. Preview deployments intentionally skip cron triggers.
 If the project is connected to a Git repository in Vercel, disable automatic
 deployments in the Vercel project settings. A future Git-integration design
 may add a committed bootstrap file, but NextRS does not generate one today.
-
