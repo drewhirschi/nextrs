@@ -43,7 +43,8 @@ Cron schedules are colocated with their protected handlers as
 
 The `[vercel]` table is optional; omitting it uses framework defaults. A root
 `vercel.json` is never read or mutated, so it cannot become a second source
-of deployment or cron configuration.
+of deployment or cron configuration. If one exists, generation warns that it
+is ignored and asks you to move its settings here and delete the legacy file.
 
 `nextrs deploy` and `nextrs cron deploy` both run `generate` first, so the
 provider files can't drift from the config.
