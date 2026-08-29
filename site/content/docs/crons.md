@@ -43,6 +43,21 @@ pub async fn get() -> Result<Json<Report>, StatusCode> {
 }
 ```
 
+To keep a protected route ready without scheduling it yet, disable the
+declaration while preserving its intended schedule:
+
+```rust
+#[nextrs::cron(schedule = "0 6 * * *", disabled = true)]
+pub async fn get() -> Result<Json<Report>, StatusCode> {
+    // ... the actual work ...
+}
+```
+
+Disabled declarations are validated but omitted from generated Vercel and
+Cloudflare schedules. Remove `disabled = true` to enable the trigger. Fresh
+scaffolds use this form for the heartbeat example and include an empty
+`CRON_SECRET` entry in `.env.example`.
+
 Schedules are five-field UTC cron expressions. Scheduled handlers are GET
 routes because both Vercel and the generated Cloudflare trigger send GET.
 
@@ -94,8 +109,9 @@ The generated `.nextrs/cloudflare/` directory is disposable — gitignore it and
 regenerate on demand. Vercel-provider crons deploy with the app itself; the
 Worker redeploys with `nextrs cron deploy` whenever schedules change.
 
-Scaffolded apps ship with a daily heartbeat already declared (a native
-Vercel cron, so it deploys with the app and needs no Cloudflare account) and
+Scaffolded apps ship with a disabled daily heartbeat starter. After setting
+`CRON_SECRET`, remove `disabled = true` to generate its native Vercel trigger;
+it needs no Cloudflare account. Use
 `app/api/cron/heartbeat/route.rs` as the gated route to copy from. The
 worked example `examples/react-todos` runs the same route every 10 minutes
 through the Cloudflare shim.

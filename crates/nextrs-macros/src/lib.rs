@@ -140,7 +140,9 @@ pub fn api(args: TokenStream, item: TokenStream) -> TokenStream {
 /// ```
 ///
 /// `schedule` is a required five-field UTC cron expression. `provider` is
-/// optional (`"vercel"`, the default, or `"cloudflare"`). The generated
+/// optional (`"vercel"`, the default, or `"cloudflare"`). Set
+/// `disabled = true` to keep the protected route while omitting its trigger.
+/// The generated
 /// [`nextrs::cron::CronAuth`] extractor rejects unauthorized requests before
 /// body-consuming extractors run, so the handler keeps the same return shapes
 /// as an ordinary `#[nextrs::api]` handler.
@@ -157,42 +159,71 @@ pub fn cron(args: TokenStream, item: TokenStream) -> TokenStream {
     };
     let mut schedule = None;
     let mut provider = None;
+    let mut disabled = None;
     for arg in args {
         let Some(name) = arg.path.get_ident().map(ToString::to_string) else {
-            return syn::Error::new_spanned(arg.path, "expected `schedule` or `provider`")
-                .into_compile_error()
-                .into();
-        };
-        let syn::Expr::Lit(syn::ExprLit {
-            lit: syn::Lit::Str(value),
-            ..
-        }) = arg.value
-        else {
             return syn::Error::new_spanned(
-                arg.value,
-                format!("`{name}` must be a string literal"),
+                arg.path,
+                "expected `schedule`, `provider`, or `disabled`",
             )
             .into_compile_error()
             .into();
         };
         match name.as_str() {
-            "schedule" if schedule.is_none() => schedule = Some(value),
-            "provider" if provider.is_none() => provider = Some(value),
             "schedule" | "provider" => {
-                return syn::Error::new_spanned(arg.path, format!("duplicate `{name}`"))
+                let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(value),
+                    ..
+                }) = arg.value
+                else {
+                    return syn::Error::new_spanned(
+                        arg.value,
+                        format!("`{name}` must be a string literal"),
+                    )
                     .into_compile_error()
                     .into();
+                };
+                let slot = if name == "schedule" {
+                    &mut schedule
+                } else {
+                    &mut provider
+                };
+                if slot.replace(value).is_some() {
+                    return syn::Error::new_spanned(arg.path, format!("duplicate `{name}`"))
+                        .into_compile_error()
+                        .into();
+                }
+            }
+            "disabled" => {
+                let syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Bool(value),
+                    ..
+                }) = arg.value
+                else {
+                    return syn::Error::new_spanned(
+                        arg.value,
+                        "`disabled` must be a boolean literal",
+                    )
+                    .into_compile_error()
+                    .into();
+                };
+                if disabled.replace(value.value).is_some() {
+                    return syn::Error::new_spanned(arg.path, format!("duplicate `{name}`"))
+                        .into_compile_error()
+                        .into();
+                }
             }
             _ => {
                 return syn::Error::new_spanned(
                     arg.path,
-                    "unknown cron option; expected `schedule` or `provider`",
+                    "unknown cron option; expected `schedule`, `provider`, or `disabled`",
                 )
                 .into_compile_error()
                 .into();
             }
         }
     }
+    let _disabled = disabled.unwrap_or(false);
     let Some(schedule) = schedule else {
         return syn::Error::new(
             proc_macro2::Span::call_site(),

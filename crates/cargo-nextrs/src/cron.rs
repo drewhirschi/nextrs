@@ -156,27 +156,39 @@ pub fn discover_crons(root: &Path) -> Result<Vec<CronEntry>, String> {
                 })?;
                 let mut schedule = None;
                 let mut provider = Provider::Vercel;
+                let mut disabled = None;
                 for arg in args {
                     let name = arg
                         .path
                         .get_ident()
                         .map(ToString::to_string)
                         .ok_or_else(|| {
-                            format!("{}: expected cron `schedule` or `provider`", file.display())
+                            format!(
+                                "{}: expected cron `schedule`, `provider`, or `disabled`",
+                                file.display()
+                            )
                         })?;
-                    let syn::Expr::Lit(syn::ExprLit {
-                        lit: syn::Lit::Str(value),
-                        ..
-                    }) = arg.value
-                    else {
-                        return Err(format!(
-                            "{}: cron `{name}` must be a string literal",
-                            file.display()
-                        ));
-                    };
                     match name.as_str() {
-                        "schedule" if schedule.is_none() => schedule = Some(value.value()),
-                        "provider" => {
+                        "schedule" | "provider" => {
+                            let syn::Expr::Lit(syn::ExprLit {
+                                lit: syn::Lit::Str(value),
+                                ..
+                            }) = arg.value
+                            else {
+                                return Err(format!(
+                                    "{}: cron `{name}` must be a string literal",
+                                    file.display()
+                                ));
+                            };
+                            if name == "schedule" {
+                                if schedule.replace(value.value()).is_some() {
+                                    return Err(format!(
+                                        "{}: duplicate cron schedule",
+                                        file.display()
+                                    ));
+                                }
+                                continue;
+                            }
                             provider = match value.value().as_str() {
                                 "vercel" => Provider::Vercel,
                                 "cloudflare" => Provider::Cloudflare,
@@ -188,8 +200,20 @@ pub fn discover_crons(root: &Path) -> Result<Vec<CronEntry>, String> {
                                 }
                             }
                         }
-                        "schedule" => {
-                            return Err(format!("{}: duplicate cron schedule", file.display()));
+                        "disabled" => {
+                            let syn::Expr::Lit(syn::ExprLit {
+                                lit: syn::Lit::Bool(value),
+                                ..
+                            }) = arg.value
+                            else {
+                                return Err(format!(
+                                    "{}: cron `disabled` must be a boolean literal",
+                                    file.display()
+                                ));
+                            };
+                            if disabled.replace(value.value).is_some() {
+                                return Err(format!("{}: duplicate cron disabled", file.display()));
+                            }
                         }
                         other => {
                             return Err(format!(
@@ -211,6 +235,9 @@ pub fn discover_crons(root: &Path) -> Result<Vec<CronEntry>, String> {
                         "{}: cron schedule `{schedule}` must have 5 fields, found {fields}",
                         file.display()
                     ));
+                }
+                if disabled == Some(true) {
+                    continue;
                 }
                 let path = route_path(&app, &file)?;
                 crons.push(CronEntry {
@@ -830,6 +857,7 @@ url = "https://demo.vercel.app/"
                 "forced",
                 r#"schedule = "0 7 * * *", provider = "cloudflare""#,
             ),
+            ("disabled", r#"schedule = "0 8 * * *", disabled = true"#),
         ] {
             let route = dir.join("app/api/cron").join(path).join("route.rs");
             fs::create_dir_all(route.parent().unwrap()).unwrap();
@@ -876,6 +904,7 @@ url = "https://demo.vercel.app/"
                 .provider(),
             Provider::Cloudflare
         );
+        assert!(!crons.iter().any(|cron| cron.path.ends_with("disabled")));
     }
 
     #[test]
@@ -1054,6 +1083,17 @@ trailingSlash = false
             discover_crons(&dir)
                 .unwrap_err()
                 .contains("must have 5 fields")
+        );
+
+        fs::write(
+            dir.join("app/api/cron/x/route.rs"),
+            "#[nextrs::cron(schedule = \"0 6 * * *\", disabled = \"yes\")]\npub async fn get() {}\n",
+        )
+        .unwrap();
+        assert!(
+            discover_crons(&dir)
+                .unwrap_err()
+                .contains("`disabled` must be a boolean literal")
         );
 
         fs::write(

@@ -176,7 +176,7 @@ fn scaffold(target: &Path, nextrs_path: Option<&Path>, no_install: bool) -> io::
     println!("  /slow      React page + Rust prefetch + loading.tsx");
     println!("  /api/ping  Rust API route");
     println!("  /items     paginated list with its state in the URL (the house style)");
-    println!("  /api/cron/heartbeat  daily cron route (declared in nextrs.toml)");
+    println!("  /api/cron/heartbeat  disabled daily cron starter (enable in route.rs)");
 
     Ok(())
 }
@@ -819,7 +819,8 @@ while `src/main.rs` and `api/index.rs` are process adapters.
 
 Schedules live on `#[nextrs::cron(schedule = "...")]` route handlers, never
 in generated provider configuration by hand. The macro adds the `CRON_SECRET` bearer check;
-`app/api/cron/heartbeat/route.rs` is the worked example. Do the work
+`app/api/cron/heartbeat/route.rs` is a disabled worked example; remove
+`disabled = true` after configuring the secret. Do the work
 foreground, return 200 only on completion, and write it idempotently.
 `nextrs deploy` ships the triggers.
 Guide: <https://nextrs-docs.vercel.app/docs/crons>
@@ -873,8 +874,8 @@ export: <https://nextrs-docs.vercel.app/docs/telemetry>
 
 ## Deploys are prebuilt
 
-Git auto-builds are OFF (the generated Vercel config sets `git.deploymentEnabled: false`);
-pushing deploys nothing. The deploy path is:
+Automatic Git deployments are not supported; disable them in the Vercel
+project settings. The explicit deploy path is:
 
 ```bash
 nextrs deploy             # production (regenerates config, deploys, ships crons)
@@ -1232,7 +1233,8 @@ url = "https://{crate_name}.vercel.app"
 }
 
 fn cron_heartbeat_route_rs() -> String {
-    r#"//! Cron demo. Its schedule is declared on `#[nextrs::cron]`; the trigger — a native
+    r#"//! Disabled cron starter. Remove `disabled = true` after setting CRON_SECRET;
+//! the trigger — a native
 //! Vercel cron or a generated Cloudflare Worker — fetches this route with
 //! `Authorization: Bearer $CRON_SECRET`. `#[nextrs::cron]` is `#[nextrs::api]`
 //! plus that check (fail-closed: no CRON_SECRET, no access).
@@ -1251,7 +1253,8 @@ pub struct Heartbeat {
     pub ok: bool,
 }
 
-#[nextrs::cron(schedule = "0 6 * * *")]
+// Remove `disabled = true` after setting CRON_SECRET to enable this daily Vercel cron.
+#[nextrs::cron(schedule = "0 6 * * *", disabled = true)]
 pub async fn get() -> Result<Json<Heartbeat>, StatusCode> {
     // ... the actual work ...
     Ok(Json(Heartbeat { ok: true }))
@@ -2213,6 +2216,13 @@ mod tests {
         assert!(names.contains(&"app/slow/loading.tsx"));
         assert!(names.contains(&"app/slow/prefetch.rs"));
         assert!(names.contains(&"app/api/ping/route.rs"));
+        let heartbeat = files
+            .iter()
+            .find(|(name, _)| *name == "app/api/cron/heartbeat/route.rs")
+            .unwrap()
+            .1
+            .as_str();
+        assert!(heartbeat.contains("disabled = true"));
         assert!(names.contains(&".nextrs/client/orval.config.ts"));
         assert!(names.contains(&".nextrs/client/tsconfig.json"));
         assert!(names.contains(&".nextrs/client/scripts/normalize-esm.mjs"));
