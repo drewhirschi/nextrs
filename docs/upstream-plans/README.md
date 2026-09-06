@@ -45,3 +45,4 @@ user docs.
 - [Migration guide asserts obsolete conventions as "verified"](migration-guide-stale-verified-claims.md)
 - [The external client config lives inside a directory the framework deletes](external-client-generation-contract.md)
 - [Consolidate published CLI packages after cargo-nextrs 0.3](package-consolidation-after-0.3.md)
+- [Route and subtree server bundles](server-bundles.md)

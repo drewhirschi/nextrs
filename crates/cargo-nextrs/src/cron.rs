@@ -33,6 +33,12 @@ const COMPATIBILITY_DATE: &str = "2026-08-01";
 #[serde(deny_unknown_fields)]
 pub struct NextrsConfig {
     pub app: AppConfig,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub bundles: std::collections::BTreeMap<String, nextrs::server_bundles::BundleSettings>,
+    #[serde(default)]
+    #[allow(dead_code)]
+    pub deployment: nextrs::server_bundles::DeploymentSettings,
     /// Optional Vercel overrides. Framework defaults are used when absent.
     pub vercel: Option<VercelConfig>,
 }
@@ -347,7 +353,17 @@ pub fn generate(root: &Path) -> Result<String, String> {
         .map_err(|error| format!("failed to create {}/.nextrs: {error}", root.display()))?;
     let settings = config.vercel.as_ref().cloned().unwrap_or_default();
     let vercel_json = root.join(VERCEL_CONFIG_FILE);
-    let json = render_vercel_json(&settings, &vercel)?;
+    let mut json = render_vercel_json(&settings, &vercel)?;
+    let plan = crate::bundles::plan(root)?;
+    if plan.enabled {
+        json["buildCommand"] = json!(
+            "echo 'Server bundles require nextrs deploy or nextrs bundles build --vercel followed by vercel deploy --prebuilt' >&2; exit 1"
+        );
+    }
+    write(
+        &root.join(".nextrs/bundle-manifest.json"),
+        &serde_json::to_string_pretty(&plan).unwrap(),
+    )?;
     write(
         &vercel_json,
         &format!("{}\n", serde_json::to_string_pretty(&json).unwrap()),

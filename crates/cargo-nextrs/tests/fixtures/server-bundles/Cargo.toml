@@ -1,0 +1,23 @@
+[package]
+name = "server-bundles-fixture"
+version = "0.0.0"
+edition = "2024"
+publish = false
+default-run = "server-bundles-fixture"
+
+[[bin]]
+name = "fixture-vercel"
+path = "api/index.rs"
+
+[build-dependencies]
+nextrs = { path = "../../../../nextrs", features = ["build"] }
+
+[dependencies]
+nextrs = { path = "../../../../nextrs", features = ["vercel"] }
+axum = "0.8"
+http = "1"
+tokio = { version = "1", features = ["full"] }
+utoipa = "5"
+async-stream = "0.3"
+vercel_runtime = { version = "2", features = ["axum"] }
+tower = "0.5"

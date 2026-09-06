@@ -73,3 +73,10 @@ file is left untouched.
 
 `nextrs deploy` and `nextrs cron deploy` both run `generate` first, so the
 provider files can't drift from the config.
+
+## Server bundle settings
+
+Colocated `bundle.toml` files assign routes and subtrees. `[bundles.<name>]` in
+`nextrs.toml` supplies the named bundle's Cargo `features` and private runtime
+`assets`; `[deployment].features` supplies common features. See
+[Server Bundles](/docs/server-bundles) for the complete build and deploy flow.

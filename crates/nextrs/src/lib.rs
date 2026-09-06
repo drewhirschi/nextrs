@@ -58,3 +58,9 @@ pub mod docs;
 
 #[cfg(feature = "tsx")]
 pub mod bundle;
+
+#[cfg(feature = "server-bundles")]
+pub mod server_bundles;
+
+/// Framework version compiled into this application.
+pub const VERSION: &str = env!("CARGO_PKG_VERSION");

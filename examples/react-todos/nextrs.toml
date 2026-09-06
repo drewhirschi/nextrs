@@ -13,3 +13,8 @@ regions = ["pdx1"]
 # build_command = "npm run client:prepare && cargo build --release --bin index && npm run client:build"
 # git_deploys = false
 # [vercel.extra]                    # non-framework Vercel keys only
+
+# Only the export function enables the CSV dependency.
+[bundles.exports]
+features = ["exports"]
+assets = ["resources/exports"]
