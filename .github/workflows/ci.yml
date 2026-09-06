@@ -91,6 +91,11 @@ jobs:
       - name: Build apps (bundling ON)
         run: cargo build -p site -p react-todos
 
+      - name: Separate server bundle integration smoke
+        run: |
+          python3 scripts/test-server-bundles.py
+          cargo build -p site -p react-todos
+
       - name: Install Playwright browser
         working-directory: e2e
         run: npx playwright install --with-deps chromium
@@ -103,3 +108,71 @@ jobs:
       # them (docs/upstream-plans/hover-preload-route.md).
       - name: Hover preload regression
         run: node e2e/hover.mjs
+
+  deploy-docs:
+    name: Deploy and verify docs from this commit
+    needs: test-and-smoke
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: docs-production
+    concurrency:
+      group: docs-production
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check this is still the main branch head
+        id: source
+        run: |
+          git fetch origin main
+          if [ "$(git rev-parse FETCH_HEAD)" = "$GITHUB_SHA" ]; then
+            echo "current=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Skipping docs deployment for a superseded commit"
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install prebuilt deployment tools
+        if: steps.source.outputs.current == 'true'
+        run: |
+          npm install --global vercel
+          cargo install cargo-zigbuild --locked
+          pip install ziglang==0.13.0
+      - name: Verify credentials and link docs project
+        if: steps.source.outputs.current == 'true'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+          VERCEL_PROJECT_ID: ${{ secrets.VERCEL_DOCS_PROJECT_ID }}
+        run: |
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          required = {'VERCEL_TOKEN': 'VERCEL_TOKEN', 'VERCEL_ORG_ID': 'VERCEL_ORG_ID', 'VERCEL_PROJECT_ID': 'VERCEL_DOCS_PROJECT_ID'}
+          missing = [secret for key, secret in required.items() if not os.environ.get(key)]
+          if missing:
+              raise SystemExit('Configure docs-production secrets: ' + ', '.join(missing))
+          Path('site/.vercel').mkdir(parents=True, exist_ok=True)
+          Path('site/.vercel/project.json').write_text(json.dumps({
+              'orgId': os.environ['VERCEL_ORG_ID'],
+              'projectId': os.environ['VERCEL_PROJECT_ID'],
+              'settings': {'rootDirectory': 'site'},
+          }))
+          PY
+      - name: Build and deploy the checked source
+        if: steps.source.outputs.current == 'true'
+        env:
+          VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+          NEXTRS_BUILD_REVISION: ${{ github.sha }}
+        run: scripts/deploy-prebuilt.sh site
+      - name: Verify live docs version and revision
+        if: steps.source.outputs.current == 'true'
+        env:
+          NEXTRS_BUILD_REVISION: ${{ github.sha }}
+          NEXTRS_DOCS_URL: ${{ vars.NEXTRS_DOCS_URL || 'https://nextrs.hirschi.dev' }}
+        run: node scripts/verify-docs-deploy.mjs

@@ -5,12 +5,14 @@ use askama::Template;
 pub struct RootLayout<'a> {
     pub children: &'a str,
     pub style_url: &'static str,
+    pub framework_version: &'static str,
 }
 
 pub fn render(children: &str) -> String {
     RootLayout {
         children,
         style_url: env!("NEXTRS_STYLE_URL"),
+        framework_version: nextrs::VERSION,
     }
     .render()
     .unwrap()

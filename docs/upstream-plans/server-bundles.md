@@ -2,7 +2,7 @@
 
 - **Reported-in:** framework design discussion
 - **Date:** 2026-09-05
-- **Status:** implemented; validation recorded in PR
+- **Status:** fixed in d9ea5f2; docs deployment follow-up in the same PR
 
 ## Problem
 
