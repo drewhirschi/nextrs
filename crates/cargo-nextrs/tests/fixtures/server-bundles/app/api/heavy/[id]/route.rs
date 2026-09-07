@@ -5,7 +5,10 @@ use axum::{
 };
 use std::collections::HashMap;
 
+static HANDLER_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
 pub async fn post(
+    axum::Extension((_, chain)): axum::Extension<(bool, Vec<&'static str>)>,
     Path(id): Path<String>,
     Query(query): Query<HashMap<String, String>>,
     headers: HeaderMap,
@@ -15,6 +18,8 @@ pub async fn post(
         http::StatusCode::CREATED,
         [
             ("x-id", id),
+            ("x-middleware-chain", chain.join(",")),
+            ("x-handler-calls", (HANDLER_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1).to_string()),
             ("x-query", query.get("q").cloned().unwrap_or_default()),
             (
                 "x-cookie",

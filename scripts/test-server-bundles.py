@@ -120,6 +120,15 @@ FIXTURE = ROOT / 'crates/cargo-nextrs/tests/fixtures/server-bundles'
 if not SKIP_BUILD:
     run('cargo', 'run', '--locked', '-p', 'cargo-nextrs', '--bin', 'nextrs', '--',
         'bundles', 'build', *BUILD_FLAGS, *(['--bin', 'fixture-vercel'] if VERCEL else []), '--root', str(FIXTURE))
+# Keep an unsplit executable to compare identical requests against split routers.
+import tempfile
+import shutil
+monolith_dir = tempfile.TemporaryDirectory(prefix='nextrs-middleware-')
+build = subprocess.check_output(['cargo', 'build', '--locked', '-p', 'server-bundles-fixture', '--bin', 'server-bundles-fixture', '--message-format=json'], cwd=ROOT, text=True)
+executable = next(event['executable'] for line in build.splitlines()
+                  if (event := json.loads(line)).get('executable'))
+monolith = Path(monolith_dir.name) / 'executable'
+shutil.copy2(executable, monolith)
 fixture_output = output_for(FIXTURE)
 rules = json.loads((fixture_output / 'routing.json').read_text())
 backends = {}
@@ -157,9 +166,9 @@ class Proxy(BaseHTTPRequestHandler):
 proxy = ThreadingHTTPServer(('127.0.0.1', 0), Proxy)
 threading.Thread(target=proxy.serve_forever, daemon=True).start()
 try:
-    for name in ('default', 'heavy'):
+    for name in ('default', 'heavy', 'unsplit'):
         port = free_port(); backends[name] = port
-        child = subprocess.Popen([str(directory_for(fixture_output, name) / 'executable')], env={**os.environ, 'PORT': str(port), 'VERCEL_DEV_PORT': str(port)})
+        child = subprocess.Popen([str(monolith if name == 'unsplit' else directory_for(fixture_output, name) / 'executable')], env={**os.environ, 'PORT': str(port), 'VERCEL_DEV_PORT': str(port)})
         children.append(child)
         for _ in range(100):
             try:
@@ -169,6 +178,17 @@ try:
     base = f'http://127.0.0.1:{proxy.server_port}'
     assert request(base, '/api/heavy/42')[0] == 401
     auth = {'Authorization': 'Bearer test', 'Cookie': 'session=abc'}
+    for target in (f'http://127.0.0.1:{backends["unsplit"]}', f'http://127.0.0.1:{backends["heavy"]}', base):
+        path = '/api/heavy/42?q=a%20b'
+        status, before, _ = request(target, path, 'POST', b'baseline', auth)
+        assert status == 201 and before['x-middleware-chain'] == 'root,admin'
+        for credentials, expected in (({}, 401), ({'Authorization': 'Bearer invalid'}, 401), ({'Authorization': 'Bearer member'}, 403)):
+            status, _, _ = request(target, path, 'POST', b'must not execute', credentials)
+            assert status == expected, (target, status, expected)
+        status, after, _ = request(target, path, 'POST', b'after', auth)
+        assert status == 201 and after['x-middleware-chain'] == 'root,admin'
+        assert int(after['x-handler-calls']) == int(before['x-handler-calls']) + 1, 'rejected request reached handler'
+    print('Middleware regression passed: unsplit, direct split, generated routing; root/admin order, user context, 401/403 and handler short-circuiting.')
     status, headers, body = request(base, '/api/heavy/42?q=a%20b', 'POST', b'\x00binary\xff', auth)
     assert status == 201 and body == b'\x00binary\xff'
     assert headers['x-id'] == '42' and headers['x-query'] == 'a b'
@@ -188,4 +208,5 @@ finally:
     proxy.shutdown(); proxy.server_close()
     for child in children: child.terminate()
     for child in children: child.wait(timeout=10)
+    monolith_dir.cleanup()
 print('Generated-routing smoke passed: authorization, dynamic paths, query, binary body, cookies, status, response headers and streaming.')

@@ -93,3 +93,19 @@ failed in `site/build.rs:31` during `bundle_pages` with OS error 2 (missing file
 The log does not identify the missing file. This is the stock cloud-build path,
 not the successful prebuilt Todo preview above. GitHub CI's workspace tests and
 typechecks passed at inspection time; later steps were still running.
+
+## Middleware-order follow-up
+
+The fixture now authenticates in root middleware, inserts user/chain context,
+and checks the admin role in nested heavy middleware. The same requests run
+against an unsplit native executable, the split function directly, and the
+split generated routing table. Both native and optimized local Vercel adapter
+runs pass: root-before-admin order, context propagation, missing/invalid token
+401, non-admin 403, and a handler counter proving rejected requests do not execute
+handler code. Existing streaming and forwarding checks continue to pass. These
+new fixture assertions have not been exercised on live Vercel infrastructure.
+
+The frontend missing-input diagnostic is fixed in b072f01; all 37 bundler tests
+pass and both apps rebuilt with bundling enabled. See
+[the root-cause report](docs-missing-generated-client.md). The cloud deployment
+configuration is still open; a diagnostic improvement is not a deployment fix.

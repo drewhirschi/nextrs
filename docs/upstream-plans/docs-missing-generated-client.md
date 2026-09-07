@@ -2,7 +2,7 @@
 
 - **Reported-in:** nextrs docs PR preview
 - **Date:** 2026-09-07
-- **Status:** diagnostic fixed locally; deployment configuration remains open
+- **Status:** diagnostic fixed in b072f01; deployment configuration remains open
 
 ## Problem
 
