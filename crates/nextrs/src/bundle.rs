@@ -92,6 +92,21 @@ pub struct BundleManifest {
     pub stylesheet: Option<String>,
 }
 
+fn resolve_bundle_directory(root: &Path, directory: &str, role: &str) -> std::io::Result<PathBuf> {
+    let path = root.join(directory);
+    path.canonicalize().map_err(|error| {
+        let hint = if role == "generated client" {
+            "Prepare the application's generated client before frontend bundling (run npm run client:prepare at the application root)"
+        } else {
+            "Check the directory configured in BundleConfig"
+        };
+        std::io::Error::new(error.kind(), format!(
+            "cannot resolve {role} directory {}: {error}. {hint}",
+            path.display()
+        ))
+    })
+}
+
 /// Discover `page.tsx` routes, bundle them, and mirror the output into
 /// `<public_dist>`. No-op when the app has no `.tsx` pages.
 pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<BundleManifest> {
@@ -102,7 +117,7 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<BundleManifest> {
     let manifest_dir = PathBuf::from(
         std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR must be set in build.rs"),
     );
-    let abs_app = manifest_dir.join(cfg.app_dir).canonicalize()?;
+    let abs_app = resolve_bundle_directory(&manifest_dir, cfg.app_dir, "app")?;
     let routes = discover_routes(&abs_app);
     let dist = manifest_dir.join(cfg.public_dist);
 
@@ -113,10 +128,10 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<BundleManifest> {
         return Ok(manifest);
     }
 
-    let client_dir = manifest_dir.join(cfg.client_dir).canonicalize()?;
+    let client_dir = resolve_bundle_directory(&manifest_dir, cfg.client_dir, "generated client")?;
     let legacy_client_layout = cfg.project_dir.is_none();
     let project_dir = match cfg.project_dir {
-        Some(dir) => manifest_dir.join(dir).canonicalize()?,
+        Some(dir) => resolve_bundle_directory(&manifest_dir, dir, "project")?,
         None => client_dir.clone(),
     };
 
@@ -1640,6 +1655,17 @@ fn write_if_changed(path: &Path, content: &[u8]) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn missing_bundle_directory_reports_role_path_and_recovery() {
+        let root = tempfile::tempdir().unwrap();
+        let error = super::resolve_bundle_directory(root.path(), ".nextrs/client", "generated client").unwrap_err();
+        assert_eq!(error.kind(), std::io::ErrorKind::NotFound);
+        let message = error.to_string();
+        assert!(message.contains("generated client"));
+        assert!(message.contains(root.path().join(".nextrs/client").to_str().unwrap()));
+        assert!(message.contains("npm run client:prepare"));
+    }
 
     #[test]
     fn page_slug_shapes() {
