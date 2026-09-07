@@ -12,6 +12,7 @@ import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 VERCEL = '--vercel' in sys.argv
+SKIP_BUILD = '--skip-build' in sys.argv
 BUILD_FLAGS = ['--vercel'] if VERCEL else ['--dev']
 APP = ROOT / 'examples/react-todos'
 
@@ -39,8 +40,9 @@ def request(base, path, method='GET', data=None, headers=None):
     except urllib.error.HTTPError as error:
         return error.code, error.headers, error.read()
 
-run('cargo', 'run', '--locked', '-p', 'cargo-nextrs', '--bin', 'nextrs', '--',
-    'bundles', 'build', *BUILD_FLAGS, '--root', str(APP))
+if not SKIP_BUILD:
+    run('cargo', 'run', '--locked', '-p', 'cargo-nextrs', '--bin', 'nextrs', '--',
+        'bundles', 'build', *BUILD_FLAGS, '--root', str(APP))
 output = output_for(APP)
 plan = json.loads((output / 'bundle-manifest.json').read_text())
 assert plan['bundles']['exports']['routes'] == ['/api/exports']
@@ -50,6 +52,24 @@ assert not (directory_for(output, 'default') / 'resources').exists()
 # Same normal dependency graph selected by the default build: csv must be absent.
 tree = subprocess.check_output(['cargo', 'tree', '-p', 'react-todos', '--no-default-features', '--edges', 'normal', '--prefix', 'none'], cwd=ROOT, text=True)
 assert not any(line.startswith('csv ') for line in tree.splitlines())
+# Check the positive dependency selection too, so a broken feature flag cannot pass.
+export_tree = subprocess.check_output(['cargo', 'tree', '-p', 'react-todos', '--no-default-features', '--features', 'exports', '--edges', 'normal', '--prefix', 'none'], cwd=ROOT, text=True)
+assert any(line.startswith('csv ') for line in export_tree.splitlines())
+assert any(line.startswith('csv-core ') for line in export_tree.splitlines())
+assert not any(line.startswith('csv-core ') for line in tree.splitlines())
+for name in ('default', 'exports'):
+    directory = directory_for(output, name)
+    expected = {'executable'} | ({'.vc-config.json'} if VERCEL else set())
+    if name == 'exports':
+        expected.add('resources/exports/README.txt')
+        assert (directory / 'resources/exports/README.txt').read_bytes() == (APP / 'resources/exports/README.txt').read_bytes()
+    actual = {str(p.relative_to(directory)) for p in directory.rglob('*') if p.is_file()}
+    assert actual == expected, (name, actual, expected)
+    # Positive and negative control for this endpoint's distinctive compiled payload.
+    assert (b'Try a separate server bundle' in (directory / 'executable').read_bytes()) == (name == 'exports')
+    print(f'{name}: {(directory / "executable").stat().st_size} executable bytes; files={sorted(actual)}')
+if VERCEL:
+    assert not (output / 'static/resources').exists()
 processes = []
 try:
     bases = {}
@@ -97,8 +117,9 @@ import re
 import threading
 from urllib.parse import urlsplit
 FIXTURE = ROOT / 'crates/cargo-nextrs/tests/fixtures/server-bundles'
-run('cargo', 'run', '--locked', '-p', 'cargo-nextrs', '--bin', 'nextrs', '--',
-    'bundles', 'build', *BUILD_FLAGS, *(['--bin', 'fixture-vercel'] if VERCEL else []), '--root', str(FIXTURE))
+if not SKIP_BUILD:
+    run('cargo', 'run', '--locked', '-p', 'cargo-nextrs', '--bin', 'nextrs', '--',
+        'bundles', 'build', *BUILD_FLAGS, *(['--bin', 'fixture-vercel'] if VERCEL else []), '--root', str(FIXTURE))
 fixture_output = output_for(FIXTURE)
 rules = json.loads((fixture_output / 'routing.json').read_text())
 backends = {}
