@@ -70,4 +70,36 @@ mod tests {
 
         assert!(html.contains(r#"<script type="speculationrules">"#));
     }
+    #[tokio::test]
+    async fn docs_version_labels_and_receipt_use_the_linked_framework() {
+        let response = app()
+            .oneshot(Request::builder().uri("/").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        let html = String::from_utf8(
+            to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(html.contains(&format!("data-framework-version=\"{}\"", nextrs::VERSION)));
+        assert!(html.contains(&format!("v{} · beta", nextrs::VERSION)));
+        assert!(!html.contains("v0.4"));
+        let response = app()
+            .oneshot(
+                Request::builder()
+                    .uri("/__nx/version")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.headers()["cache-control"], "no-store");
+        let receipt: serde_json::Value =
+            serde_json::from_slice(&to_bytes(response.into_body(), usize::MAX).await.unwrap())
+                .unwrap();
+        assert_eq!(receipt["framework"], nextrs::VERSION);
+        assert_eq!(receipt["revision"], env!("NEXTRS_BUILD_REVISION"));
+    }
 }

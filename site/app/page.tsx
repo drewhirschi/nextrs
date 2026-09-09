@@ -5,6 +5,11 @@ import * as React from "react";
 import { NextrsMark } from "../components/NextrsMark";
 import { useGetColdstartStats, type AppStats } from "@site/client/react-query";
 
+// The root Rust layout stamps the version actually linked into this build.
+const FRAMEWORK_VERSION = typeof document === "undefined"
+  ? "dev"
+  : document.documentElement.dataset.frameworkVersion ?? "dev";
+
 const PREFETCH_RS = `// app/prefetch.rs — runs on the server, streaming
 // data into the React Query cache before mount.
 pub async fn prefetch(req: Request) -> QuerySeed {
@@ -528,7 +533,7 @@ export default function Home() {
       <section className="section">
         <div className="shell">
           <div className="cta-band">
-            <span className="eyebrow">Beta · v0.4</span>
+            <span className="eyebrow">Beta · v{FRAMEWORK_VERSION}</span>
             <h2>Build the next thing in Rust.</h2>
             <p>
               Scaffold an app, write React, deploy a single function. The docs walk

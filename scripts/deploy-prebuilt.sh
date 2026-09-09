@@ -1,86 +1,14 @@
 #!/bin/bash
-# Prebuilt Vercel deploy: build on THIS machine, upload only artifacts.
-# Skips Vercel's build infra entirely — no build queue, no 6-minute cloud
-# compile, no per-account build-slot contention. Deploys in seconds.
-#
-#   scripts/deploy-prebuilt.sh site               # deploy the docs site
-#   scripts/deploy-prebuilt.sh examples/react-todos
-#
-# Requirements (one-time):
-#   - vercel CLI, logged in, project linked (<app>/.vercel/project.json)
-#   - cargo-zigbuild (cargo install cargo-zigbuild)
-#   - zig (any of: system zig, mise, or `pip install ziglang`)
-#
-# Docs: /docs/deploy-prebuilt on the docs site (site/content/docs/deploy-prebuilt.md).
+# Build with the framework/CLI at this checkout, then upload prebuilt artifacts.
 set -euo pipefail
-
 APP="${1:?usage: deploy-prebuilt.sh <app-dir> [--preview]}"
 MODE="${2:---prod}"
-[ "$MODE" = "--preview" ] && PROD_FLAGS=() || PROD_FLAGS=(--prod)
+case "$MODE" in
+  --preview) FLAGS=(--preview) ;;
+  --prod) FLAGS=() ;;
+  *) echo "unknown deployment mode: $MODE" >&2; exit 1 ;;
+esac
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP_CONFIG="$ROOT/$APP/.nextrs/vercel.json"
-
-cargo run --quiet -p cargo-nextrs --bin nextrs -- generate --root "$ROOT/$APP"
-
-# Where to run `vercel build` depends on the project's rootDirectory setting
-# (both learned the hard way — the wrong dir silently falls back to
-# static-only output, no function, nothing to deploy):
-#   - rootDirectory SET (e.g. nextrs-docs → "site"): build from the REPO
-#     root; the CLI descends into the root directory itself.
-#   - rootDirectory UNSET (e.g. nextrs-react-todos): the app dir IS the
-#     project; build from there.
-LINK="$ROOT/$APP/.vercel/project.json"
-[ -f "$LINK" ] || { echo "ERROR: $APP is not linked (run vercel link in it)" >&2; exit 1; }
-if python3 -c "import json,sys; sys.exit(0 if json.load(open('$LINK')).get('settings',{}).get('rootDirectory') else 1)"; then
-  mkdir -p "$ROOT/.vercel"
-  cp "$LINK" "$ROOT/.vercel/project.json"
-  cd "$ROOT"
-else
-  cd "$ROOT/$APP"
-  # Workspace members: cargo's default target dir lives at the WORKSPACE
-  # root, which is outside this upload root — the function's filePathMap
-  # would point at ../../target and the binary would silently not upload
-  # (deployment errors with no message). Keep the build inside the app.
-  export CARGO_TARGET_DIR="$PWD/target-vercel"
-fi
-
-echo "==> vercel pull (project settings + env)"
-vercel pull --yes --environment=production > /dev/null
-
-echo "==> vercel build ${PROD_FLAGS[*]:-(preview)} — local compile, incl. the Rust function"
-vercel build --local-config "$APP_CONFIG" "${PROD_FLAGS[@]}"
-
-# Refuse to ship a function that silently failed to build (the classic
-# cargo-zigbuild-missing failure mode: everything green, no binary).
-if ! find .vercel/output/functions -name '*.func' -type d 2>/dev/null | grep -q .; then
-  echo "ERROR: no function in .vercel/output — is cargo-zigbuild installed and zig reachable?" >&2
-  exit 1
-fi
-
-# vercel-rust records the compiled executable in `filePathMap`, usually as a
-# path under target/. That directory is deliberately excluded from uploads, so
-# make every function self-contained before handing the Build Output to Vercel.
-python3 - <<'PY'
-import json
-import shutil
-from pathlib import Path
-
-for config_path in Path(".vercel/output/functions").glob("**/*.func/.vc-config.json"):
-    config = json.loads(config_path.read_text())
-    source = config.get("filePathMap", {}).get(config.get("handler", "executable"))
-    if not source:
-        continue
-    source_path = Path(source)
-    if not source_path.is_file():
-        raise SystemExit(f"ERROR: function executable does not exist: {source_path}")
-    bundled_name = config.get("handler", "executable")
-    destination = config_path.parent / bundled_name
-    shutil.copy2(source_path, destination)
-    destination.chmod(destination.stat().st_mode | 0o111)
-    config.pop("filePathMap", None)
-    config_path.write_text(json.dumps(config, indent=2) + "\n")
-    print(f"==> bundled {source_path} as {destination}")
-PY
-
-echo "==> vercel deploy --prebuilt ${PROD_FLAGS[*]:-(preview)}"
-vercel deploy --prebuilt "${PROD_FLAGS[@]}"
+export NEXTRS_BUILD_REVISION="${NEXTRS_BUILD_REVISION:-$(git -C "$ROOT" rev-parse HEAD)}"
+cd "$ROOT"
+cargo run --locked --quiet -p cargo-nextrs --bin nextrs -- deploy --root "$ROOT/$APP" "${FLAGS[@]}"

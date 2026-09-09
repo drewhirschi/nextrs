@@ -1,0 +1,5 @@
+[app]
+name = "server-bundles-fixture"
+url = "https://example.invalid"
+[vercel]
+regions = ["pdx1"]

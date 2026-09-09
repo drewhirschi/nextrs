@@ -27,7 +27,8 @@ vercel = [
 # markdown content dir. Only depend on this in `[build-dependencies]`, not in
 # `[dependencies]` — it pulls in std::fs APIs and the markdown renderer, which
 # don't belong in the runtime tree.
-build = ["dep:pulldown-cmark", "dep:syntect", "dep:toml", "dep:two-face"]
+server-bundles = ["dep:toml"]
+build = ["server-bundles", "dep:pulldown-cmark", "dep:syntect", "dep:toml", "dep:two-face"]
 # Enables `nextrs::bundle`: build-time bundling of page.tsx entries via
 # rolldown (all-Rust, the Vite 8 engine). Heavy dependency tree — only enable
 # in [build-dependencies] of apps that actually use .tsx pages.

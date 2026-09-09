@@ -6,6 +6,7 @@ use std::process::{Command, ExitCode};
 
 use serde_json::Value;
 
+mod bundles;
 mod cron;
 mod deploy;
 
@@ -29,6 +30,18 @@ pub fn main_with_args(command_name: &str, args: impl IntoIterator<Item = OsStrin
 pub fn run_with_args(args: impl IntoIterator<Item = OsString>) -> Result<(), String> {
     let command = CommandLine::parse(args)?;
     match command {
+        CommandLine::Bundles {
+            root,
+            build,
+            options,
+        } => {
+            let root = cron::resolve_root(root)?;
+            if build {
+                bundles::build(&root, &options, None).map(|_| ())
+            } else {
+                bundles::explain(&root)
+            }
+        }
         CommandLine::Help => {
             print_help();
             Ok(())
@@ -45,7 +58,11 @@ pub fn run_with_args(args: impl IntoIterator<Item = OsString>) -> Result<(), Str
             eprintln!("nextrs: generated {summary}");
             Ok(())
         }
-        CommandLine::Deploy { root, preview, skip_cron } => {
+        CommandLine::Deploy {
+            root,
+            preview,
+            skip_cron,
+        } => {
             let root = cron::resolve_root(root)?;
             deploy::deploy(&root, &deploy::DeployOptions { preview, skip_cron })
         }
@@ -58,14 +75,29 @@ pub fn run_with_args(args: impl IntoIterator<Item = OsString>) -> Result<(), Str
 
 #[derive(Debug, PartialEq, Eq)]
 enum CommandLine {
+    Bundles {
+        root: Option<PathBuf>,
+        build: bool,
+        options: bundles::BuildOptions,
+    },
     Help,
     New(Vec<OsString>),
     Dev(Vec<OsString>),
     ClientGenerate(GenerateOptions),
-    Generate { root: Option<PathBuf> },
-    Deploy { root: Option<PathBuf>, preview: bool, skip_cron: bool },
-    CronGenerate { root: Option<PathBuf> },
-    CronDeploy { root: Option<PathBuf> },
+    Generate {
+        root: Option<PathBuf>,
+    },
+    Deploy {
+        root: Option<PathBuf>,
+        preview: bool,
+        skip_cron: bool,
+    },
+    CronGenerate {
+        root: Option<PathBuf>,
+    },
+    CronDeploy {
+        root: Option<PathBuf>,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -94,6 +126,44 @@ impl CommandLine {
         if first == "dev" {
             return Ok(Self::Dev(args.collect()));
         }
+        if first == "bundles" {
+            let action = args
+                .next()
+                .ok_or("expected `bundles plan` or `bundles build`")?;
+            let build = match action.to_str() {
+                Some("plan") => false,
+                Some("build") => true,
+                _ => return Err("expected `bundles plan` or `bundles build`".into()),
+            };
+            let mut root = None;
+            let mut options = bundles::BuildOptions::default();
+            while let Some(arg) = args.next() {
+                match arg.to_str() {
+                    Some("--root") => root = Some(required_path(&mut args, "--root")?),
+                    Some("--bin") if build => {
+                        options.bin = Some(
+                            args.next()
+                                .and_then(|s| s.into_string().ok())
+                                .ok_or("--bin requires a binary name")?,
+                        )
+                    }
+                    Some("--vercel") if build => options.vercel = true,
+                    Some("--dev") if build => options.dev = true,
+                    Some("-h" | "--help") => return Ok(Self::Help),
+                    _ => {
+                        return Err(format!(
+                            "unexpected bundles argument {}",
+                            arg.to_string_lossy()
+                        ));
+                    }
+                }
+            }
+            return Ok(Self::Bundles {
+                root,
+                build,
+                options,
+            });
+        }
         if first == "generate" {
             let mut root = None;
             while let Some(arg) = args.next() {
@@ -116,7 +186,11 @@ impl CommandLine {
                     _ => return Err(format!("unexpected argument `{}`", arg.to_string_lossy())),
                 }
             }
-            return Ok(Self::Deploy { root, preview, skip_cron });
+            return Ok(Self::Deploy {
+                root,
+                preview,
+                skip_cron,
+            });
         }
         if first == "cron" {
             let Some(action) = args.next() else {
@@ -680,7 +754,7 @@ fn io_error(error: std::io::Error) -> String {
 
 fn print_help() {
     println!(
-        "nextrs\n\nUSAGE:\n    nextrs new <PATH> [OPTIONS]\n    nextrs dev [--bin <NAME>] [-- <APP_ARGS>]\n    nextrs client generate [OPTIONS]\n    nextrs generate [--root <PATH>]\n    nextrs deploy [--root <PATH>] [--preview] [--skip-cron]\n    nextrs cron generate [--root <PATH>]\n    nextrs cron deploy [--root <PATH>]\n\nRun the same commands as `cargo nextrs ...` or `nextrs ...`.\n\nCLIENT OPTIONS:\n    --root <PATH>        nextrs application root (default: current directory)\n    --client-dir <PATH>  generated package relative to the app root (default: .nextrs/client)\n    --config <PATH>      external-client config; defaults to .nextrs/client/nextrs.client.json when present\n    -h, --help           Print help\n\nCONFIG:\n    nextrs.toml is the app config source. `generate` writes managed .nextrs/vercel.json from\n    [vercel], discovers #[nextrs::cron] routes, and writes provider plumbing.\n\nDEPLOY:\n    `deploy` runs generate, a local prebuilt Vercel deployment, then deploys\n    explicit Cloudflare cron triggers. --preview and --skip-cron skip triggers.\n\nCRON:\n    Declare GET schedules with #[nextrs::cron(schedule = \"...\")]. Vercel is\n    the default provider; use provider = \"cloudflare\" explicitly when wanted.\n    `cron generate` aliases `generate`; `cron deploy` ships Cloudflare Workers\n    using CRON_SECRET and either API credentials or wrangler."
+        "nextrs\n\nUSAGE:\n    nextrs new <PATH> [OPTIONS]\n    nextrs dev [--bin <NAME>] [-- <APP_ARGS>]\n    nextrs client generate [OPTIONS]\n    nextrs generate [--root <PATH>]\n    nextrs bundles plan [--root <PATH>]\n    nextrs bundles build [--root <PATH>] [--bin <NAME>] [--dev | --vercel]\n    nextrs deploy [--root <PATH>] [--preview] [--skip-cron]\n    nextrs cron generate [--root <PATH>]\n    nextrs cron deploy [--root <PATH>]\n\nRun the same commands as `cargo nextrs ...` or `nextrs ...`.\n\nCLIENT OPTIONS:\n    --root <PATH>        nextrs application root (default: current directory)\n    --client-dir <PATH>  generated package relative to the app root (default: .nextrs/client)\n    --config <PATH>      external-client config; defaults to .nextrs/client/nextrs.client.json when present\n    -h, --help           Print help\n\nCONFIG:\n    nextrs.toml is the app config source. `generate` writes managed .nextrs/vercel.json from\n    [vercel], discovers #[nextrs::cron] routes, and writes provider plumbing.\n\nDEPLOY:\n    `deploy` runs generate, a local prebuilt Vercel deployment, then deploys\n    explicit Cloudflare cron triggers. --preview and --skip-cron skip triggers.\n\nCRON:\n    Declare GET schedules with #[nextrs::cron(schedule = \"...\")]. Vercel is\n    the default provider; use provider = \"cloudflare\" explicitly when wanted.\n    `cron generate` aliases `generate`; `cron deploy` ships Cloudflare Workers\n    using CRON_SECRET and either API credentials or wrangler."
     );
 }
 

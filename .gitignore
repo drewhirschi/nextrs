@@ -14,3 +14,8 @@ site/style/tailwindcss
 target/
 target-vercel/
 .vercel/
+
+# Generated server deployment artifacts and build staging.
+**/.nextrs/bundles/
+**/.nextrs/bundle-build-*/
+**/.nextrs/bundle-manifest.json

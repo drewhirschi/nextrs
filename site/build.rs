@@ -1,4 +1,7 @@
 fn main() {
+    println!("cargo:rerun-if-env-changed=NEXTRS_BUILD_REVISION");
+    let revision = std::env::var("NEXTRS_BUILD_REVISION").unwrap_or_else(|_| "local".into());
+    println!("cargo:rustc-env=NEXTRS_BUILD_REVISION={revision}");
     nextrs::build::emit_registry("app", "src/app.rs", "nextrs_routes.rs")
         .expect("nextrs::build::emit_registry failed");
 

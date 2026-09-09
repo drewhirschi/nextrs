@@ -1,12 +1,12 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" data-framework-version="{{ framework_version }}">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>nextrs — a Rust framework for React apps</title>
   <meta name="description" content="A Next.js-style framework where your React app runs on a Rust server. Engineered for the agent era.">
   <meta property="og:title" content="nextrs — engineered for agents">
-  <meta property="og:description" content="Next.js conventions, React pages, a Rust server. Deploys to Vercel as one function.">
+  <meta property="og:description" content="Next.js conventions, React pages, a Rust server. Deploys to Vercel as one or more Rust functions.">
   <link rel="icon" href="/favicon.svg" type="image/svg+xml">
   <link rel="icon" href="/favicon.ico" sizes="32x32">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png">
@@ -22,7 +22,7 @@
   <header class="site-header">
     <div class="shell">
       <a href="/" class="wordmark">next<b>rs</b></a>
-      <span class="nav-tag">v0.4 · beta</span>
+      <span class="nav-tag">v{{ framework_version }} · beta</span>
       <span class="nav-spacer"></span>
       <nav class="nav-links">
         <a href="/docs">Docs</a>

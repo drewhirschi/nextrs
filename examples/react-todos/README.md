@@ -216,3 +216,33 @@ Worker) and on the Vercel project (`vercel env add CRON_SECRET`).
 
 See `docs/server-props.md` in the repository root for the server-props and
 streaming design.
+
+## Separate export function
+
+`app/api/exports/bundle.toml` assigns `/api/exports` to the `exports` server
+bundle. Its optional `csv` dependency is enabled by the `exports` Cargo feature;
+`nextrs.toml` enables that feature only for the export bundle and packages
+`resources/exports` there. Plain local builds use the default Cargo features and
+serve all routes together.
+
+From this repository, use the local CLI (the feature need not be published yet):
+
+```bash
+cargo run -p cargo-nextrs --bin nextrs -- bundles plan --root examples/react-todos
+cargo run -p cargo-nextrs --bin nextrs -- bundles build --dev --root examples/react-todos
+```
+
+The outputs are `.nextrs/bundles/default/executable` and
+`.nextrs/bundles/exports/executable` underneath this example. Start each with a
+different `PORT` to inspect them: `/api/exports` returns CSV only from `exports`,
+while `/` and `/api/todos` belong to `default`. Each bundle retains applicable
+middleware. `nextrs deploy --preview` builds separate Vercel functions and the
+routing rules that keep those public URLs unchanged.
+
+See the [server bundles guide](../../site/content/docs/server-bundles.md).
+
+The repository's integration checks exercise native builds with
+`python3 scripts/test-server-bundles.py`; add `--vercel` to build and run the
+optimized Linux artifacts through the Vercel runtime (requires cargo-zigbuild
+and Zig). The latter validates executable adapters locally; it does not upload
+a deployment.

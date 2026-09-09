@@ -8,6 +8,7 @@ members = [
     "crates/create-nextrs-app",
     "site",
     "examples/react-todos",
+    "crates/cargo-nextrs/tests/fixtures/server-bundles",
 ]
 
 # examples/react-todos depends on the *published* nextrs (so it builds and

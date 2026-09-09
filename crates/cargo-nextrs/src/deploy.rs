@@ -25,6 +25,7 @@ pub struct DeployOptions {
 
 pub fn deploy(root: &Path, options: &DeployOptions) -> Result<(), String> {
     let root = fs::canonicalize(root).map_err(|error| format!("bad --root: {error}"))?;
+    let bundle_plan = crate::bundles::plan(&root)?;
     let mut generated_vercel_config = None;
 
     if root.join(cron::CONFIG_FILE).is_file() {
@@ -109,25 +110,52 @@ pub fn deploy(root: &Path, options: &DeployOptions) -> Result<(), String> {
         &["pull", "--yes", &format!("--environment={environment}")],
     )?;
 
-    eprintln!(
-        "==> vercel build {} — local compile, incl. the Rust function",
-        prod.join(" ")
-    );
-    let local_config = generated_vercel_config
-        .as_ref()
-        .map(|path| path.to_string_lossy().into_owned());
-    let build_args = vercel_build_args(local_config.as_deref(), prod);
-    run(&cwd, &envs, "vercel", &build_args)?;
-
-    let functions = cwd.join(".vercel/output/functions");
-    let configs = find_files(&functions, ".vc-config.json");
-    if configs.is_empty() {
-        return Err(
-            "no function in .vercel/output — is cargo-zigbuild installed and zig reachable?".into(),
+    if bundle_plan.enabled {
+        // Prepare the complete client contract once, before selecting server modules.
+        if root.join("package.json").is_file() {
+            run(&root, &[], "npm", &["ci"])?;
+            run(&root, &[], "npm", &["run", "client:prepare"])?;
+        }
+        let settings = cron::load_config(&root)?.vercel.unwrap_or_default();
+        if settings.build_command.is_some()
+            || settings.install_command.is_some()
+            || !settings.extra.is_empty()
+        {
+            return Err("split deployment does not support [vercel] build_command/install_command/extra overrides yet; use nextrs bundles build --vercel and explicitly adapt the output".into());
+        }
+        crate::bundles::build(
+            &root,
+            &crate::bundles::BuildOptions {
+                vercel: true,
+                ..Default::default()
+            },
+            Some(&cwd.join(".vercel/output")),
+        )?;
+        if root.join("package.json").is_file() {
+            run(&root, &[], "npm", &["run", "client:build"])?;
+        }
+    } else {
+        eprintln!(
+            "==> vercel build {} — local compile, incl. the Rust function",
+            prod.join(" ")
         );
-    }
-    for config_path in configs {
-        bundle_function(&config_path, &cwd)?;
+        let local_config = generated_vercel_config
+            .as_ref()
+            .map(|path| path.to_string_lossy().into_owned());
+        let build_args = vercel_build_args(local_config.as_deref(), prod);
+        run(&cwd, &envs, "vercel", &build_args)?;
+
+        let functions = cwd.join(".vercel/output/functions");
+        let configs = find_files(&functions, ".vc-config.json");
+        if configs.is_empty() {
+            return Err(
+                "no function in .vercel/output — is cargo-zigbuild installed and zig reachable?"
+                    .into(),
+            );
+        }
+        for config_path in configs {
+            bundle_function(&config_path, &cwd)?;
+        }
     }
 
     eprintln!("==> vercel deploy --prebuilt {}", prod.join(" "));
@@ -242,6 +270,12 @@ fn find_files(dir: &Path, name: &str) -> Vec<PathBuf> {
 fn run(cwd: &Path, envs: &[(&str, PathBuf)], program: &str, args: &[&str]) -> Result<(), String> {
     let mut command = Command::new(program);
     command.current_dir(cwd).args(args);
+    // CI supplies this through its secret store; never print it in command logs.
+    if program == "vercel" {
+        if let Ok(token) = std::env::var("VERCEL_TOKEN") {
+            command.arg("--token").arg(token);
+        }
+    }
     for (key, value) in envs {
         command.env(key, value);
     }

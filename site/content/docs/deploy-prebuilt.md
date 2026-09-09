@@ -129,3 +129,23 @@ Rust function.
 To choose cloud builds, re-enable Vercel's git deployment setting. The
 generated build is self-contained in either mode; do not revive the old
 workflow of skipping frontend bundling and committing `public/dist`.
+
+## Keeping this documentation site current
+
+The docs application depends on the workspace framework source, with its version
+constraint checked by Cargo. It does not wait for a crates.io publish. Its header and landing page
+show the linked framework version, and `GET /__nx/version` returns that version
+plus `NEXTRS_BUILD_REVISION` (the source commit, or `local` outside deployment).
+
+In this repository, `.github/workflows/ci.yml` deploys docs after successful main
+branch tests and browser smoke. It uses the same `scripts/deploy-prebuilt.sh site`
+command as local deployment, which runs the CLI from that checkout. The final
+step checks that production reports the expected version and commit and serves
+the landing page and server bundles guide.
+
+Configure the GitHub `docs-production` environment with `VERCEL_TOKEN`,
+`VERCEL_ORG_ID`, and `VERCEL_DOCS_PROJECT_ID` secrets. The Vercel project must keep
+Root Directory `site` and allow source files outside that directory. Set the
+`NEXTRS_DOCS_URL` Actions variable if verifying a different production domain.
+PRs run tests without production credentials; only a successful push to `main`
+reaches deployment. Missing credentials fail the deploy job explicitly.
