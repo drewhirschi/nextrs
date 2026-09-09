@@ -1,7 +1,9 @@
 {
   "name": "react-todos-app",
   "private": true,
-  "workspaces": [".nextrs/client"],
+  "workspaces": [
+    ".nextrs/client"
+  ],
   "scripts": {
     "client:ensure": "node .nextrs/ensure-client.mjs",
     "client:dump": "NEXTRS_SKIP_BUNDLE=1 cargo run -p react-todos --bin react-todos-dump-openapi",
@@ -13,6 +15,8 @@
   },
   "dependencies": {
     "@react-todos/client": "file:./.nextrs/client",
+    "@tanstack/query-db-collection": "^1.2.12",
+    "@tanstack/react-db": "^0.3.7",
     "@tanstack/react-query": "^5.62.0",
     "@tanstack/react-router": "^1.87.0",
     "react": "^19.0.0",

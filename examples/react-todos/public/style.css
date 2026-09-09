@@ -204,3 +204,36 @@ button.ghost { background: none; border-color: transparent; color: var(--muted);
 button.ghost:hover { color: var(--text); border-color: var(--border); }
 
 .note { margin-top: 2rem; }
+
+/* ---- Realtime collection lab ---- */
+.realtime-lab { display: grid; gap: 1.25rem; }
+.lab-heading { display: flex; align-items: flex-start; gap: 1rem; }
+.lab-heading > div { flex: 1; }
+.eyebrow { margin: 0 0 0.25rem; color: var(--accent); font: 650 0.72rem/1.2 ui-monospace, monospace; letter-spacing: 0.08em; text-transform: uppercase; }
+.lab-intro { margin: 0; color: var(--muted); }
+.connection { display: inline-flex; align-items: center; gap: 0.45rem; border: 1px solid var(--border); border-radius: 999px; padding: 0.3rem 0.65rem; color: var(--muted); font-size: 0.78rem; }
+.connection i { width: 0.48rem; height: 0.48rem; border-radius: 50%; background: var(--amber); }
+.connection-live { color: var(--green); border-color: rgba(62, 207, 142, 0.35); background: var(--green-dim); }
+.connection-live i { background: var(--green); box-shadow: 0 0 0 4px rgba(62, 207, 142, 0.1); }
+.mode-picker { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.55rem; }
+.mode-picker button { min-height: 7rem; padding: 0.8rem; text-align: left; }
+.mode-picker button strong, .mode-picker button span { display: block; }
+.mode-picker button strong { margin-bottom: 0.35rem; font-size: 0.88rem; }
+.mode-picker button span { color: var(--muted); font-size: 0.76rem; line-height: 1.35; }
+.mode-picker button[aria-pressed="true"] { border-color: var(--accent); background: rgba(122, 165, 255, 0.1); box-shadow: 0 0 0 1px rgba(122, 165, 255, 0.15) inset; }
+.updates-banner { width: 100%; border-color: rgba(245, 179, 76, 0.45); background: var(--amber-dim); color: var(--amber); }
+.live-toolbar { justify-content: space-between; }
+.segmented { display: inline-flex; padding: 0.2rem; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); }
+.segmented button { border: 0; padding: 0.3rem 0.65rem; background: transparent; color: var(--muted); text-transform: capitalize; }
+.segmented button[aria-pressed="true"] { background: var(--surface-2); color: var(--text); }
+.live-list { margin: 0; }
+.paging-row { display: flex; align-items: center; gap: 0.8rem; }
+.paging-row .muted { flex: 1; }
+.lab-footnotes { padding: 0.85rem 1rem; border-left: 2px solid var(--border); color: var(--muted); font-size: 0.82rem; }
+.lab-footnotes p { margin: 0.25rem 0; }
+.lab-footnotes strong { color: var(--text); }
+@media (max-width: 600px) {
+  .mode-picker { grid-template-columns: 1fr; }
+  .mode-picker button { min-height: auto; }
+  .lab-heading, .paging-row { align-items: flex-start; flex-direction: column; }
+}

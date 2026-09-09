@@ -1,0 +1,12 @@
+{
+  "name": "react-todos-realtime-worker",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "check": "WRANGLER_LOG_PATH=/tmp/nextrs-realtime-wrangler.log wrangler deploy --dry-run --outdir /tmp/react-todos-realtime-worker",
+    "dev": "wrangler dev --port 8787"
+  },
+  "devDependencies": {
+    "wrangler": "^4.128.0"
+  }
+}

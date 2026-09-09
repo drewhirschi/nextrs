@@ -17,6 +17,11 @@
       "types": "./dist/react-query.d.ts",
       "import": "./dist/react-query.js",
       "default": "./dist/react-query.js"
+    },
+    "./realtime": {
+      "types": "./dist/realtime.d.ts",
+      "import": "./dist/realtime.js",
+      "default": "./dist/realtime.js"
     }
   },
   "files": [

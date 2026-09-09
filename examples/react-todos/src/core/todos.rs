@@ -49,6 +49,51 @@ impl TodosCtx {
                     title: "Ship nextrs".to_string(),
                     done: false,
                 },
+                Todo {
+                    id: 4,
+                    title: "Invite the household".to_string(),
+                    done: true,
+                },
+                Todo {
+                    id: 5,
+                    title: "Upload the first photo".to_string(),
+                    done: false,
+                },
+                Todo {
+                    id: 6,
+                    title: "Open the gallery in a second tab".to_string(),
+                    done: false,
+                },
+                Todo {
+                    id: 7,
+                    title: "Try automatic merge mode".to_string(),
+                    done: false,
+                },
+                Todo {
+                    id: 8,
+                    title: "Try automatic refetch mode".to_string(),
+                    done: false,
+                },
+                Todo {
+                    id: 9,
+                    title: "Try notify-first mode".to_string(),
+                    done: false,
+                },
+                Todo {
+                    id: 10,
+                    title: "Load the next live page".to_string(),
+                    done: false,
+                },
+                Todo {
+                    id: 11,
+                    title: "Reconnect without losing the snapshot".to_string(),
+                    done: false,
+                },
+                Todo {
+                    id: 12,
+                    title: "Keep Turso authoritative".to_string(),
+                    done: true,
+                },
             ])),
         }
     }

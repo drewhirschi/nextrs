@@ -17,7 +17,7 @@ use utoipa::{IntoParams, ToSchema};
 
 /// Wire shape of a single-todo read. (Named apart from the list DTO in
 /// `../route.rs` — OpenAPI schema names are global.)
-#[derive(Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, ToSchema)]
 pub struct TodoDetail {
     pub id: u64,
     pub title: String,
@@ -81,27 +81,50 @@ pub struct UpdateTodoRequest {
 #[nextrs::api]
 pub async fn patch(
     Extension(ctx): Extension<TodosCtx>,
+    Extension(realtime): Extension<nextrs::realtime::MemoryRealtime>,
     Path(id): Path<u64>,
     Json(req): Json<UpdateTodoRequest>,
 ) -> Json<Option<TodoDetail>> {
-    Json(
-        ctx.set_done(id, req.done)
-            .await
-            .map(|t| TodoDetail {
-                id: t.id,
-                title: t.title,
-                done: t.done,
-                prev: None,
-                next: None,
-            }),
-    )
+    let updated = ctx.set_done(id, req.done).await.map(|t| TodoDetail {
+        id: t.id,
+        title: t.title,
+        done: t.done,
+        prev: None,
+        next: None,
+    });
+    if let Some(todo) = &updated {
+        if let Err(error) = realtime.publish(
+            "household.demo.todos",
+            nextrs::realtime::RealtimeChange::upsert(
+                todo.id.to_string(),
+                nextrs::serde_json::json!({
+                    "id": todo.id,
+                    "title": todo.title,
+                    "done": todo.done,
+                }),
+            ),
+        ) {
+            tracing::warn!(%error, "todo committed but its realtime event could not be encoded");
+        }
+    }
+    Json(updated)
 }
 
 // Effect-only endpoint: a bare `StatusCode` return infers a body-less 200 —
 // the escape hatch for handlers with nothing to serialize.
 #[nextrs::api]
-pub async fn delete(Extension(ctx): Extension<TodosCtx>, Path(id): Path<u64>) -> StatusCode {
+pub async fn delete(
+    Extension(ctx): Extension<TodosCtx>,
+    Extension(realtime): Extension<nextrs::realtime::MemoryRealtime>,
+    Path(id): Path<u64>,
+) -> StatusCode {
     if ctx.remove(id).await {
+        if let Err(error) = realtime.publish(
+            "household.demo.todos",
+            nextrs::realtime::RealtimeChange::<nextrs::serde_json::Value>::delete(id.to_string()),
+        ) {
+            tracing::warn!(%error, "todo committed but its realtime event could not be encoded");
+        }
         StatusCode::OK
     } else {
         StatusCode::NOT_FOUND

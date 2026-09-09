@@ -25,8 +25,15 @@ pub fn app() -> axum::Router {
 
     // App state as an Extension layer — handlers extract it, and seed
     // companions read it from request extensions during prefetch.
+    let realtime = nextrs::realtime::MemoryRealtime::new();
+
     nextrs::router::build_router_with_public(generated_registry(), &public_dir)
         .merge(nextrs::openapi::spec_router(generated_openapi()))
+        // Local development speaks the same protocol as the production
+        // Durable Object sidecar in realtime-worker/. Vercel itself does not
+        // hold WebSockets, so production routes this path at Cloudflare.
+        .merge(realtime.clone().router())
+        .layer(axum::Extension(realtime))
         .layer(axum::Extension(core::todos::TodosCtx::new()))
 }
 

@@ -5,6 +5,13 @@ routes, a generated browser client, and a server-seeded React Query cache. The
 todo list is available on first paint without a client fetch because
 `prefetch.rs` warms the same typed query that the page uses.
 
+The `/realtime` lab turns that typed query into a TanStack DB collection and
+attaches it to an ordered WebSocket topic. Open the lab in two tabs, broadcast
+a todo in either one, then switch among auto-merge, auto-refetch, and
+notify-first to see how each policy affects a filtered, paginated live window.
+Local development uses `nextrs::realtime::MemoryRealtime`; the deployable
+Durable Object adapter in `realtime-worker/` speaks the same protocol.
+
 ## Project layout
 
 ```text
@@ -58,6 +65,7 @@ npm ci
 npm run client:generate
 cargo run -p react-todos
 # → http://localhost:3000
+# realtime lab → http://localhost:3000/realtime
 ```
 
 The root `package.json` declares `.nextrs/client` as a workspace and links

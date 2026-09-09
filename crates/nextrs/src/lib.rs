@@ -5,6 +5,7 @@ pub mod error;
 pub mod health;
 pub mod openapi;
 pub mod params;
+pub mod realtime;
 pub mod router;
 pub mod seed;
 pub mod speculation;

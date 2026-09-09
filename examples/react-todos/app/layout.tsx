@@ -23,6 +23,9 @@ export default function Layout({ children }: { children: ReactNode }) {
         <a className="muted" href="/about">
           about
         </a>
+        <a className="muted" href="/realtime">
+          realtime lab
+        </a>
       </nav>
       {children}
     </main>

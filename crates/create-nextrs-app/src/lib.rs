@@ -262,6 +262,8 @@ fn validate_bootstrapped_client(target: &Path) -> io::Result<()> {
         "dist/index.d.ts",
         "dist/react-query.js",
         "dist/react-query.d.ts",
+        "dist/realtime.js",
+        "dist/realtime.d.ts",
     ] {
         let output = client_dir.join(relative);
         if !output.is_file() {
@@ -276,8 +278,9 @@ fn validate_bootstrapped_client(target: &Path) -> io::Result<()> {
     }
 
     let script = format!(
-        "await import({package_name:?}); await import({:?})",
-        format!("{package_name}/react-query")
+        "await import({package_name:?}); await import({:?}); await import({:?})",
+        format!("{package_name}/react-query"),
+        format!("{package_name}/realtime")
     );
     run_command(target, "node", &["--input-type=module", "--eval", &script])
 }
@@ -667,6 +670,7 @@ fn template_files(
         (".nextrs/client/tsconfig.json", client_tsconfig_json()),
         (".nextrs/client/src/index.ts", client_index_ts()),
         (".nextrs/client/src/react-query.ts", react_query_index_ts()),
+        (".nextrs/client/src/realtime.ts", realtime_ts()),
         (".nextrs/client/src/nextrs-client.ts", nextrs_client_ts()),
         (
             ".nextrs/client/scripts/normalize-esm.mjs",
@@ -689,6 +693,7 @@ fn template_files(
             ".nextrs/template/client/src/react-query.ts",
             react_query_index_ts(),
         ),
+        (".nextrs/template/client/src/realtime.ts", realtime_ts()),
         (
             ".nextrs/template/client/src/nextrs-client.ts",
             nextrs_client_ts(),
@@ -1593,6 +1598,11 @@ fn client_package_json(crate_name: &str) -> String {
       "types": "./dist/react-query.d.ts",
       "import": "./dist/react-query.js",
       "default": "./dist/react-query.js"
+    }},
+    "./realtime": {{
+      "types": "./dist/realtime.d.ts",
+      "import": "./dist/realtime.js",
+      "default": "./dist/realtime.js"
     }}
   }},
   "files": [
@@ -1934,6 +1944,7 @@ const packageJson = JSON.parse(
 );
 await import(packageJson.name);
 await import(`${packageJson.name}/react-query`);
+await import(`${packageJson.name}/realtime`);
 console.log(
   `normalized ${rewritten} ESM specifiers; verified package exports and ${emittedFiles.filter((file) => file.endsWith(".d.ts")).length} declarations without any`,
 );
@@ -1961,6 +1972,181 @@ export function useParams<T extends Record<string, string> = Record<string, stri
 
 // React Query hooks, option factories, query keys, and URL-bound helpers.
 export * from "./generated/react-query";
+"#
+    .into()
+}
+
+fn realtime_ts() -> String {
+    r#"export type RealtimeOperation = "upsert" | "delete" | "invalidate";
+
+export interface RealtimeReadyFrame {
+  type: "ready";
+  topic: string;
+  sequence: number;
+}
+
+export interface RealtimeChangeFrame<T> {
+  type: "change";
+  topic: string;
+  sequence: number;
+  operation: RealtimeOperation;
+  key?: string;
+  value?: T;
+}
+
+export interface RealtimeResyncFrame {
+  type: "resync";
+  topic: string;
+  sequence: number;
+}
+
+export type RealtimeFrame<T> =
+  | RealtimeReadyFrame
+  | RealtimeChangeFrame<T>
+  | RealtimeResyncFrame;
+
+export type RealtimeStatus = "connecting" | "live" | "reconnecting" | "stopped";
+
+export interface RealtimeSubscriptionOptions<T> {
+  topic: string;
+  /** Override the origin while developing against a Durable Object sidecar. */
+  origin?: string;
+  onChange: (frame: RealtimeChangeFrame<T>) => void;
+  /** Reconcile an authoritative snapshot here. This closes the subscribe/fetch race. */
+  onReady?: (frame: RealtimeReadyFrame) => void;
+  /** Refetch when the broker reports backpressure or a sequence gap. */
+  onResync?: (frame: RealtimeResyncFrame) => void;
+  onStatus?: (status: RealtimeStatus) => void;
+  onError?: (error: Error) => void;
+  socketFactory?: (url: string) => WebSocket;
+  minReconnectDelayMs?: number;
+  maxReconnectDelayMs?: number;
+}
+
+export interface RealtimeSubscription {
+  close(): void;
+}
+
+/** Build the protocol URL shared by the local broker and Durable Object adapter. */
+export function realtimeUrl(topic: string, origin?: string): string {
+  const base = new URL(origin ?? window.location.origin);
+  if (base.protocol === "http:") base.protocol = "ws:";
+  if (base.protocol === "https:") base.protocol = "wss:";
+  if (base.protocol !== "ws:" && base.protocol !== "wss:") {
+    throw new Error(`realtime origin must use http(s) or ws(s), received ${base.protocol}`);
+  }
+  base.pathname = `/__nx/realtime/${encodeURIComponent(topic)}`;
+  base.search = "";
+  base.hash = "";
+  return base.toString();
+}
+
+/**
+ * Attach to an ordered realtime topic with reconnect and gap detection.
+ *
+ * Changes are advisory. The database remains authoritative, so consumers
+ * should refetch in `onReady` and `onResync` before applying later deltas.
+ */
+export function subscribeRealtime<T>(
+  options: RealtimeSubscriptionOptions<T>,
+): RealtimeSubscription {
+  const socketFactory = options.socketFactory ?? ((url: string) => new WebSocket(url));
+  const minDelay = Math.max(25, options.minReconnectDelayMs ?? 250);
+  const maxDelay = Math.max(minDelay, options.maxReconnectDelayMs ?? 5_000);
+  let socket: WebSocket | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let stopped = false;
+  let attempt = 0;
+  let lastSequence: number | undefined;
+
+  const report = (status: RealtimeStatus) => options.onStatus?.(status);
+  const reconnect = () => {
+    if (stopped) return;
+    report("reconnecting");
+    const delay = Math.min(maxDelay, minDelay * 2 ** attempt++);
+    timer = setTimeout(connect, delay);
+  };
+  const requestResync = (topic: string, sequence: number) => {
+    options.onResync?.({ type: "resync", topic, sequence });
+  };
+
+  const connect = () => {
+    if (stopped) return;
+    report(attempt === 0 ? "connecting" : "reconnecting");
+    try {
+      socket = socketFactory(realtimeUrl(options.topic, options.origin));
+    } catch (error) {
+      options.onError?.(asError(error));
+      reconnect();
+      return;
+    }
+
+    socket.onmessage = (message) => {
+      const frame = parseRealtimeFrame<T>(message.data);
+      if (!frame || frame.topic !== options.topic) return;
+
+      if (frame.type === "ready") {
+        attempt = 0;
+        lastSequence = frame.sequence;
+        report("live");
+        options.onReady?.(frame);
+        return;
+      }
+      if (frame.type === "resync") {
+        lastSequence = frame.sequence;
+        requestResync(frame.topic, frame.sequence);
+        return;
+      }
+      if (lastSequence !== undefined && frame.sequence !== lastSequence + 1) {
+        lastSequence = frame.sequence;
+        requestResync(frame.topic, frame.sequence);
+        return;
+      }
+      lastSequence = frame.sequence;
+      options.onChange(frame);
+    };
+    socket.onerror = () => options.onError?.(new Error("realtime WebSocket error"));
+    socket.onclose = reconnect;
+  };
+
+  connect();
+  return {
+    close() {
+      stopped = true;
+      if (timer !== undefined) clearTimeout(timer);
+      socket?.close(1000, "subscription closed");
+      report("stopped");
+    },
+  };
+}
+
+function parseRealtimeFrame<T>(input: unknown): RealtimeFrame<T> | undefined {
+  if (typeof input !== "string") return undefined;
+  try {
+    const value: unknown = JSON.parse(input);
+    if (!value || typeof value !== "object") return undefined;
+    const frame = value as Record<string, unknown>;
+    if (
+      typeof frame.type !== "string" ||
+      typeof frame.topic !== "string" ||
+      typeof frame.sequence !== "number"
+    ) return undefined;
+    if (frame.type === "ready" || frame.type === "resync") {
+      return value as RealtimeFrame<T>;
+    }
+    if (
+      frame.type === "change" &&
+      (frame.operation === "upsert" || frame.operation === "delete" || frame.operation === "invalidate")
+    ) return value as RealtimeFrame<T>;
+    return undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+function asError(error: unknown): Error {
+  return error instanceof Error ? error : new Error(String(error));
+}
 "#
     .into()
 }
@@ -2182,6 +2368,7 @@ mod tests {
             ".nextrs/template/client/tsconfig.json",
             ".nextrs/template/client/src/index.ts",
             ".nextrs/template/client/src/react-query.ts",
+            ".nextrs/template/client/src/realtime.ts",
             ".nextrs/template/client/src/nextrs-client.ts",
             ".nextrs/template/client/scripts/normalize-esm.mjs",
         ] {
@@ -2226,6 +2413,7 @@ mod tests {
         assert!(names.contains(&".nextrs/client/orval.config.ts"));
         assert!(names.contains(&".nextrs/client/tsconfig.json"));
         assert!(names.contains(&".nextrs/client/scripts/normalize-esm.mjs"));
+        assert!(names.contains(&".nextrs/client/src/realtime.ts"));
         assert!(!names.iter().any(|name| name.starts_with("client/")));
         assert!(!names.iter().any(|name| name.contains("external")));
         assert!(!names.iter().any(|name| name.ends_with(".html")));
@@ -2293,6 +2481,8 @@ mod tests {
         assert!(package_json.contains(r#""types": "./dist/index.d.ts""#));
         assert!(package_json.contains(r#""./react-query""#));
         assert!(package_json.contains(r#""import": "./dist/react-query.js""#));
+        assert!(package_json.contains(r#""./realtime""#));
+        assert!(package_json.contains(r#""import": "./dist/realtime.js""#));
         assert!(package_json.contains(r#""sideEffects": false"#));
         assert!(package_json.contains(r#""peerDependenciesMeta""#));
 
@@ -2329,6 +2519,7 @@ mod tests {
         assert!(normalizer.contains(r#"/index.js`"#));
         assert!(normalizer.contains("await import(packageJson.name)"));
         assert!(normalizer.contains(r#"await import(`${packageJson.name}/react-query`)"#));
+        assert!(normalizer.contains(r#"await import(`${packageJson.name}/realtime`)"#));
         assert!(normalizer.contains("ts.SyntaxKind.AnyKeyword"));
 
         let ignored = files
@@ -2375,6 +2566,15 @@ mod tests {
             .as_str();
         assert!(react_query.contains(r#"export * from "./generated/react-query";"#));
         assert!(react_query.contains("useParams"));
+        let realtime = files
+            .iter()
+            .find(|(name, _)| *name == ".nextrs/client/src/realtime.ts")
+            .unwrap()
+            .1
+            .as_str();
+        assert!(realtime.contains("subscribeRealtime"));
+        assert!(realtime.contains("RealtimeOperation = \"upsert\" | \"delete\" | \"invalidate\""));
+        assert!(realtime.contains("onResync"));
         assert!(!files.iter().any(|(name, _)| name.contains("gen-barrel")));
 
         // Vercel's default rustc sits below the tsx bundler's MSRV — every

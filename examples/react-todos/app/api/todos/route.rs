@@ -1,14 +1,14 @@
 //! Todos API — the adapter for `react_todos::core::todos`. Handlers stay thin:
 //! extract, delegate to core, map to the wire DTOs that live here.
 
-use axum::{Extension, Json};
 use axum::extract::Query;
+use axum::{Extension, Json};
 use react_todos::core::todos::TodosCtx;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
 
 /// Wire shape of a todo. Owned by this adapter; `From` maps the core type.
-#[derive(Serialize, Deserialize, ToSchema)]
+#[derive(Clone, Serialize, Deserialize, ToSchema)]
 pub struct Todo {
     pub id: u64,
     pub title: String,
@@ -67,10 +67,17 @@ pub async fn get(
 #[nextrs::api]
 pub async fn post(
     Extension(ctx): Extension<TodosCtx>,
+    Extension(realtime): Extension<nextrs::realtime::MemoryRealtime>,
     wait: nextrs::WaitUntil,
     Json(req): Json<AddTodoRequest>,
 ) -> Json<Todo> {
     let todo: Todo = ctx.add(req.title).await.into();
+    if let Err(error) = realtime.publish(
+        "household.demo.todos",
+        nextrs::realtime::RealtimeChange::upsert(todo.id.to_string(), todo.clone()),
+    ) {
+        tracing::warn!(%error, "todo committed but its realtime event could not be encoded");
+    }
     // Background work after the response: locally this is a plain spawn; on
     // Vercel (behind StreamingVercelLayer) it's registered with the runtime's
     // waitUntil so it isn't killed when the invocation ends.
