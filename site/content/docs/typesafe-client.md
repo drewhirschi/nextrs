@@ -73,8 +73,8 @@ Moving a convention file changes both the route and generated contract. The
 URL is not repeated in a separate TypeScript definition.
 
 Document additional statuses because an error's `IntoResponse` implementation
-can choose its status at runtime. A handler declaring `200` and `404` produces
-a response union that narrows on `response.status`.
+can choose its status at runtime. Successful responses narrow on `response.status`; non-success statuses reject
+with `HttpError` instead of resolving as successful query data.
 
 ## Two stable package entry points
 
@@ -232,3 +232,21 @@ cargo install cargo-nextrs
 Data-type conversion alone cannot describe URLs, parameter serialization,
 request bodies, status-specific errors, or framework integrations. OpenAPI
 captures the whole HTTP contract while keeping standard API tooling available.
+
+## HTTP errors
+
+Both package entry points export `HttpError<T>`. Generated fetch functions and
+React Query hooks reject non-success responses with an error containing
+`status`, parsed `data`, and `headers`. Hooks infer the documented error body
+through Orval's `ErrorType<T>` mutator contract. Success responses retain their
+`{ data, status, headers }` shape.
+
+JSON error bodies are parsed; text and malformed JSON error bodies remain text.
+Network failures and cancellation retain the native fetch error. A malformed
+JSON success response is a parsing error.
+
+This behavior is owned by the scaffolder. For an existing app, create a fresh
+scaffold using the desired framework revision and update its framework-owned
+client template and generation scripts from that output. `--adopt` preserves
+existing files; `client generate` materializes the checked-in template and does
+not upgrade that template. Preserve application routes and dependencies.

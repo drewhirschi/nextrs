@@ -10,3 +10,4 @@ export function useParams<
 
 // Generated TanStack Query hooks/options, plus nextrs URL-bound companions.
 export * from "./generated/react-query";
+export { HttpError } from "./http-error";

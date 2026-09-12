@@ -58,11 +58,16 @@ jobs:
             git ls-files --error-unmatch "$app/.nextrs/ensure-client.mjs"
             for required in \
               package.json orval.config.ts tsconfig.json \
-              src/index.ts src/react-query.ts src/nextrs-client.ts \
+              src/index.ts src/react-query.ts src/nextrs-client.ts src/http-client.ts src/http-error.ts \
               scripts/normalize-esm.mjs; do
               git ls-files --error-unmatch "$app/.nextrs/template/client/$required"
             done
           done
+
+      - name: Generated HTTP client behavior
+        run: |
+          node scripts/test-http-client.mjs site
+          node scripts/test-http-client.mjs examples/react-todos
 
       - name: Generated clients resolve through root workspace links
         run: |
@@ -77,6 +82,7 @@ jobs:
         run: |
           npm run typecheck --prefix site
           npm run typecheck --prefix examples/react-todos
+          examples/react-todos/node_modules/.bin/tsc --noEmit --strict --skipLibCheck --moduleResolution bundler --module esnext --target es2020 examples/react-todos/tests/client-errors.ts
 
       - name: Workspace tests
         run: cargo test --workspace --features nextrs/build,nextrs/tsx

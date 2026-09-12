@@ -200,3 +200,11 @@ in `nextrs.toml`), and the prebuilt-deploy script together. Keep `src/app.rs`, `
 - [Client Generation: Step by Step](/docs/client-codegen)
 - [Porting an Existing App](/docs/porting)
 - [Deploy to Vercel](/docs/deploy-vercel) or [Deploy with Docker](/docs/deploy-docker)
+
+### Choosing the development app
+
+Run `nextrs dev` from the application directory. It selects the current Cargo
+package's `default-run` binary, or its sole runnable binary. The generated
+`cargo dev` alias is optional shorthand for the same framework command.
+Use `nextrs dev --bin NAME` only to choose another binary or resolve an
+ambiguous workspace. The framework command is `nextrs`, not `next`.

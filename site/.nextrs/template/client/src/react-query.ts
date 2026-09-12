@@ -14,3 +14,4 @@ export function useParams<T extends Record<string, string> = Record<string, stri
 
 // React Query hooks, option factories, query keys, and URL-bound helpers.
 export * from "./generated/react-query";
+export { HttpError } from "./http-error";
