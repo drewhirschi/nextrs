@@ -10,6 +10,8 @@ import {
   getGetApiTodosByIdQueryOptions,
   useGetApiTodosById,
   usePatchApiTodosById,
+  type GetApiTodosByIdQueryError,
+  type HttpError,
 } from "@react-todos/client/react-query";
 
 type Assert<T extends true> = T;
@@ -27,16 +29,16 @@ type QueryFunctionData<T> = T extends (...args: never[]) => infer Result
 
 type DetailResponse = Awaited<ReturnType<typeof getApiTodosById>>;
 type DetailSuccess = Extract<DetailResponse, { status: 200 }>;
-// Non-200s carry the framework's typed error body (`ApiError`), inferred from
-// the handler's `Result<Json<TodoDetail>, ApiError>` — no responses(...) block.
-type DetailError = Exclude<DetailResponse, { status: 200 }>;
+// Non-success responses reject with the handler's inferred ApiError body.
+type DetailError = GetApiTodosByIdQueryError;
 type DetailPath = Parameters<typeof getApiTodosById>[0];
 type DetailQuery = NonNullable<Parameters<typeof getApiTodosById>[1]>;
 type AddBody = Parameters<typeof postApiTodos>[0];
 type UpdateBody = Parameters<typeof patchApiTodosById>[1];
 
 type _ResponseInference = Assert<Equal<DetailSuccess["data"]["id"], number>>;
-type _ErrorInference = Assert<Equal<DetailError["data"], ApiError>>;
+type _ErrorInference = Assert<Equal<DetailError, HttpError<ApiError>>>;
+type _SuccessOnly = Assert<Equal<DetailResponse["status"], 200>>;
 type _PathInference = Assert<Equal<DetailPath, number>>;
 type _QueryInference = Assert<
   Equal<DetailQuery["neighbors"], boolean | null | undefined>
