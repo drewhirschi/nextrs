@@ -12,6 +12,10 @@ export default defineConfig({
       baseUrl: "/",
       clean: true,
       prettier: false,
+      override: {
+        mutator: { path: "./src/http-client.ts", name: "httpClient" },
+        fetch: { forceSuccessResponse: true },
+      },
     },
   },
   reactQuery: {
@@ -25,6 +29,10 @@ export default defineConfig({
       baseUrl: "/",
       clean: true,
       prettier: false,
+      override: {
+        mutator: { path: "./src/http-client.ts", name: "httpClient" },
+        fetch: { forceSuccessResponse: true },
+      },
     },
   },
 });

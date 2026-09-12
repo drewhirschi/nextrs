@@ -666,6 +666,14 @@ fn template_files(
         (".nextrs/client/orval.config.ts", client_orval_config_ts()),
         (".nextrs/client/tsconfig.json", client_tsconfig_json()),
         (".nextrs/client/src/index.ts", client_index_ts()),
+        (
+            ".nextrs/client/src/http-client.ts",
+            include_str!("../templates/http-client.ts").into(),
+        ),
+        (
+            ".nextrs/client/src/http-error.ts",
+            include_str!("../templates/http-error.ts").into(),
+        ),
         (".nextrs/client/src/react-query.ts", react_query_index_ts()),
         (".nextrs/client/src/nextrs-client.ts", nextrs_client_ts()),
         (
@@ -685,6 +693,14 @@ fn template_files(
             client_tsconfig_json(),
         ),
         (".nextrs/template/client/src/index.ts", client_index_ts()),
+        (
+            ".nextrs/template/client/src/http-client.ts",
+            include_str!("../templates/http-client.ts").into(),
+        ),
+        (
+            ".nextrs/template/client/src/http-error.ts",
+            include_str!("../templates/http-error.ts").into(),
+        ),
         (
             ".nextrs/template/client/src/react-query.ts",
             react_query_index_ts(),
@@ -1667,6 +1683,10 @@ export default defineConfig({
       baseUrl: "/",
       clean: true,
       prettier: false,
+      override: {
+        mutator: { path: "./src/http-client.ts", name: "httpClient" },
+        fetch: { forceSuccessResponse: true },
+      },
     },
   },
   reactQuery: {
@@ -1680,6 +1700,10 @@ export default defineConfig({
       baseUrl: "/",
       clean: true,
       prettier: false,
+      override: {
+        mutator: { path: "./src/http-client.ts", name: "httpClient" },
+        fetch: { forceSuccessResponse: true },
+      },
     },
   },
 });
@@ -1741,6 +1765,7 @@ fn client_index_ts() -> String {
     r#"// Framework-agnostic fetch functions and wire types.
 // @generated API modules are refreshed by `nextrs client generate`.
 export * from "./generated/fetch";
+export { HttpError } from "./http-error";
 "#
     .into()
 }
@@ -1961,6 +1986,7 @@ export function useParams<T extends Record<string, string> = Record<string, stri
 
 // React Query hooks, option factories, query keys, and URL-bound helpers.
 export * from "./generated/react-query";
+export { HttpError } from "./http-error";
 "#
     .into()
 }
@@ -2181,6 +2207,8 @@ mod tests {
             ".nextrs/template/client/orval.config.ts",
             ".nextrs/template/client/tsconfig.json",
             ".nextrs/template/client/src/index.ts",
+            ".nextrs/template/client/src/http-client.ts",
+            ".nextrs/template/client/src/http-error.ts",
             ".nextrs/template/client/src/react-query.ts",
             ".nextrs/template/client/src/nextrs-client.ts",
             ".nextrs/template/client/scripts/normalize-esm.mjs",
@@ -2189,6 +2217,32 @@ mod tests {
         }
 
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn generated_http_transport_is_shared_with_examples() {
+        let files = template_files("demo", "@demo/client", &DependencySource::Version);
+        for name in ["http-client.ts", "http-error.ts"] {
+            let materialized = format!(".nextrs/client/src/{name}");
+            let template = format!(".nextrs/template/client/src/{name}");
+            let contents = |path: &str| &files.iter().find(|(name, _)| *name == path).unwrap().1;
+            assert_eq!(contents(&materialized), contents(&template));
+            for app in ["site", "examples/react-todos"] {
+                let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                    .join("../..")
+                    .join(app)
+                    .join(&template);
+                assert_eq!(*contents(&template), std::fs::read_to_string(path).unwrap());
+            }
+        }
+        assert_eq!(
+            client_orval_config_ts()
+                .matches("forceSuccessResponse: true")
+                .count(),
+            2
+        );
+        assert!(react_query_index_ts().contains("export { HttpError }"));
+        assert!(client_index_ts().contains("export { HttpError }"));
     }
 
     #[test]
