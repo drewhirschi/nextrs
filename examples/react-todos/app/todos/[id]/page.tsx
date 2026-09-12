@@ -31,7 +31,7 @@ export default function TodoDetail({ params }: { params: { id: string } }) {
     setParams,
   } = useGetApiTodosByIdFromUrl(id);
   // The handler is fallible (Result<Json<TodoDetail>, 404>) — the generated
-  // response type is a status union, so narrow on it.
+  // Successful responses carry the todo; HTTP failures use the query error state.
   const todo = data?.status === 200 ? data.data : undefined;
 
   // A todo's state shows on TWO surfaces: this detail entry and the list

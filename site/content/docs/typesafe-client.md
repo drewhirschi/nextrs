@@ -118,7 +118,7 @@ All values above are inferred from Rust:
 
 - path and query arguments;
 - request bodies and mutation variables;
-- success and documented error response unions;
+- success response unions and documented HTTP error bodies;
 - query `data` and mutation results.
 
 Application code should not annotate generated data or mutation variables as
@@ -159,7 +159,7 @@ A checked JavaScript module gets completion from the same declarations:
 import { getApiTodosById } from "@my-app/client";
 
 const response = await getApiTodosById(42, { neighbors: true });
-console.log(response.status === 200 ? response.data.title : "missing");
+console.log(response.data.title); // Non-success statuses reject.
 ```
 
 You do not need:
@@ -250,3 +250,48 @@ scaffold using the desired framework revision and update its framework-owned
 client template and generation scripts from that output. `--adopt` preserves
 existing files; `client generate` materializes the checked-in template and does
 not upgrade that template. Preserve application routes and dependencies.
+
+### Before and after
+
+Previously, the default generated fetch code resolved a `404` or `500` response
+with `{ data, status, headers }`. React Query treated that resolved promise as
+success unless the caller checked the status and threw. The generated transport
+now throws `HttpError`; queries enter the error state and mutations call
+`onError` instead of `onSuccess`. Successful response data is unchanged.
+React Query's configured retry policy still applies before final error handling.
+
+```ts
+import { getApiTodosById, HttpError } from "@my-app/client";
+
+try {
+  const result = await getApiTodosById(42);
+  console.log(result.data.title);
+} catch (error) {
+  if (error instanceof HttpError) {
+    console.log(error.status, error.data, error.headers);
+  } else {
+    throw error; // Network failures, cancellation, or parsing errors.
+  }
+}
+```
+
+HTTP error body types describe the documented contract, not runtime validation.
+A proxy can return text instead of the documented JSON. Narrow a caught error
+with `instanceof HttpError` before reading HTTP-specific properties; TypeScript
+catch variables remain `unknown`. A generated hook infers its documented error
+body automatically.
+
+### Adopting this in an existing app
+
+Use a CLI revision containing this change to create a temporary scaffold with
+the same app name. Copy its `.nextrs/template/client/` and
+`.nextrs/ensure-client.mjs` into the existing app, reconcile the root
+`client:*` scripts with the scaffold (including `normalize-esm.mjs`), refresh the
+root lockfile, then run `nextrs client generate` and the app's typechecks/tests.
+Do not replace application routes or the root dependency list with demo files.
+Merely bumping the Rust dependency does not refresh checked-in client templates.
+
+Update consumers that handled `404` inside successful `data` to use `catch`,
+query error state, or mutation `onError`. If the application already supplied a
+transport with this behavior, replace that customization with the generated
+transport and verify that its error handling remains equivalent.

@@ -49,7 +49,8 @@ pub async fn get(
 ```
 
 The `[id]` directory and `Path<u64>` define the path argument. `Query<TodoQuery>`
-defines query options. The response declarations produce a status union. The
+defines query options. Success statuses form the resolved response type; error
+statuses reject with `HttpError`. The
 default operation ID is derived from method and path; set `operation_id` in the
 annotation when you want a shorter public name.
 
@@ -75,14 +76,17 @@ and links this generated workspace.
 ## 3. Call the framework-independent client
 
 ```ts
-import { getApiTodosById } from "@mysite/client";
+import { getApiTodosById, HttpError } from "@mysite/client";
 
-const response = await getApiTodosById(42, { neighbors: true });
-
-if (response.status === 200) {
+try {
+  const response = await getApiTodosById(42, { neighbors: true });
   console.log(response.data.title);
-} else {
-  console.log("Todo was not found");
+} catch (error) {
+  if (error instanceof HttpError && error.status === 404) {
+    console.log("Todo was not found");
+  } else {
+    throw error;
+  }
 }
 ```
 
@@ -102,13 +106,17 @@ React-specific APIs live at the explicit subpath:
 import {
   getGetApiTodosByIdQueryOptions,
   useGetApiTodosById,
+  HttpError,
 } from "@mysite/client/react-query";
 
 export function TodoDetail({ id }: { id: number }) {
   const todo = useGetApiTodosById(id, { neighbors: true });
 
   if (todo.isPending) return <p>Loading…</p>;
-  if (todo.data?.status !== 200) return <p>Not found</p>;
+  if (todo.isError) {
+    return <p>{todo.error instanceof HttpError && todo.error.status === 404
+      ? "Not found" : "Could not load the todo"}</p>;
+  }
   return <p>{todo.data.data.title}</p>;
 }
 
@@ -179,7 +187,7 @@ cargo nextrs client generate
 
 Every stale `.title` use now fails at the exact consumer. That is the intended
 feedback loop: one Rust-owned contract drives fetch calls, query results,
-mutation variables, status unions, and editor completion.
+mutation variables, success responses, typed errors, and editor completion.
 
 ## 7. Use imports from any nested file
 
