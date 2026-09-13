@@ -121,10 +121,16 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<BundleManifest> {
     let routes = discover_routes(&abs_app);
     let dist = manifest_dir.join(cfg.public_dist);
 
+    // Islands (React components referenced from Rust RSX) are discovered and
+    // their typed bindings written unconditionally — bindings are Rust source
+    // the app include!s, so they must exist even when bundling is skipped.
+    let islands = discover_islands(&manifest_dir, &abs_app)?;
+    write_islands_bindings(&islands)?;
+
     println!("cargo:rerun-if-env-changed=NEXTRS_SKIP_BUNDLE");
     if std::env::var_os("NEXTRS_SKIP_BUNDLE").is_some_and(|v| v == "1") {
-        let manifest = manifest_from_existing_dist(&routes, &dist, &manifest_dir)?;
-        write_asset_module(&routes, &manifest)?;
+        let manifest = manifest_from_existing_dist(&routes, &islands, &dist, &manifest_dir)?;
+        write_asset_module(&routes, &islands, &manifest)?;
         return Ok(manifest);
     }
 
@@ -175,13 +181,17 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<BundleManifest> {
 
     let tsx_not_founds = not_found_bundles(&routes);
 
-    if tsx_pages.is_empty() && tsx_loadings.is_empty() && tsx_not_founds.is_empty() {
+    if tsx_pages.is_empty()
+        && tsx_loadings.is_empty()
+        && tsx_not_founds.is_empty()
+        && islands.is_empty()
+    {
         // Prune a stale dist from a previous build that had tsx pages.
         if dist.is_dir() {
             std::fs::remove_dir_all(&dist)?;
         }
         let manifest = BundleManifest::default();
-        write_asset_module(&routes, &manifest)?;
+        write_asset_module(&routes, &islands, &manifest)?;
         return Ok(manifest);
     }
 
@@ -204,15 +214,20 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<BundleManifest> {
     // route, mounted once. Every page.tsx document boots the manifest-resolved
     // __app_shell__ asset, so shared layout.tsx chrome stays mounted across
     // soft navigation and only the changed leaf swaps.
-    let shell_path = entries_dir.join("__app_shell__.tsx");
-    write_if_changed(
-        &shell_path,
-        app_shell_entry(&routes, &client_helper).as_bytes(),
-    )?;
-    inputs.push(rolldown::InputItem {
-        name: Some("__app_shell__".to_string()),
-        import: shell_path.display().to_string(),
-    });
+    // Islands-only apps (Rust RSX pages, no page.tsx) skip the shell: it
+    // exists to keep layout.tsx chrome mounted across soft navigation, and
+    // would drag @tanstack/react-router into apps that never use it.
+    if !tsx_pages.is_empty() {
+        let shell_path = entries_dir.join("__app_shell__.tsx");
+        write_if_changed(
+            &shell_path,
+            app_shell_entry(&routes, &client_helper).as_bytes(),
+        )?;
+        inputs.push(rolldown::InputItem {
+            name: Some("__app_shell__".to_string()),
+            import: shell_path.display().to_string(),
+        });
+    }
     // Each page.tsx is ALSO a named entry (the RAW page, no createRoot wrapper) so
     // it gets a named content-addressed chunk that the app-shell's lazy
     // `import("<abs page.tsx>")` dedups to (preserve_entry_signatures=False keeps
@@ -229,6 +244,17 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<BundleManifest> {
         write_if_changed(&entry_path, entry_src.as_bytes())?;
         inputs.push(rolldown::InputItem {
             name: Some(slug.clone()),
+            import: entry_path.display().to_string(),
+        });
+    }
+    // Each referenced island gets a self-mounting entry: query its
+    // placeholders, parse props, createRoot. The RSX page glue injects the
+    // matching <script type="module"> tags after rendering.
+    for island in &islands {
+        let entry_path = entries_dir.join(format!("{}.tsx", island.slug));
+        write_if_changed(&entry_path, island_entry_wrapper(island).as_bytes())?;
+        inputs.push(rolldown::InputItem {
+            name: Some(island.slug.clone()),
             import: entry_path.display().to_string(),
         });
     }
@@ -270,7 +296,7 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<BundleManifest> {
             .map_err(std::io::Error::other)?
             .as_bytes(),
     )?;
-    write_asset_module(&routes, &manifest)?;
+    write_asset_module(&routes, &islands, &manifest)?;
 
     std::fs::create_dir_all(&dist)?;
     mirror_by_content(&staging, &dist)?;
@@ -279,19 +305,26 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<BundleManifest> {
 
 fn write_asset_module(
     routes: &[DiscoveredRoute],
+    islands: &[IslandBundle],
     manifest: &BundleManifest,
 ) -> std::io::Result<()> {
     let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR must be set"));
+    let island_assets: Vec<(String, String)> = islands
+        .iter()
+        .map(|i| (i.id.clone(), i.slug.clone()))
+        .collect();
     let source = crate::build::asset_module_source(
         &manifest.entries,
         routes,
         manifest.stylesheet.as_deref(),
+        &island_assets,
     )?;
     write_if_changed(&out_dir.join("nextrs_assets.rs"), source.as_bytes())
 }
 
 fn manifest_from_existing_dist(
     routes: &[DiscoveredRoute],
+    islands: &[IslandBundle],
     dist: &Path,
     manifest_dir: &Path,
 ) -> std::io::Result<BundleManifest> {
@@ -307,7 +340,7 @@ fn manifest_from_existing_dist(
     // this asset table with the real Rolldown manifest before serving pages.
     if !dist.is_dir() {
         return Ok(BundleManifest {
-            entries: expected_entry_names(routes)
+            entries: expected_entry_names(routes, islands)
                 .into_iter()
                 .map(|name| {
                     let href = format!("/dist/{name}.js");
@@ -321,7 +354,7 @@ fn manifest_from_existing_dist(
     // Backward-compatible bootstrap for an app's first upgrade: older
     // committed dist directories have stable entry names and no manifest.
     let mut entries = BTreeMap::new();
-    for name in expected_entry_names(routes) {
+    for name in expected_entry_names(routes, islands) {
         let stable = dist.join(format!("{name}.js"));
         if stable.is_file() {
             entries.insert(name.clone(), format!("/dist/{name}.js"));
@@ -363,10 +396,16 @@ fn fallback_stylesheet(manifest_dir: &Path) -> Option<String> {
         .map(|bytes| format!("/style.css?v={}", crate::build::content_hash(&bytes)))
 }
 
-fn expected_entry_names(routes: &[DiscoveredRoute]) -> std::collections::BTreeSet<String> {
+fn expected_entry_names(
+    routes: &[DiscoveredRoute],
+    islands: &[IslandBundle],
+) -> std::collections::BTreeSet<String> {
     let mut names = std::collections::BTreeSet::new();
     if routes.iter().any(|route| route.page.tsx.is_some()) {
         names.insert("__app_shell__".to_string());
+    }
+    for island in islands {
+        names.insert(island.slug.clone());
     }
     for page in page_bundles(routes) {
         names.insert(page.slug);
@@ -398,6 +437,229 @@ fn fingerprint_stylesheet(manifest_dir: &Path, staging: &Path) -> std::io::Resul
 struct PageBundle {
     slug: String,
     page_path: PathBuf,
+}
+
+/// A React island: a `.tsx` component referenced from Rust RSX through the
+/// generated `crate::client` bindings (docs/rsx-server-components.md). Each
+/// becomes its own self-mounting bundle entry that hydrates every
+/// `data-nx-island` placeholder carrying its id.
+#[derive(Debug, Clone)]
+pub(crate) struct IslandBundle {
+    /// Component name (`TodoFilter`).
+    pub name: String,
+    /// Placeholder/manifest id (`TodoFilter-1a2b3c4d`) — name + path hash, so
+    /// two same-named components in different directories can't collide
+    /// silently (they still error as ambiguous references today).
+    pub id: String,
+    /// Rolldown entry name (`island_TodoFilter`).
+    pub slug: String,
+    pub path: PathBuf,
+    pub component: crate::islands::IslandComponent,
+}
+
+/// Find every island the app's Rust code references: scan `.rs` sources for
+/// `client::Name` / `use crate::client::{A, B}` references, then match each
+/// name against the default exports of non-convention `.tsx` files under the
+/// app tree and `<project>/components`. Only referenced components get the
+/// full props extraction (and its allowlist errors) — unreferenced `.tsx`
+/// files are ordinary modules and stay untouched.
+fn discover_islands(
+    manifest_dir: &Path,
+    abs_app: &Path,
+) -> std::io::Result<Vec<IslandBundle>> {
+    let referenced = collect_island_refs(&[abs_app.to_path_buf(), manifest_dir.join("src")]);
+    if referenced.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // Index candidate .tsx files by default-export component name.
+    let mut candidates: BTreeMap<String, Vec<PathBuf>> = BTreeMap::new();
+    let mut roots = vec![abs_app.to_path_buf()];
+    let components_dir = manifest_dir.join("components");
+    if components_dir.is_dir() {
+        println!("cargo:rerun-if-changed={}", components_dir.display());
+        roots.push(components_dir);
+    }
+    for root in roots {
+        walk_tsx_files(&root, &mut |path| {
+            let file_name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            if matches!(
+                file_name,
+                "page.tsx" | "layout.tsx" | "loading.tsx" | "not-found.tsx"
+            ) {
+                return;
+            }
+            let Ok(source) = std::fs::read_to_string(path) else {
+                return;
+            };
+            let label = path.display().to_string();
+            if let Some(name) = crate::islands::default_export_component_name(&source, &label) {
+                candidates.entry(name).or_default().push(path.to_path_buf());
+            }
+        });
+    }
+
+    let mut islands = Vec::new();
+    for name in referenced {
+        let files = candidates.get(&name).map(Vec::as_slice).unwrap_or(&[]);
+        let path = match files {
+            [] => {
+                return Err(std::io::Error::other(format!(
+                    "nextrs: Rust code references island `client::{name}`, but no .tsx file \
+                     under app/ or components/ default-exports a component named `{name}`"
+                )));
+            }
+            [one] => one.clone(),
+            many => {
+                let list = many
+                    .iter()
+                    .map(|p| p.display().to_string())
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                return Err(std::io::Error::other(format!(
+                    "nextrs: island `client::{name}` is ambiguous — multiple .tsx files \
+                     default-export `{name}`: {list}. Rename one of the components."
+                )));
+            }
+        };
+
+        let source = std::fs::read_to_string(&path)?;
+        let label = path
+            .strip_prefix(manifest_dir)
+            .unwrap_or(&path)
+            .display()
+            .to_string();
+        let component = crate::islands::parse_island(&source, &label)
+            .map_err(std::io::Error::other)?
+            .ok_or_else(|| {
+                std::io::Error::other(format!(
+                    "nextrs: {label}: island `{name}` lost its default export"
+                ))
+            })?;
+
+        let id = format!("{name}-{:08x}", fnv1a(label.as_bytes()));
+        islands.push(IslandBundle {
+            slug: format!("island_{name}"),
+            name,
+            id,
+            path,
+            component,
+        });
+    }
+    Ok(islands)
+}
+
+/// Scan `.rs` sources for `client::Ident` and `client::{A, B, ...}`
+/// references. Purely textual — a mention in a comment costs one generated
+/// binding, never a build error.
+fn collect_island_refs(roots: &[PathBuf]) -> std::collections::BTreeSet<String> {
+    let mut names = std::collections::BTreeSet::new();
+    for root in roots {
+        walk_rs_files(root, &mut |path| {
+            let Ok(source) = std::fs::read_to_string(path) else {
+                return;
+            };
+            let mut rest = source.as_str();
+            while let Some(pos) = rest.find("client::") {
+                rest = &rest[pos + "client::".len()..];
+                if let Some(inner) = rest.strip_prefix('{') {
+                    let end = inner.find('}').unwrap_or(inner.len());
+                    for part in inner[..end].split(',') {
+                        push_component_name(part.trim(), &mut names);
+                    }
+                } else {
+                    let end = rest
+                        .find(|c: char| !c.is_ascii_alphanumeric() && c != '_')
+                        .unwrap_or(rest.len());
+                    push_component_name(&rest[..end], &mut names);
+                }
+            }
+        });
+    }
+    names
+}
+
+fn push_component_name(token: &str, names: &mut std::collections::BTreeSet<String>) {
+    // Island components are uppercase-first (their Props structs and enums
+    // also start uppercase but end in a distinctive suffix generated from the
+    // component itself, so indexing by component name alone is enough).
+    if token.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+        && token.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+    {
+        names.insert(token.to_string());
+    }
+}
+
+fn walk_tsx_files(dir: &Path, f: &mut impl FnMut(&Path)) {
+    walk_files_with_ext(dir, "tsx", f);
+}
+
+fn walk_rs_files(dir: &Path, f: &mut impl FnMut(&Path)) {
+    walk_files_with_ext(dir, "rs", f);
+}
+
+fn walk_files_with_ext(dir: &Path, ext: &str, f: &mut impl FnMut(&Path)) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') || name == "node_modules" || name == "target" {
+            continue;
+        }
+        if path.is_dir() {
+            walk_files_with_ext(&path, ext, f);
+        } else if path.extension().and_then(|e| e.to_str()) == Some(ext) {
+            f(&path);
+        }
+    }
+}
+
+fn fnv1a(bytes: &[u8]) -> u32 {
+    let mut hash: u32 = 0x811c9dc5;
+    for b in bytes {
+        hash ^= u32::from(*b);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    hash
+}
+
+/// Write the generated `crate::client` bindings for every referenced island
+/// to `$OUT_DIR/nextrs_islands.rs`. Always written — including with
+/// `NEXTRS_SKIP_BUNDLE=1` and for island-less apps — so an app's
+/// `include!(concat!(env!("OUT_DIR"), "/nextrs_islands.rs"))` never breaks.
+fn write_islands_bindings(islands: &[IslandBundle]) -> std::io::Result<()> {
+    let out_dir = PathBuf::from(std::env::var_os("OUT_DIR").expect("OUT_DIR must be set"));
+    let pairs: Vec<(String, crate::islands::IslandComponent)> = islands
+        .iter()
+        .map(|i| (i.id.clone(), i.component.clone()))
+        .collect();
+    let source = crate::islands::render_bindings(&pairs);
+    write_if_changed(&out_dir.join("nextrs_islands.rs"), source.as_bytes())
+}
+
+/// The self-mounting entry for one island: find every placeholder carrying
+/// this island's id, parse its props payload, and `createRoot`-render the
+/// real React component into it. No central runtime, no manifest fetch — the
+/// script tag the server injects IS the mount.
+fn island_entry_wrapper(island: &IslandBundle) -> String {
+    format!(
+        r#"// @generated by nextrs for island `{name}` — do not edit.
+import {{ createRoot }} from 'react-dom/client';
+import Component from "{path}";
+
+for (const el of Array.from(document.querySelectorAll('[data-nx-island="{id}"]'))) {{
+  const raw = el.getAttribute('data-nx-props');
+  const props = raw ? JSON.parse(raw) : {{}};
+  createRoot(el).render(<Component {{...props}} />);
+}}
+"#,
+        name = island.name,
+        path = island.path.display().to_string().replace('\\', "/"),
+        id = island.id,
+    )
 }
 
 /// A standalone client-rendered mount: a `not-found.tsx`. These do NOT boot
@@ -2011,7 +2273,7 @@ console.log(Logo(), generated, dependency);
         let routes = discover_routes(&app);
 
         let manifest =
-            manifest_from_existing_dist(&routes, &tmp.path().join("public/dist"), tmp.path())
+            manifest_from_existing_dist(&routes, &[], &tmp.path().join("public/dist"), tmp.path())
                 .unwrap();
 
         assert_eq!(

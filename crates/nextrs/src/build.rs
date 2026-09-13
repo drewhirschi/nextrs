@@ -206,7 +206,7 @@ pub fn emit_registry(
         let style = fallback_stylesheet_href();
         std::fs::write(
             &assets_path,
-            asset_module_source(&entries, &routes, Some(&style))?,
+            asset_module_source(&entries, &routes, Some(&style), &[])?,
         )?;
     }
 
@@ -878,6 +878,7 @@ pub(crate) fn asset_module_source(
     entries: &std::collections::BTreeMap<String, String>,
     routes: &[DiscoveredRoute],
     style_href: Option<&str>,
+    islands: &[(String, String)],
 ) -> std::io::Result<String> {
     use std::fmt::Write as _;
 
@@ -912,6 +913,15 @@ pub(crate) fn asset_module_source(
         let _ = writeln!(out, "        {name:?} => {shell:?},");
     }
     out.push_str("        _ => panic!(\"nextrs: unknown loading asset {name}\"),\n    }\n}\n");
+
+    // Island id → bundle URL, for the RSX page glue's script-tag injection
+    // (`nextrs::rsx::island_script_tags`). Present (possibly empty) in every
+    // generated asset module so the registry can reference it unconditionally.
+    out.push_str("pub fn island(id: &str) -> Option<&'static str> {\n    match id {\n");
+    for (island_id, slug) in islands {
+        let _ = writeln!(out, "        {island_id:?} => Some({:?}),", entry(slug)?);
+    }
+    out.push_str("        _ => None,\n    }\n}\n");
     Ok(out)
 }
 
@@ -1227,6 +1237,24 @@ fn emit_path_mod(out: &mut String, name: &str, target: &Path) {
 /// seeds as a JSON script tag ahead of the mount div — the await sits exactly
 /// where a `page.rs` await would, so a loading slot still ships first.
 fn emit_page_slot(out: &mut String, idx: usize, route: &DiscoveredRoute) {
+    // RSX server component: `page.rs` exporting `pub async fn page(...)`
+    // (docs/rsx-server-components.md). Wired as a full Axum handler —
+    // extractor-style params work like route.rs — with island `<script>`
+    // injection after render. Detected by convention, no macro: the legacy
+    // Askama shape exports `render()`, the RSX shape exports `page()`.
+    if let Some(page_rs) = &route.page.rs {
+        let is_rsx = std::fs::read_to_string(page_rs)
+            .is_ok_and(|source| has_public_async_method(&source, "page"));
+        if is_rsx {
+            let _ = writeln!(
+                out,
+                "        page: Some(::nextrs::conventions::rsx_page({}::page, __nextrs_assets::island)),",
+                mod_name(idx, "page")
+            );
+            return;
+        }
+    }
+
     let is_tsx_only =
         route.page.tsx.is_some() && route.page.rs.is_none() && route.page.html.is_none();
     if !is_tsx_only {
@@ -1995,7 +2023,7 @@ pub async fn post() -> axum::http::StatusCode { axum::http::StatusCode::CREATED 
         ]);
 
         let source =
-            asset_module_source(&entries, &routes, Some("/dist/style-feedface.css")).unwrap();
+            asset_module_source(&entries, &routes, Some("/dist/style-feedface.css"), &[]).unwrap();
 
         assert!(source.contains("/dist/__app_shell__-abc123.js"), "{source}");
         assert!(source.contains("/dist/index.loading-def456.js"), "{source}");

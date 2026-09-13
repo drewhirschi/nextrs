@@ -65,6 +65,42 @@ impl IntoResponse for Rsx {
     }
 }
 
+/// Scan rendered page HTML for island placeholders and emit one
+/// `<script type="module">` tag per distinct island, resolved through the
+/// generated asset table (`__nextrs_assets::island`). Called by the generated
+/// page glue after an RSX page renders — pages without islands get an empty
+/// string.
+pub fn island_script_tags(html: &str, asset: fn(&str) -> Option<&'static str>) -> String {
+    const MARKER: &str = "data-nx-island=\"";
+    let mut out = String::new();
+    let mut seen: Vec<&str> = Vec::new();
+    let mut rest = html;
+    while let Some(pos) = rest.find(MARKER) {
+        rest = &rest[pos + MARKER.len()..];
+        let Some(end) = rest.find('"') else { break };
+        let id = &rest[..end];
+        rest = &rest[end..];
+        if seen.contains(&id) {
+            continue;
+        }
+        seen.push(id);
+        match asset(id) {
+            Some(src) => {
+                out.push_str("<script type=\"module\" src=\"");
+                escape_attr(&mut out, src);
+                out.push_str("\"></script>");
+            }
+            None => {
+                // A placeholder with no bundled asset means the build and the
+                // render disagree — surface it loudly in dev instead of
+                // silently rendering a dead island.
+                debug_assert!(false, "no bundled asset for island `{id}`");
+            }
+        }
+    }
+    out
+}
+
 /// Escape text content (`<`, `>`, `&`).
 pub fn escape_text(out: &mut String, text: &str) {
     for ch in text.chars() {

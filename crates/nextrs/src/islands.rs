@@ -94,6 +94,28 @@ pub fn parse_island(source: &str, file_label: &str) -> Result<Option<IslandCompo
     Ok(Some(IslandComponent { name, props }))
 }
 
+/// Best-effort probe: the default-exported component's name, without
+/// enforcing the props allowlist. Used to index candidate island files by
+/// name — only components actually referenced from Rust get the full
+/// (error-raising) `parse_island` treatment.
+pub fn default_export_component_name(source: &str, file_label: &str) -> Option<String> {
+    let allocator = Allocator::default();
+    let parsed = oxc_parser::Parser::new(&allocator, source, SourceType::tsx()).parse();
+    if !parsed.diagnostics.is_empty() {
+        return None;
+    }
+    match find_default_export(&parsed.program, file_label) {
+        Ok(Some((name, _))) => Some(name.unwrap_or_else(|| {
+            std::path::Path::new(file_label)
+                .file_stem()
+                .and_then(|s| s.to_str())
+                .unwrap_or("Component")
+                .to_string()
+        })),
+        _ => None,
+    }
+}
+
 /// Locate the default-exported component. Returns
 /// `(component_name, Some(first_param_annotation))` where the inner Option is
 /// `None` when the function takes no parameters, and the annotation is `None`
