@@ -1410,6 +1410,12 @@ fn run_bundler(
         "\"development\""
     };
 
+    let mut modules = vec!["node_modules".to_owned()];
+    modules.extend(
+        node_module_dirs(project_dir, client_dir)
+            .into_iter()
+            .map(|dir| dir.display().to_string()),
+    );
     let options = BundlerOptions {
         input: Some(inputs),
         cwd: Some(project_dir.to_path_buf()),
@@ -1438,12 +1444,11 @@ fn run_bundler(
                 client_alias,
                 user_aliases,
             )),
-            modules: Some(
-                node_module_dirs(project_dir, client_dir)
-                    .into_iter()
-                    .map(|dir| dir.display().to_string())
-                    .collect(),
-            ),
+            // Keep Node's importer-relative lookup ahead of the absolute
+            // project/client fallback roots. Without this, a nested package
+            // such as parse5 resolves its entities import from the root
+            // installation instead of parse5/node_modules/entities.
+            modules: Some(modules),
             // Prefix-alias substitution (`@/*`, `@workspace/x/*`) yields
             // extension-less paths (e.g. `.../src/errors`); without explicit TS
             // extensions the resolver can't find `errors.ts`, so the specifier
@@ -1805,6 +1810,72 @@ mod tests {
             client_index > 0,
             "project dependencies have precedence: {dirs:?}"
         );
+    }
+
+    #[test]
+    fn nested_package_dependencies_precede_absolute_module_fallbacks() {
+        let tmp = tempfile::tempdir().unwrap();
+        let project = tmp.path();
+        let client = project.join(".nextrs/client");
+        let staging = project.join("dist");
+        let parse5 = project.join("node_modules/parse5");
+        let nested_entities = parse5.join("node_modules/entities");
+        let root_entities = project.join("node_modules/entities");
+        std::fs::create_dir_all(project.join("app")).unwrap();
+        std::fs::create_dir_all(client.join("src")).unwrap();
+        std::fs::create_dir_all(parse5.join("dist/serializer")).unwrap();
+        std::fs::create_dir_all(&nested_entities).unwrap();
+        std::fs::create_dir_all(&root_entities).unwrap();
+        std::fs::create_dir_all(&staging).unwrap();
+
+        std::fs::write(
+            project.join("app/entry.tsx"),
+            "import { marker } from 'parse5/dist/serializer/index.js';\nconsole.log(marker);\n",
+        )
+        .unwrap();
+        std::fs::write(
+            parse5.join("package.json"),
+            r#"{"name":"parse5","exports":{"./dist/serializer/index.js":"./dist/serializer/index.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            parse5.join("dist/serializer/index.js"),
+            "import { marker } from 'entities/escape'; export { marker };\n",
+        )
+        .unwrap();
+        std::fs::write(
+            nested_entities.join("package.json"),
+            r#"{"name":"entities","exports":{"./escape":"./escape.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(nested_entities.join("escape.js"), "export const marker = 'nested';\n")
+            .unwrap();
+        std::fs::write(
+            root_entities.join("package.json"),
+            r#"{"name":"entities","exports":{"./escape":"./escape.js"}}"#,
+        )
+        .unwrap();
+        std::fs::write(root_entities.join("escape.js"), "export const marker = 'root';\n")
+            .unwrap();
+
+        let entries = run_bundler(
+            vec![rolldown::InputItem {
+                name: Some("entry".to_string()),
+                import: project.join("app/entry.tsx").display().to_string(),
+            }],
+            &staging,
+            project,
+            &client,
+            false,
+            "@fixture/client",
+            &[],
+        )
+        .unwrap();
+        let output = entries.get("entry").expect("entry output");
+        let code = std::fs::read_to_string(staging.join(output.trim_start_matches("/dist/")))
+            .unwrap();
+        assert!(code.contains("nested"), "{code}");
+        assert!(!code.contains("root"), "{code}");
     }
 
     #[test]
