@@ -6,6 +6,7 @@ pub mod health;
 pub mod openapi;
 pub mod params;
 pub mod router;
+pub mod rsx;
 pub mod seed;
 pub mod speculation;
 pub mod telemetry;
@@ -34,9 +35,13 @@ pub use utoipa;
 // Re-exported for the seed companions `#[nextrs::api]` expands (they
 // reference `::nextrs::serde_json` so consumer crates don't need the dep).
 pub use error::ApiError;
+pub use rsx::Rsx;
 pub use params::{Params, search_params};
 pub use seed::{QuerySeed, SeedEntry, seed_key};
 pub use serde_json;
+// Re-exported for generated island bindings (`#[serde(crate = "::nextrs::serde")]`),
+// so consumer crates don't need a direct serde dependency for the derive.
+pub use serde;
 pub use telemetry::Timing;
 pub use wait_until::WaitUntil;
 
@@ -46,6 +51,9 @@ pub use nextrs_macros::api;
 /// `#[nextrs::cron(schedule = "...")]` — a scheduled `#[nextrs::api]` plus the `CRON_SECRET` bearer gate
 /// for scheduled routes. See [`nextrs_macros::cron`] and [`cron::authorize`].
 pub use nextrs_macros::cron;
+/// `rsx! { <main>...</main> }` — JSX-shaped HTML for Rust server components,
+/// returning [`rsx::Rsx`]. See [`nextrs_macros::rsx`] and `docs/rsx-server-components.md`.
+pub use nextrs_macros::rsx;
 
 #[cfg(feature = "vercel")]
 pub mod vercel;
@@ -58,6 +66,9 @@ pub mod docs;
 
 #[cfg(feature = "tsx")]
 pub mod bundle;
+
+#[cfg(feature = "tsx")]
+pub mod islands;
 
 #[cfg(feature = "server-bundles")]
 pub mod server_bundles;

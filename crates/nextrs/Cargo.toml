@@ -34,6 +34,10 @@ build = ["server-bundles", "dep:pulldown-cmark", "dep:syntect", "dep:toml", "dep
 # in [build-dependencies] of apps that actually use .tsx pages.
 tsx = [
     "build",
+    "dep:oxc_allocator",
+    "dep:oxc_ast",
+    "dep:oxc_parser",
+    "dep:oxc_span",
     "dep:rolldown",
     "dep:rolldown_common",
     "dep:rolldown_dev_common",
@@ -86,6 +90,13 @@ two-face = { version = "0.5.1", default-features = false, features = ["syntect-f
 # Optional — only pulled in when the `tsx` feature is on (build scripts).
 # Pinned exactly: the crates.io releases are new (May 2026) and the Rust API
 # has no semver promise yet. Bump deliberately.
+# oxc pinned to the exact versions rolldown 1.1.4 already vendors — the island
+# props extractor (src/islands.rs) parses .tsx with the same parser the bundler
+# uses, at zero added dependency weight.
+oxc_allocator = { version = "=0.138.0", optional = true }
+oxc_ast = { version = "=0.138.0", optional = true }
+oxc_parser = { version = "=0.138.0", optional = true }
+oxc_span = { version = "=0.138.0", optional = true }
 rolldown = { version = "=1.1.4", optional = true }
 rolldown_common = { version = "=1.1.4", optional = true }
 rolldown_dev_common = { version = "=1.1.4", optional = true }

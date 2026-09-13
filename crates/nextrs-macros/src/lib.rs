@@ -7,6 +7,19 @@
 
 use proc_macro::{Span, TokenStream};
 
+mod rsx;
+
+/// JSX-shaped HTML templating for Rust server components. Expands to a
+/// `String` builder returning [`nextrs::rsx::Rsx`]; static text/attributes are
+/// escaped at compile time, `{expr}` holes render via `nextrs::rsx::Render`,
+/// and uppercase-first tags call component functions
+/// (`<TodoFilter x={1} />` → `TodoFilter(TodoFilterProps { x: 1 })`).
+/// See `docs/rsx-server-components.md`.
+#[proc_macro]
+pub fn rsx(input: TokenStream) -> TokenStream {
+    rsx::rsx_impl(input.into()).into()
+}
+
 /// Annotate a `route.rs` method as a typed API endpoint, deriving the OpenAPI
 /// `path` from the file's location under `app/`.
 ///

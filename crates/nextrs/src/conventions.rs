@@ -198,6 +198,43 @@ pub fn static_loading(html: &'static str) -> LoadingFn {
 /// concrete handler is converted to its boxed future at call time via
 /// [`Handler::call`]; the framework's router supplies the (possibly
 /// middleware-mutated) request.
+/// Adapt an RSX server component (`page.rs` exporting
+/// `pub async fn page(<extractors>) -> Rsx`) into the registry's [`PageFn`].
+///
+/// The handler is a full Axum handler, so extractor-style parameters work
+/// exactly like they do in `route.rs`. After rendering, the page HTML is
+/// scanned for island placeholders and the matching bundle `<script>` tags
+/// are appended (resolved through the generated asset table).
+///
+/// v1 limitation: [`PageFn`] carries HTML only, so a non-200 status from a
+/// `Result`-returning page is flattened into the page body.
+pub fn rsx_page<H, T>(handler: H, island_asset: fn(&str) -> Option<&'static str>) -> PageFn
+where
+    H: Handler<T, ()> + Sync,
+    T: 'static,
+{
+    Box::new(move |req| {
+        let handler = handler.clone();
+        Box::pin(async move {
+            let response = handler.call(req, ()).await;
+            let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+                .await
+                .unwrap_or_default();
+            let mut html = String::from_utf8_lossy(&body).into_owned();
+            let scripts = crate::rsx::island_script_tags(&html, island_asset);
+            if !scripts.is_empty() {
+                // Full-document pages get the scripts inside <body>; fragment
+                // pages (layout-wrapped) just append.
+                match html.rfind("</body>") {
+                    Some(pos) => html.insert_str(pos, &scripts),
+                    None => html.push_str(&scripts),
+                }
+            }
+            html
+        }) as Pin<Box<dyn Future<Output = HtmlString> + Send>>
+    })
+}
+
 pub fn route_method<H, T>(handler: H) -> RouteFn
 where
     H: Handler<T, ()> + Sync,
