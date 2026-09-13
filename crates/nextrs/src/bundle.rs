@@ -331,7 +331,19 @@ fn manifest_from_existing_dist(
     let manifest_path = dist.join("nextrs-assets.json");
     if manifest_path.is_file() {
         let bytes = std::fs::read(&manifest_path)?;
-        return serde_json::from_slice(&bytes).map_err(std::io::Error::other);
+        let mut manifest: BundleManifest =
+            serde_json::from_slice(&bytes).map_err(std::io::Error::other)?;
+        // A dist bundled before an island was added (or before islands
+        // existed at all) has no entry for it. Placeholder like the
+        // no-dist bootstrap below — skip-bundle builds only need the
+        // generated code to compile; the next real bundle fills it in.
+        for island in islands {
+            manifest
+                .entries
+                .entry(island.slug.clone())
+                .or_insert_with(|| format!("/dist/{}.js", island.slug));
+        }
+        return Ok(manifest);
     }
 
     // The client-codegen bootstrap compiles dump-openapi with bundling skipped
@@ -366,6 +378,12 @@ fn manifest_from_existing_dist(
             .filter_map(|entry| entry.file_name().into_string().ok())
             .find(|file| file.starts_with(&prefix) && file.ends_with(".js"));
         let Some(file) = found else {
+            if islands.iter().any(|island| island.slug == name) {
+                // Island added since this dist was bundled — placeholder,
+                // same as the manifest branch above.
+                entries.insert(name.clone(), format!("/dist/{name}.js"));
+                continue;
+            }
             return Err(std::io::Error::other(format!(
                 "nextrs: NEXTRS_SKIP_BUNDLE=1 but {dist:?} has no bundle for {name:?}; rebuild and commit public/dist"
             )));
