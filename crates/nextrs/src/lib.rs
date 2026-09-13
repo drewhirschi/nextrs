@@ -39,6 +39,9 @@ pub use rsx::Rsx;
 pub use params::{Params, search_params};
 pub use seed::{QuerySeed, SeedEntry, seed_key};
 pub use serde_json;
+// Re-exported for generated island bindings (`#[serde(crate = "::nextrs::serde")]`),
+// so consumer crates don't need a direct serde dependency for the derive.
+pub use serde;
 pub use telemetry::Timing;
 pub use wait_until::WaitUntil;
 
@@ -63,6 +66,9 @@ pub mod docs;
 
 #[cfg(feature = "tsx")]
 pub mod bundle;
+
+#[cfg(feature = "tsx")]
+pub mod islands;
 
 #[cfg(feature = "server-bundles")]
 pub mod server_bundles;
