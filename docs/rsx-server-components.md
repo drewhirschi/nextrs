@@ -1,6 +1,11 @@
 # RSX Server Components: Rust Pages With React Islands
 
-**Status:** roadmap — design settled in conversation 2026-09-12, nothing implemented.
+**Status:** v1 implemented (this PR, 2026-09-12) — `rsx!` macro, oxc props
+extractor, island bundling + typed `crate::client` bindings, the
+`pub async fn page(...)` convention, and the worked demo at
+`examples/react-todos/app/server-stats/page.rs` +
+`examples/react-todos/components/TodoStats.tsx`. Deviations from the original
+sketch and open follow-ups are listed at the bottom.
 **Motivation:** replace Askama templating for Rust-rendered pages (the `{{ }}` /
 filter syntax has worn out its welcome) with a JSX-shaped `rsx!` macro, and let
 those Rust server components embed real React `.tsx` components as typed,
@@ -195,6 +200,35 @@ boundary enforced by the language instead of a directive.
    feature (per CLAUDE.md: the demo app is the living reference), and `site/`
    starts migrating off Askama — it's the dogfood target for killing the
    old templating.
+
+## v1 implementation notes (what shipped vs. the sketch)
+
+- **Iteration holes:** a blanket `impl Render for I: Iterator` is impossible
+  (coherence: conflicts with impls for foreign types like `&str`), so map
+  chains end in `.collect::<Rsx>()` or wrap in `Rsx::each(...)`.
+- **Island discovery:** `.rs` sources under `app/` and `src/` are scanned for
+  `client::Name` references; each referenced name must match exactly one
+  non-convention `.tsx` default export under `app/` or `components/`.
+  Unreferenced `.tsx` files are never parsed for props, so existing colocated
+  components can't break a build. Unknown names fall through to rustc's
+  unresolved-import error.
+- **No central mount runtime:** each island's Rolldown entry is
+  self-mounting (querySelectorAll on its own `data-nx-island` id →
+  `JSON.parse` props → `createRoot`), and `rsx_page` injects the matching
+  `<script type="module">` tags (before `</body>` when present) by scanning
+  the rendered HTML. The manifest lookup happens server-side at build time,
+  not in the browser.
+- **Optional props** generate `Option<T>` fields; struct-literal bindings
+  mean the caller writes `title={Some(...)}` / `title={None}` explicitly.
+  Builder-style bindings (omit optional props at the call site) are the
+  natural follow-up.
+- **TS `number` → `f64`**, so integer counts cross as `2.0`. Fine on the
+  wire (JSON has one number type), mildly ugly in Rust literals.
+- **Status flattening:** the registry's `PageFn` carries HTML only, so a
+  non-200 from a `Result`-returning page is flattened into the body.
+- **Islands-only apps** skip the TanStack app-shell entry entirely.
+- **Scaffold** (`create-nextrs-app`) doesn't wire the `client` module or a
+  starter island yet — follow-up alongside the docs-site page.
 
 ## Open questions
 

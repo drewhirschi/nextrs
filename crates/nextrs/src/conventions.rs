@@ -221,7 +221,15 @@ where
                 .await
                 .unwrap_or_default();
             let mut html = String::from_utf8_lossy(&body).into_owned();
-            html.push_str(&crate::rsx::island_script_tags(&html, island_asset));
+            let scripts = crate::rsx::island_script_tags(&html, island_asset);
+            if !scripts.is_empty() {
+                // Full-document pages get the scripts inside <body>; fragment
+                // pages (layout-wrapped) just append.
+                match html.rfind("</body>") {
+                    Some(pos) => html.insert_str(pos, &scripts),
+                    None => html.push_str(&scripts),
+                }
+            }
             html
         }) as Pin<Box<dyn Future<Output = HtmlString> + Send>>
     })

@@ -503,12 +503,11 @@ fn discover_islands(
     for name in referenced {
         let files = candidates.get(&name).map(Vec::as_slice).unwrap_or(&[]);
         let path = match files {
-            [] => {
-                return Err(std::io::Error::other(format!(
-                    "nextrs: Rust code references island `client::{name}`, but no .tsx file \
-                     under app/ or components/ default-exports a component named `{name}`"
-                )));
-            }
+            // Not a component we know: either a generated-binding auxiliary
+            // (TodoFilterProps, TodoFilterInitialFilter, ...) or a typo.
+            // Skip — a real typo surfaces as rustc's unresolved-import error
+            // at the `use crate::client::X` site.
+            [] => continue,
             [one] => one.clone(),
             many => {
                 let list = many

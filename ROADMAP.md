@@ -97,8 +97,12 @@ my-app/
 
 ### RSX server components with React islands
 
-Status: design settled 2026-09-12; nothing implemented. Full design in
-[docs/rsx-server-components.md](docs/rsx-server-components.md).
+Status: v1 implemented 2026-09-12 (same PR as the design) — `rsx!` macro,
+oxc-based props extraction, island bundling with typed `crate::client`
+bindings, and the `pub async fn page(...)` convention; demo at
+`examples/react-todos/app/server-stats/`. Remaining: scaffold + docs-site
+adoption, builder-style bindings for optional props, cross-file type imports.
+Full design in [docs/rsx-server-components.md](docs/rsx-server-components.md).
 
 Replace Askama templating for Rust-rendered pages with a JSX-shaped `rsx!`
 macro: `page.rs` becomes a server component (DB access, auth, then HTML), and

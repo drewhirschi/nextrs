@@ -13,7 +13,7 @@
 //! (docs/rsx-server-components.md).
 
 use proc_macro2::TokenStream;
-use quote::{ToTokens, quote};
+use quote::quote;
 use rstml::node::{
     KVAttributeValue, KeyedAttribute, Node, NodeAttribute, NodeBlock, NodeElement, NodeName,
 };
@@ -85,8 +85,15 @@ impl Codegen {
             Node::Block(block) => match block {
                 NodeBlock::ValidBlock(b) => {
                     self.flush();
+                    // `{ expr }` holes unwrap to the bare expression (avoids
+                    // unused_braces warnings); multi-statement blocks pass
+                    // through whole.
+                    let value: TokenStream = match (&b.stmts[..], b) {
+                        ([syn::Stmt::Expr(e, None)], _) => quote! { #e },
+                        (_, b) => quote! { #b },
+                    };
                     self.stmts.push(quote! {
-                        ::nextrs::rsx::Render::render_to(#b, &mut __nx_out);
+                        ::nextrs::rsx::Render::render_to(#value, &mut __nx_out);
                     });
                 }
                 NodeBlock::Invalid(inv) => self.err(inv.span(), "invalid block in rsx!"),
@@ -170,8 +177,9 @@ impl Codegen {
                         self.buf.push('"');
                     } else {
                         self.flush();
+                        let value = unwrap_braces(expr);
                         self.stmts.push(quote! {
-                            ::nextrs::rsx::AttrValue::render_attr_to(#expr, #key, &mut __nx_out);
+                            ::nextrs::rsx::AttrValue::render_attr_to(#value, #key, &mut __nx_out);
                         });
                     }
                 }
@@ -226,7 +234,8 @@ impl Codegen {
                         if matches!(expr, syn::Expr::Lit(l) if matches!(l.lit, syn::Lit::Str(_))) {
                             fields.push(quote! { #field: ::core::convert::Into::into(#expr) });
                         } else {
-                            fields.push(quote! { #field: #expr });
+                            let value = unwrap_braces(expr);
+                            fields.push(quote! { #field: #value });
                         }
                     }
                     KVAttributeValue::InvalidBraced(inv) => {
@@ -255,6 +264,19 @@ impl Codegen {
             ::nextrs::rsx::Render::render_to(#call, &mut __nx_out);
         });
     }
+}
+
+/// `{ expr }` attribute values and holes unwrap to the bare expression so the
+/// expansion doesn't trip the `unused_braces` lint.
+fn unwrap_braces(expr: &syn::Expr) -> TokenStream {
+    if let syn::Expr::Block(b) = expr
+        && b.attrs.is_empty()
+        && b.label.is_none()
+        && let [syn::Stmt::Expr(inner, None)] = &b.block.stmts[..]
+    {
+        return quote! { #inner };
+    }
+    quote! { #expr }
 }
 
 /// A tag name is a component when it's a plain path starting with an
