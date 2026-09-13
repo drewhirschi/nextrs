@@ -73,7 +73,7 @@ fn doctype_and_fragment() {
     };
     assert_eq!(
         out.as_html(),
-        "<!DOCTYPE html><html lang=\"en\"><body></body></html>"
+        "<!doctype html><html lang=\"en\"><body></body></html>"
     );
 }
 

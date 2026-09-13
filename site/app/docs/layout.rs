@@ -31,6 +31,8 @@ fn sections() -> Vec<Section> {
 // are resolved client-side from the rendered content. Raw: script bodies must
 // not be HTML-escaped.
 const TOC_SCRIPT: &str = r##"<script>
+  // Layouts only receive child HTML, so active state + the "On this page" TOC
+  // are resolved client-side from the rendered content.
   (function () {
     var path = location.pathname.replace(/\/+$/, "");
     document.querySelectorAll(".docs-sidebar a").forEach(function (a) {

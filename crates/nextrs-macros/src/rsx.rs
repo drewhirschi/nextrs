@@ -99,7 +99,10 @@ impl Codegen {
                 NodeBlock::Invalid(inv) => self.err(inv.span(), "invalid block in rsx!"),
             },
             Node::Doctype(d) => {
-                self.buf.push_str("<!DOCTYPE ");
+                // Lowercase to match what HTML serializers (and the Askama
+                // templates this replaces) historically emitted; HTML5
+                // doctype is case-insensitive.
+                self.buf.push_str("<!doctype ");
                 self.buf.push_str(&d.value.to_string_best());
                 self.buf.push('>');
             }

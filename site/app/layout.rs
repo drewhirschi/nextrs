@@ -22,6 +22,7 @@ pub fn render(children: &str) -> String {
             <meta name="theme-color" content="#0C0B0E" />
             <link rel="preconnect" href="https://fonts.googleapis.com" />
             <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+            <link rel="preconnect" href="https://api.fontshare.com" />
             <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,800&display=swap" rel="stylesheet" />
             <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
             <link rel="stylesheet" href={env!("NEXTRS_STYLE_URL")} />
