@@ -95,6 +95,21 @@ my-app/
 
 ## Framework Surface
 
+### RSX server components with React islands
+
+Status: design settled 2026-09-12; nothing implemented. Full design in
+[docs/rsx-server-components.md](docs/rsx-server-components.md).
+
+Replace Askama templating for Rust-rendered pages with a JSX-shaped `rsx!`
+macro: `page.rs` becomes a server component (DB access, auth, then HTML), and
+imported React `.tsx` components render as typed, hydrated islands. Build-time
+codegen (on the already-vendored OXC crates) parses each island's TypeScript
+props interface and generates Rust bindings, so island usage type-checks
+across the language boundary. No `'use client'` directive (the `.rs`/`.tsx`
+split is the boundary) and no `#[page]` macro (`route.rs`-style convention).
+First step is a props-extractor spike; `site/` is the dogfood target for
+migrating off Askama.
+
 ### Typed API error contracts
 
 Explore making `Result` the standard return shape for generated-client routes:
