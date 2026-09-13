@@ -1,19 +1,57 @@
-use askama::Template;
+//! Root layout, as an RSX server component (docs/rsx-server-components.md).
+//! Ported from the former Askama `layout.html` — the `rsx!` tree below IS the
+//! template, so the markup and the Rust that feeds it can't drift apart.
 
-#[derive(Template)]
-#[template(path = "layout.html")]
-pub struct RootLayout<'a> {
-    pub children: &'a str,
-    pub style_url: &'static str,
-    pub framework_version: &'static str,
-}
+use nextrs::rsx;
+use nextrs::rsx::Rsx;
 
 pub fn render(children: &str) -> String {
-    RootLayout {
-        children,
-        style_url: env!("NEXTRS_STYLE_URL"),
-        framework_version: nextrs::VERSION,
+    rsx! {
+        <!DOCTYPE html>
+        <html lang="en" data-framework-version={nextrs::VERSION}>
+        <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1" />
+            <title>"nextrs — a Rust framework for React apps"</title>
+            <meta name="description" content="A Next.js-style framework where your React app runs on a Rust server. Engineered for the agent era." />
+            <meta property="og:title" content="nextrs — engineered for agents" />
+            <meta property="og:description" content="Next.js conventions, React pages, a Rust server. Deploys to Vercel as one or more Rust functions." />
+            <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+            <link rel="icon" href="/favicon.ico" sizes="32x32" />
+            <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+            <meta name="theme-color" content="#0C0B0E" />
+            <link rel="preconnect" href="https://fonts.googleapis.com" />
+            <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+            <link href="https://api.fontshare.com/v2/css?f[]=cabinet-grotesk@700,800&display=swap" rel="stylesheet" />
+            <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600&family=Geist+Mono:wght@400;500&display=swap" rel="stylesheet" />
+            <link rel="stylesheet" href={env!("NEXTRS_STYLE_URL")} />
+        </head>
+        <body>
+            <header class="site-header">
+                <div class="shell">
+                    <a href="/" class="wordmark">"next"<b>"rs"</b></a>
+                    <span class="nav-tag">{format!("v{} · beta", nextrs::VERSION)}</span>
+                    <span class="nav-spacer"></span>
+                    <nav class="nav-links">
+                        <a href="/docs">"Docs"</a>
+                        <a href="/docs/getting-started" class="hide-sm">"Get started"</a>
+                        <a href="https://github.com/drewhirschi/nextrs" rel="noopener">"GitHub"</a>
+                    </nav>
+                </div>
+            </header>
+
+            <main>{Rsx::from_raw(children)}</main>
+
+            <footer class="site-footer">
+                <div class="shell">
+                    <span class="wordmark">"next"<b>"rs"</b></span>
+                    <span class="nav-spacer"></span>
+                    <span>"Engineered for agents · Rust + React · Apache-2.0"</span>
+                    <a href="https://github.com/drewhirschi/nextrs" rel="noopener">"drewhirschi/nextrs"</a>
+                </div>
+            </footer>
+        </body>
+        </html>
     }
-    .render()
-    .unwrap()
+    .into_html()
 }
