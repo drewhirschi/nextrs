@@ -23,6 +23,11 @@ export default function Layout({ children }: { children: ReactNode }) {
         <a className="muted" href="/about">
           about
         </a>
+        {/* Rust RSX page (app/server-stats/page.rs) — not a shell route, so
+            this anchor hard-navigates to a server-rendered document. */}
+        <a className="muted" href="/server-stats">
+          server-stats
+        </a>
       </nav>
       {children}
     </main>
