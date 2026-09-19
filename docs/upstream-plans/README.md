@@ -48,3 +48,4 @@ user docs.
 - [Route and subtree server bundles](server-bundles.md)
 
 - [Docs missing generated client diagnostic](docs-missing-generated-client.md)
+- [CLI reads process env only; `deploy` always builds on the host](cli-env-file-and-containerized-build.md)
