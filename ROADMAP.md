@@ -138,6 +138,32 @@ Questions to resolve before enforcing this:
 - How to support dynamic `IntoResponse` implementations without claiming an
   incomplete contract.
 
+### OpenAPI-first output, opt-in client generators
+
+Change the default contract: nextrs should just generate the OpenAPI spec
+document. Automatic client generation becomes a feature you enable, not
+something every app gets.
+
+- **Default:** emit the OpenAPI spec only. No `.nextrs/client` package, no npm
+  codegen step unless asked for.
+- **Opt-in generators**, each enabled explicitly in `nextrs.toml`:
+  - TypeScript fetch client — the base layer.
+  - React Query client — sits on top of the TypeScript client rather than
+    being its own generator; enabling it implies the TypeScript client.
+  - Swift client.
+  - Rust client.
+  - Room for others, since everything is driven from the spec.
+
+Questions to resolve:
+
+- The shape of the `nextrs.toml` section, and what `nextrs client generate`
+  does when nothing is enabled.
+- Whether non-TypeScript generators are first-party or delegate to existing
+  OpenAPI generators.
+- Migration for existing apps and the scaffold, which assume the TypeScript +
+  React Query client is always generated; `examples/react-todos` and RSX
+  islands' typed `crate::client` bindings depend on it today.
+
 - Per-route Vercel binaries for very large apps where the current single binary
   becomes too broad.
 - Make the idiomatic Rust `src/main.rs` usable as the Vercel function entry too.
