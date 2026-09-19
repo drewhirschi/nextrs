@@ -208,8 +208,10 @@ ships the cron trigger declared on the route: `/api/cron/heartbeat` every 10
 minutes via a generated Cloudflare Worker. The route uses
 `#[nextrs::cron(schedule = "*/10 * * * *", provider = "cloudflare")]`, so it
 answers 401 unless the request carries `Authorization: Bearer $CRON_SECRET`.
-Set `CRON_SECRET` in the environment for the deploy (it's stored on the
-Worker) and on the Vercel project (`vercel env add CRON_SECRET`).
+Set `CRON_SECRET` on the Vercel project (`vercel env add CRON_SECRET`); the
+deploy stores the same value on the Worker. `nextrs deploy` picks it up from
+the `.vercel/.env.production.local` its own `vercel pull` step writes, so no
+export is needed — a `CRON_SECRET` already in the process environment wins.
 
 `.cargo/config.toml` keeps an empty `[build]` table because the current
 `vercel-rust` builder expects that key when a Cargo config exists.

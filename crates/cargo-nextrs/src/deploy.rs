@@ -32,14 +32,6 @@ pub fn deploy(root: &Path, options: &DeployOptions) -> Result<(), String> {
         let summary = cron::generate(&root)?;
         generated_vercel_config = Some(root.join(cron::VERCEL_CONFIG_FILE));
         eprintln!("nextrs: generated {summary}");
-        if !options.preview && !options.skip_cron {
-            let crons = cron::discover_crons(&root)?;
-            let cloudflare: Vec<_> = crons
-                .iter()
-                .filter(|cron| cron.provider() == cron::Provider::Cloudflare)
-                .collect();
-            cron::preflight_cloudflare_credentials(&cloudflare)?;
-        }
     } else {
         eprintln!(
             "nextrs: no {} — deploying with Vercel's default project config",
@@ -109,6 +101,28 @@ pub fn deploy(root: &Path, options: &DeployOptions) -> Result<(), String> {
         "vercel",
         &["pull", "--yes", &format!("--environment={environment}")],
     )?;
+
+    // `vercel pull` just wrote `.vercel/.env.<environment>.local`; load env
+    // files now so the credential preflight (still ahead of the expensive
+    // build) sees what it pulled.
+    if root.join(cron::CONFIG_FILE).is_file() {
+        let target = if options.preview {
+            crate::env_file::Target::Preview
+        } else {
+            crate::env_file::Target::Production
+        };
+        let config = cron::load_config(&root)?;
+        let env_files =
+            crate::env_file::load(&root, Some(&cwd), target, config.deploy.as_ref())?;
+        if !options.preview && !options.skip_cron {
+            let crons = cron::discover_crons(&root)?;
+            let cloudflare: Vec<_> = crons
+                .iter()
+                .filter(|cron| cron.provider() == cron::Provider::Cloudflare)
+                .collect();
+            cron::preflight_cloudflare_credentials(&cloudflare, &env_files)?;
+        }
+    }
 
     if bundle_plan.enabled {
         // Prepare the complete client contract once, before selecting server modules.
