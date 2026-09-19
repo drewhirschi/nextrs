@@ -3,7 +3,7 @@
 - **Reported-in:** daily_mirror (a private repo; a NextRS server deployed to
   Vercel with three server bundles and a Cloudflare-provider cron)
 - **Date:** 2026-09-19
-- **Status:** open
+- **Status:** open — Issue A (env files) fixed in b258456; Issue B (containerized build) still open
 - **Pins in the reporting app:** `nextrs` 0.6.1 at rev `9fa4141d`;
   `cargo-nextrs` 0.3.0 (same rev — the CLI and library version numbers differ,
   which is itself confusing when reporting a bug).
