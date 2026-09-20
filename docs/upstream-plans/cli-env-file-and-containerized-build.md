@@ -3,7 +3,7 @@
 - **Reported-in:** daily_mirror (a private repo; a NextRS server deployed to
   Vercel with three server bundles and a Cloudflare-provider cron)
 - **Date:** 2026-09-19
-- **Status:** open — Issue A (env files) fixed in b258456; Issue B (containerized build) still open
+- **Status:** Issue A (env files) fixed in b258456; Issue B (custom build command) fixed in a39f6e1; `pre_deploy` hook and fatal shadowing `vercel.json` still open
 - **Pins in the reporting app:** `nextrs` 0.6.1 at rev `9fa4141d`;
   `cargo-nextrs` 0.3.0 (same rev — the CLI and library version numbers differ,
   which is itself confusing when reporting a bug).
@@ -206,6 +206,33 @@ So: **one upstream feature blocks deleting the script** — a way to run the
 bundle compile somewhere other than the host — plus Issue A. Everything else is
 either already covered or genuinely belongs to the project.
 
+### As implemented (2026-09-19)
+
+The hook replaces the **whole bundle-build step**, not the per-bundle compile:
+daily_mirror's own `scripts/native/build.sh` already runs `nextrs bundles
+build --vercel` inside the container, so the agnostic contract is "leave a
+valid output directory", judged by nextrs afterwards.
+
+- `[build] command` in `nextrs.toml`; `nextrs deploy` runs it via `sh -c` from
+  the app root with `NEXTRS_BUNDLE_OUTPUT`, `NEXTRS_BUILD_TARGET=vercel`, and
+  `NEXTRS_SKIP_BUNDLE=1`, after emptying the output directory.
+- Packaging rules checked on the host (`bundles::verify_vercel_output`):
+  manifest equals the plan; every bundle has an x86-64 ELF `executable` with
+  the exec bit; every declared asset is inside its `.func/`. Plan-derived
+  files (`.vc-config.json`, `config.json`, routing, manifest) are then
+  rewritten by nextrs.
+- New `nextrs bundles build --output <PATH>` (with an EXDEV copy fallback for
+  outputs on another filesystem) and `nextrs bundles verify`.
+- `deploy` now fails before building when a declared bundle asset is missing
+  on disk — the generic form of the `libmediapipe.so` precondition.
+- **Not done:** making a shadowing hand-written `vercel.json` fatal in
+  `deploy` (still a warning), and the `pre_deploy` hook proposed in §4.
+
+Adoption in daily_mirror: add `[build] command = "../scripts/native/build.sh"`,
+forward `NEXTRS_BUNDLE_OUTPUT` into the container and pass it as `--output`,
+then delete `server/scripts/deploy-prebuilt.sh` (migrations stay in the
+justfile until `pre_deploy` exists).
+
 ### Proposed `[build]` hook
 
 ```toml
@@ -246,6 +273,10 @@ regions = ["pdx1"]
 
 [deploy]
 env_file = ".vercel/.env.production.local"
+# Runs before `vercel deploy` for a production target (skipped for a preview),
+# failing the deploy if it exits non-zero, so schema migrations land before the
+# new build serves: `pre_deploy = "cargo run --bin daily-mirror-migrate -- up"`.
+pre_deploy = "..."
 
 [build]
 command = "scripts/native/build.sh"   # glibc-pinned container compile

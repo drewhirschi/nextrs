@@ -107,6 +107,13 @@ Rust function.
 
 ## Other gotchas
 
+- **Native system libraries need a custom build.** `cargo zigbuild` pins glibc
+  for Rust code, not for C/C++ libraries linked from your machine. If a
+  function dies at startup with ``version `GLIBC_2.xx' not found`` or a
+  missing `.so`, build in a container via
+  [`[build] command`](/docs/custom-build).
+- Deploy credentials load from `.vercel/.env.<target>.local` and `.env` files
+  automatically; see [Deploy env files](/docs/config#deploy-env-files).
 - Exclude Cargo targets and unrelated `node_modules` from Vercel source
   uploads; large build trees can exceed file-count or file-size limits.
 - Pin `framework: null` in project settings if Vercel misidentifies the app as

@@ -154,6 +154,17 @@ machine, and uploads its Build Output (`scripts/deploy-prebuilt.sh` is the
 same Vercel steps as a plain script). See
 [Build Locally, Ship Artifacts](/docs/deploy-prebuilt) for setup.
 
+Credentials the deploy needs (`CRON_SECRET`, Cloudflare and Vercel tokens) are
+read from the process environment, then from the env files `vercel pull`
+writes — see [Deploy env files](/docs/config#deploy-env-files).
+
+**Linking native libraries?** If the app links system C/C++ libraries (OpenCV,
+MediaPipe, anything shipped as a `.so`) and the deployed function fails with
+an error like ``version `GLIBC_2.38' not found``, it has to compile somewhere
+with older system libraries than your workstation. Set a
+[custom build command](/docs/custom-build); `nextrs deploy` runs it and
+verifies the result.
+
 If you prefer Vercel cloud builds, delete the `git.deploymentEnabled: false`
 setting (or enable it in project settings) and push normally. The same root
 install/build commands regenerate everything in the cloud; no prebuilt bundle

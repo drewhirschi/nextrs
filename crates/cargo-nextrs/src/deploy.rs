@@ -124,7 +124,16 @@ pub fn deploy(root: &Path, options: &DeployOptions) -> Result<(), String> {
         }
     }
 
-    if bundle_plan.enabled {
+    crate::bundles::check_declared_assets(&root, &bundle_plan)?;
+    let build_command = if root.join(cron::CONFIG_FILE).is_file() {
+        cron::load_config(&root)?
+            .build
+            .and_then(|build| build.command)
+    } else {
+        None
+    };
+
+    if bundle_plan.enabled || build_command.is_some() {
         // Prepare the complete client contract once, before selecting server modules.
         if root.join("package.json").is_file() {
             run(&root, &[], "npm", &["ci"])?;
@@ -137,14 +146,23 @@ pub fn deploy(root: &Path, options: &DeployOptions) -> Result<(), String> {
         {
             return Err("split deployment does not support [vercel] build_command/install_command/extra overrides yet; use nextrs bundles build --vercel and explicitly adapt the output".into());
         }
-        crate::bundles::build(
-            &root,
-            &crate::bundles::BuildOptions {
-                vercel: true,
-                ..Default::default()
-            },
-            Some(&cwd.join(".vercel/output")),
-        )?;
+        let output = cwd.join(".vercel/output");
+        match &build_command {
+            // The app compiles somewhere this machine can't (a container
+            // pinned to old system libraries, a remote builder); nextrs
+            // only verifies what comes back.
+            Some(command) => crate::bundles::build_with_command(&root, command, &output)?,
+            None => {
+                crate::bundles::build(
+                    &root,
+                    &crate::bundles::BuildOptions {
+                        vercel: true,
+                        ..Default::default()
+                    },
+                    Some(&output),
+                )?;
+            }
+        }
         if root.join("package.json").is_file() {
             run(&root, &[], "npm", &["run", "client:build"])?;
         }

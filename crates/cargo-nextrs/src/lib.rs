@@ -34,11 +34,14 @@ pub fn run_with_args(args: impl IntoIterator<Item = OsString>) -> Result<(), Str
         CommandLine::Bundles {
             root,
             build,
+            verify,
             options,
         } => {
             let root = cron::resolve_root(root)?;
-            if build {
-                bundles::build(&root, &options, None).map(|_| ())
+            if verify {
+                bundles::verify(&root, options.output.as_deref())
+            } else if build {
+                bundles::build(&root, &options, options.output.as_deref()).map(|_| ())
             } else {
                 bundles::explain(&root)
             }
@@ -79,6 +82,7 @@ enum CommandLine {
     Bundles {
         root: Option<PathBuf>,
         build: bool,
+        verify: bool,
         options: bundles::BuildOptions,
     },
     Help,
@@ -131,10 +135,11 @@ impl CommandLine {
             let action = args
                 .next()
                 .ok_or("expected `bundles plan` or `bundles build`")?;
-            let build = match action.to_str() {
-                Some("plan") => false,
-                Some("build") => true,
-                _ => return Err("expected `bundles plan` or `bundles build`".into()),
+            let (build, verify) = match action.to_str() {
+                Some("plan") => (false, false),
+                Some("build") => (true, false),
+                Some("verify") => (false, true),
+                _ => return Err("expected `bundles plan`, `bundles build`, or `bundles verify`".into()),
             };
             let mut root = None;
             let mut options = bundles::BuildOptions::default();
@@ -147,6 +152,9 @@ impl CommandLine {
                                 .and_then(|s| s.into_string().ok())
                                 .ok_or("--bin requires a binary name")?,
                         )
+                    }
+                    Some("--output") if build || verify => {
+                        options.output = Some(required_path(&mut args, "--output")?)
                     }
                     Some("--vercel") if build => options.vercel = true,
                     Some("--dev") if build => options.dev = true,
@@ -162,6 +170,7 @@ impl CommandLine {
             return Ok(Self::Bundles {
                 root,
                 build,
+                verify,
                 options,
             });
         }
@@ -755,7 +764,7 @@ fn io_error(error: std::io::Error) -> String {
 
 fn print_help() {
     println!(
-        "nextrs\n\nUSAGE:\n    nextrs new <PATH> [OPTIONS]\n    nextrs dev [--bin <NAME>] [-- <APP_ARGS>]\n    nextrs client generate [OPTIONS]\n    nextrs generate [--root <PATH>]\n    nextrs bundles plan [--root <PATH>]\n    nextrs bundles build [--root <PATH>] [--bin <NAME>] [--dev | --vercel]\n    nextrs deploy [--root <PATH>] [--preview] [--skip-cron]\n    nextrs cron generate [--root <PATH>]\n    nextrs cron deploy [--root <PATH>]\n\nRun the same commands as `cargo nextrs ...` or `nextrs ...`.\n\nCLIENT OPTIONS:\n    --root <PATH>        nextrs application root (default: current directory)\n    --client-dir <PATH>  generated package relative to the app root (default: .nextrs/client)\n    --config <PATH>      external-client config; defaults to .nextrs/client/nextrs.client.json when present\n    -h, --help           Print help\n\nCONFIG:\n    nextrs.toml is the app config source. `generate` writes managed .nextrs/vercel.json from\n    [vercel], discovers #[nextrs::cron] routes, and writes provider plumbing.\n\nDEPLOY:\n    `deploy` runs generate, a local prebuilt Vercel deployment, then deploys\n    explicit Cloudflare cron triggers. --preview and --skip-cron skip triggers.\n\nCRON:\n    Declare GET schedules with #[nextrs::cron(schedule = \"...\")]. Vercel is\n    the default provider; use provider = \"cloudflare\" explicitly when wanted.\n    `cron generate` aliases `generate`; `cron deploy` ships Cloudflare Workers\n    using CRON_SECRET and either API credentials or wrangler.\n\nENV FILES:\n    `deploy` and `cron deploy` fill unset credentials from\n    .vercel/.env.<target>.local, .env.<target>.local, .env.<target>, .env.local,\n    then .env (process env always wins). Override with [deploy] env_file in\n    nextrs.toml."
+        "nextrs\n\nUSAGE:\n    nextrs new <PATH> [OPTIONS]\n    nextrs dev [--bin <NAME>] [-- <APP_ARGS>]\n    nextrs client generate [OPTIONS]\n    nextrs generate [--root <PATH>]\n    nextrs bundles plan [--root <PATH>]\n    nextrs bundles build [--root <PATH>] [--bin <NAME>] [--dev | --vercel] [--output <PATH>]\n    nextrs bundles verify [--root <PATH>] [--output <PATH>]\n    nextrs deploy [--root <PATH>] [--preview] [--skip-cron]\n    nextrs cron generate [--root <PATH>]\n    nextrs cron deploy [--root <PATH>]\n\nRun the same commands as `cargo nextrs ...` or `nextrs ...`.\n\nCLIENT OPTIONS:\n    --root <PATH>        nextrs application root (default: current directory)\n    --client-dir <PATH>  generated package relative to the app root (default: .nextrs/client)\n    --config <PATH>      external-client config; defaults to .nextrs/client/nextrs.client.json when present\n    -h, --help           Print help\n\nCONFIG:\n    nextrs.toml is the app config source. `generate` writes managed .nextrs/vercel.json from\n    [vercel], discovers #[nextrs::cron] routes, and writes provider plumbing.\n\nDEPLOY:\n    `deploy` runs generate, a local prebuilt Vercel deployment, then deploys\n    explicit Cloudflare cron triggers. --preview and --skip-cron skip triggers.\n\nCRON:\n    Declare GET schedules with #[nextrs::cron(schedule = \"...\")]. Vercel is\n    the default provider; use provider = \"cloudflare\" explicitly when wanted.\n    `cron generate` aliases `generate`; `cron deploy` ships Cloudflare Workers\n    using CRON_SECRET and either API credentials or wrangler.\n\nENV FILES:\n    `deploy` and `cron deploy` fill unset credentials from\n    .vercel/.env.<target>.local, .env.<target>.local, .env.<target>, .env.local,\n    then .env (process env always wins). Override with [deploy] env_file in\n    nextrs.toml.\n\nCUSTOM BUILD:\n    [build] command in nextrs.toml makes `deploy` run your command instead of\n    compiling server bundles on this machine (e.g. in a container, for apps\n    linking native libraries). It must write to $NEXTRS_BUNDLE_OUTPUT; deploy\n    verifies the result. `bundles verify` runs the same checks without deploying.\n\nDOCS:\n    https://nextrs.hirschi.dev/docs/config         nextrs.toml reference\n    https://nextrs.hirschi.dev/docs/custom-build   custom build command\n    https://nextrs.hirschi.dev/llms.txt            index for agents"
     );
 }
 

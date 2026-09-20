@@ -116,6 +116,8 @@ nextrs bundles build                     # native release binaries
 nextrs bundles build --dev               # native debug binaries for testing
 nextrs bundles build --bin my-server     # choose the process adapter
 nextrs bundles build --vercel            # Linux executable functions + routing
+nextrs bundles build --vercel --output DIR   # write the finished output elsewhere
+nextrs bundles verify                    # check an output against the packaging rules
 ```
 
 Every command accepts `--root path/to/app`. Native builds use the package's
@@ -136,6 +138,12 @@ The output also contains `routing.json` (the generated dispatch rules),
 `bundle-artifacts.json` (executable sizes and declared inputs). These files are
 build reports, not public assets. Frontend client generation must run before a
 standalone bundle build if the app uses a generated client.
+
+`--output` and `bundles verify` exist for apps that cannot compile on the
+deploying machine — typically because a bundle links native system libraries
+and must build in a container. `bundles verify` applies the same packaging
+rules `nextrs deploy` enforces on a `[build] command`; see
+[Custom Build Command](/docs/custom-build).
 
 ## Deploy and route requests
 

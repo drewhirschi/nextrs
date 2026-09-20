@@ -106,7 +106,8 @@ this replaces the search, and a missing file is an error:
 env_file = ".vercel/.env.production.local"
 ```
 
-Values are never printed — only how many variables were loaded.
+Values are never printed — only how many variables were loaded. The full
+reference is [Deploy env files](/docs/config#deploy-env-files).
 
 It talks to Cloudflare one of two ways:
 

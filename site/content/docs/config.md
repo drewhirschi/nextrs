@@ -1,6 +1,6 @@
 +++
 title = "nextrs.toml"
-description = "The app's single config source for identity and deployment settings"
+description = "Reference for every nextrs.toml table: app identity, Vercel settings, deploy env files (CRON_SECRET and tokens), custom build command, and server bundles"
 section = "Guides"
 order = 12
 +++
@@ -23,7 +23,26 @@ regions = ["pdx1"]
 
 # [vercel.extra]                      # non-framework Vercel keys only
 # trailingSlash = false
+
+# [deploy]                            # optional: where deploy reads credentials
+# env_file = ".vercel/.env.production.local"
+
+# [build]                             # optional: compile somewhere else
+# command = "scripts/build-in-container.sh"
+
+# [bundles.<name>] / [deployment]     # optional: server bundles
 ```
+
+| Table | Purpose | Details |
+| --- | --- | --- |
+| `[app]` | App name and deployed URL | this page |
+| `[vercel]`, `[vercel.extra]` | Generated `.nextrs/vercel.json` | this page |
+| `[deploy]` | Env files `nextrs deploy` / `nextrs cron deploy` read credentials from | [below](#deploy-env-files) |
+| `[build]` | Replace the on-this-machine compile with your own command | [Custom Build Command](/docs/custom-build) |
+| `[bundles.<name>]`, `[deployment]` | Per-bundle Cargo features and runtime assets | [Server Bundles](/docs/server-bundles) |
+
+Unknown tables and keys are rejected, so a typo fails loudly instead of being
+ignored.
 
 Cron schedules are colocated with their protected handlers as
 `#[nextrs::cron(schedule = "...")]`; see [Cron Jobs](/docs/crons).
@@ -74,9 +93,62 @@ file is left untouched.
 `nextrs deploy` and `nextrs cron deploy` both run `generate` first, so the
 provider files can't drift from the config.
 
+## Deploy env files
+
+`nextrs deploy` and `nextrs cron deploy` need credentials such as
+`CRON_SECRET`, `CLOUDFLARE_API_TOKEN`, `CLOUDFLARE_ACCOUNT_ID`, and
+`VERCEL_TOKEN`. You do not have to export them. Anything not already set in
+the process environment is filled from env files in the app root —
+target-specific files first, generic `.env` last, first hit wins per key:
+
+1. `.vercel/.env.<target>.local` — what `vercel pull` / `vercel env pull`
+   writes (`nextrs deploy` runs `vercel pull` itself, so this usually exists)
+2. `.env.<target>.local`
+3. `.env.<target>`
+4. `.env.local`
+5. `.env`
+
+`<target>` is `production`, or `preview` for `nextrs deploy --preview`; a
+preview deploy never reads production files. A variable already set in the
+process environment always wins, so CI secret stores keep working. Values are
+never printed — only how many variables were loaded.
+
+To be explicit, name the file or a list of files. This **replaces** the search
+above, and a file that does not exist is an error:
+
+```toml
+[deploy]
+env_file = ".vercel/.env.production.local"
+# env_file = ["secrets/deploy.env", ".env"]    # first wins per key
+```
+
+If a credential is still missing, the error lists every path searched:
+
+```
+nextrs: Cloudflare cron routes are configured, but CRON_SECRET is not set.
+  searched:
+    .vercel/.env.production.local (not found)
+    .env.production.local (not found)
+    .env.production (not found)
+    .env.local (not found)
+    .env (no CRON_SECRET)
+```
+
 ## Server bundle settings
 
 Colocated `bundle.toml` files assign routes and subtrees. `[bundles.<name>]` in
 `nextrs.toml` supplies the named bundle's Cargo `features` and private runtime
 `assets`; `[deployment].features` supplies common features. See
 [Server Bundles](/docs/server-bundles) for the complete build and deploy flow.
+
+## Custom build command
+
+`[build] command` makes `nextrs deploy` run your command instead of compiling
+the server bundles on this machine — for apps that link native system
+libraries and must build in a container. nextrs verifies the output before
+uploading. See [Custom Build Command](/docs/custom-build).
+
+```toml
+[build]
+command = "scripts/build-in-container.sh"
+```
