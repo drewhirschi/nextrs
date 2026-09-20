@@ -80,3 +80,15 @@ Colocated `bundle.toml` files assign routes and subtrees. `[bundles.<name>]` in
 `nextrs.toml` supplies the named bundle's Cargo `features` and private runtime
 `assets`; `[deployment].features` supplies common features. See
 [Server Bundles](/docs/server-bundles) for the complete build and deploy flow.
+
+## Custom build command
+
+`[build] command` makes `nextrs deploy` run your command instead of compiling
+the server bundles on this machine — for apps that link native system
+libraries and must build in a container. nextrs verifies the output before
+uploading. See [Custom Build Command](/docs/custom-build).
+
+```toml
+[build]
+command = "scripts/build-in-container.sh"
+```

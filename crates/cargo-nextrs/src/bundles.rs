@@ -11,6 +11,8 @@ pub struct BuildOptions {
     pub bin: Option<String>,
     pub vercel: bool,
     pub dev: bool,
+    /// `--output`: where the finished bundle directory lands.
+    pub output: Option<PathBuf>,
 }
 
 pub fn plan(root: &Path) -> Result<BundlePlan, String> {
@@ -216,7 +218,13 @@ pub fn build(
     if output.exists() {
         fs::remove_dir_all(&output).map_err(|e| e.to_string())?;
     }
-    fs::rename(&stage, &output).map_err(|e| e.to_string())?;
+    // `--output` may sit on another filesystem (a mounted volume, a tmpfs),
+    // where rename fails with EXDEV; fall back to copying.
+    if fs::rename(&stage, &output).is_err() {
+        let copied = copy_tree(&stage, &output);
+        let _ = fs::remove_dir_all(&stage);
+        copied?;
+    }
     eprintln!(
         "nextrs: wrote {} server bundle(s) to {}",
         plan.bundles.len(),
@@ -288,11 +296,11 @@ fn build_into(
             .filter_map(|event| event["executable"].as_str().map(PathBuf::from))
             .last()
             .ok_or_else(|| format!("cargo returned no executable for {}", bundle.name))?;
-        let directory = stage.join(if options.vercel {
-            format!("functions/__nextrs_functions/{}.func", bundle.name)
+        let directory = if options.vercel {
+            function_dir(stage, &bundle.name)
         } else {
-            bundle.name.clone()
-        });
+            stage.join(&bundle.name)
+        };
         fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
         fs::copy(&executable, directory.join("executable")).map_err(|e| e.to_string())?;
         for asset in &bundle.assets {
@@ -328,32 +336,185 @@ fn build_into(
             copy_tree(&source, &directory.join(asset))?;
         }
         artifacts.insert(bundle.name.clone(), json!({"executable_bytes":fs::metadata(&executable).map_err(|e| e.to_string())?.len(), "features":bundle.features, "assets":bundle.assets}));
-        if options.vercel {
-            // Same native executable runtime contract emitted by vercel-rust.
-            let settings = crate::cron::load_config(root)?.vercel.unwrap_or_default();
-            let mut config = json!({"handler":"executable","runtime":"executable","runtimeLanguage":"rust","architecture":"x86_64","environment":{},"supportsResponseStreaming":true});
-            if !settings.regions.is_empty() {
-                config["regions"] = json!(settings.regions);
+    }
+    write_json(&stage.join("bundle-artifacts.json"), &artifacts)?;
+    if options.vercel && root.join("public").is_dir() {
+        copy_tree(&root.join("public"), &stage.join("static"))?;
+    }
+    write_plan_metadata(root, plan, stage, options.vercel)
+}
+
+/// Everything in the output that derives from the plan and `nextrs.toml`
+/// rather than from compilation: manifest, routing, and (for Vercel) each
+/// function's `.vc-config.json` plus the root `config.json`.
+fn write_plan_metadata(
+    root: &Path,
+    plan: &BundlePlan,
+    output: &Path,
+    vercel: bool,
+) -> Result<(), String> {
+    write_json(&output.join("bundle-manifest.json"), plan)?;
+    write_json(&output.join("routing.json"), &routing(plan))?;
+    if !vercel {
+        return Ok(());
+    }
+    // Same native executable runtime contract emitted by vercel-rust.
+    let settings = crate::cron::load_config(root)?.vercel.unwrap_or_default();
+    let mut config = json!({"handler":"executable","runtime":"executable","runtimeLanguage":"rust","architecture":"x86_64","environment":{},"supportsResponseStreaming":true});
+    if !settings.regions.is_empty() {
+        config["regions"] = json!(settings.regions);
+    }
+    for bundle in plan.bundles.values() {
+        write_json(
+            &function_dir(output, &bundle.name).join(".vc-config.json"),
+            &config,
+        )?;
+    }
+    let crons: Vec<_> = crate::cron::discover_crons(root)?
+        .into_iter()
+        .filter(|c| c.provider() == crate::cron::Provider::Vercel)
+        .map(|c| json!({"path":c.path,"schedule":c.schedule}))
+        .collect();
+    write_json(
+        &output.join("config.json"),
+        &json!({"version":3,"routes":routing(plan),"crons":crons}),
+    )
+}
+
+fn function_dir(output: &Path, bundle: &str) -> PathBuf {
+    output.join(format!("functions/__nextrs_functions/{bundle}.func"))
+}
+
+/// Fail before an expensive build when a bundle declares an asset that is not
+/// on disk (e.g. a gitignored private library missing from a fresh clone).
+pub fn check_declared_assets(root: &Path, plan: &BundlePlan) -> Result<(), String> {
+    for bundle in plan.bundles.values() {
+        for asset in &bundle.assets {
+            if !root.join(asset).exists() {
+                return Err(format!(
+                    "bundle {} declares asset {} but {} does not exist",
+                    bundle.name,
+                    asset.display(),
+                    root.join(asset).display()
+                ));
             }
-            write_json(&directory.join(".vc-config.json"), &config)?;
         }
     }
-    write_json(&stage.join("bundle-manifest.json"), plan)?;
-    write_json(&stage.join("routing.json"), &routing(plan))?;
-    write_json(&stage.join("bundle-artifacts.json"), &artifacts)?;
-    if options.vercel {
-        if root.join("public").is_dir() {
-            copy_tree(&root.join("public"), &stage.join("static"))?;
+    Ok(())
+}
+
+/// Run `[build] command` in place of the in-process compile, then hold its
+/// output to the packaging rules. nextrs did not perform this build, so it
+/// trusts nothing about it beyond what [`verify_vercel_output`] checks.
+pub fn build_with_command(root: &Path, command: &str, output: &Path) -> Result<(), String> {
+    let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let plan = plan(&root)?;
+    // A stale output from an earlier run must never satisfy the rules.
+    if output.exists() {
+        fs::remove_dir_all(output).map_err(|e| format!("{}: {e}", output.display()))?;
+    }
+    eprintln!("==> [build] command: {command}");
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(command)
+        .current_dir(&root)
+        .env("NEXTRS_BUNDLE_OUTPUT", output)
+        .env("NEXTRS_BUILD_TARGET", "vercel")
+        // The host already built the frontend; the app's build.rs reuses it.
+        .env("NEXTRS_SKIP_BUNDLE", "1")
+        .status()
+        .map_err(|e| format!("failed to run [build] command `{command}`: {e}"))?;
+    if !status.success() {
+        return Err(format!("[build] command `{command}` failed with {status}"));
+    }
+    verify_vercel_output(&plan, output)
+        .map_err(|rule| format!("[build] command `{command}` broke a packaging rule: {rule}\n  See https://nextrs.hirschi.dev/docs/custom-build"))?;
+    // Plan-derived files stay framework-owned whatever the command wrote.
+    write_plan_metadata(&root, &plan, output, true)?;
+    if !output.join("static").is_dir() && root.join("public").is_dir() {
+        copy_tree(&root.join("public"), &output.join("static"))?;
+    }
+    eprintln!(
+        "nextrs: verified {} server bundle(s) in {}",
+        plan.bundles.len(),
+        output.display()
+    );
+    Ok(())
+}
+
+/// `nextrs bundles verify`: check an existing output against the packaging
+/// rules without deploying — the loop for authoring a `[build] command`.
+pub fn verify(root: &Path, output: Option<&Path>) -> Result<(), String> {
+    let root = fs::canonicalize(root).map_err(|e| e.to_string())?;
+    let plan = plan(&root)?;
+    let output = output
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| root.join(".vercel/output"));
+    verify_vercel_output(&plan, &output)?;
+    eprintln!(
+        "nextrs: {} follows the packaging rules ({} bundle(s))",
+        output.display(),
+        plan.bundles.len()
+    );
+    Ok(())
+}
+
+/// The packaging rules for a custom-built Vercel output.
+fn verify_vercel_output(plan: &BundlePlan, output: &Path) -> Result<(), String> {
+    let manifest_path = output.join("bundle-manifest.json");
+    let manifest: Value = fs::read(&manifest_path)
+        .ok()
+        .and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .ok_or_else(|| {
+            format!(
+                "{} is missing or unreadable (write the output to $NEXTRS_BUNDLE_OUTPUT, e.g. `nextrs bundles build --vercel --output \"$NEXTRS_BUNDLE_OUTPUT\"`)",
+                manifest_path.display()
+            )
+        })?;
+    if manifest != serde_json::to_value(plan).map_err(|e| e.to_string())? {
+        return Err(format!(
+            "{} does not match this app's bundle plan; the build ran against different sources or config",
+            manifest_path.display()
+        ));
+    }
+    for bundle in plan.bundles.values() {
+        let directory = function_dir(output, &bundle.name);
+        let executable = directory.join("executable");
+        let bytes = fs::read(&executable).map_err(|_| {
+            format!(
+                "bundle {} has no executable at {}",
+                bundle.name,
+                executable.display()
+            )
+        })?;
+        // ELF magic, then e_machine (little-endian u16 at 18) == EM_X86_64.
+        if bytes.len() < 20 || &bytes[..4] != b"\x7fELF" || bytes[18..20] != [62, 0] {
+            return Err(format!(
+                "{} is not an x86-64 Linux (ELF) executable, which is what Vercel runs",
+                executable.display()
+            ));
         }
-        let crons: Vec<_> = crate::cron::discover_crons(root)?
-            .into_iter()
-            .filter(|c| c.provider() == crate::cron::Provider::Vercel)
-            .map(|c| json!({"path":c.path,"schedule":c.schedule}))
-            .collect();
-        write_json(
-            &stage.join("config.json"),
-            &json!({"version":3,"routes":routing(plan),"crons":crons}),
-        )?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&executable)
+                .map_err(|e| e.to_string())?
+                .permissions()
+                .mode();
+            if mode & 0o111 == 0 {
+                return Err(format!("{} is not marked executable", executable.display()));
+            }
+        }
+        for asset in &bundle.assets {
+            if !directory.join(asset).exists() {
+                return Err(format!(
+                    "bundle {} declares asset {} but it is not in {}",
+                    bundle.name,
+                    asset.display(),
+                    directory.display()
+                ));
+            }
+        }
     }
     Ok(())
 }
@@ -394,6 +555,148 @@ mod tests {
                 .is_match("/api/")
         );
     }
+    /// 20 bytes of ELF header: magic, then e_machine at offset 18.
+    fn elf(machine: u8) -> Vec<u8> {
+        let mut bytes = b"\x7fELF".to_vec();
+        bytes.resize(18, 0);
+        bytes.extend([machine, 0]);
+        bytes
+    }
+
+    fn packaged(plan: &BundlePlan, output: &Path) {
+        write_json(&output.join("bundle-manifest.json"), plan).unwrap();
+        for bundle in plan.bundles.values() {
+            let directory = function_dir(output, &bundle.name);
+            fs::create_dir_all(&directory).unwrap();
+            let executable = directory.join("executable");
+            fs::write(&executable, elf(62)).unwrap();
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+            }
+            for asset in &bundle.assets {
+                fs::create_dir_all(directory.join(asset)).unwrap();
+            }
+        }
+    }
+
+    fn vision_plan() -> BundlePlan {
+        serde_json::from_value(json!({"version":1,"owners":{},"bundles":{
+            "default":{"name":"default","routes":["/"],"features":[],"assets":[]},
+            "vision":{"name":"vision","routes":["/api/faces"],"features":["face-inference"],"assets":["resources/vision"]}
+        }}))
+        .unwrap()
+    }
+
+    #[test]
+    fn custom_output_passes_when_it_follows_the_rules() {
+        let temp = tempfile::tempdir().unwrap();
+        packaged(&vision_plan(), temp.path());
+        verify_vercel_output(&vision_plan(), temp.path()).unwrap();
+    }
+
+    #[test]
+    fn custom_output_rules_each_fail_with_a_named_reason() {
+        let plan = vision_plan();
+        let func = |root: &Path| function_dir(root, "vision");
+
+        let temp = tempfile::tempdir().unwrap();
+        let error = verify_vercel_output(&plan, temp.path()).unwrap_err();
+        assert!(error.contains("NEXTRS_BUNDLE_OUTPUT"), "{error}");
+
+        let temp = tempfile::tempdir().unwrap();
+        packaged(&plan, temp.path());
+        let mut stale = plan.clone();
+        stale.bundles.get_mut("vision").unwrap().features.clear();
+        write_json(&temp.path().join("bundle-manifest.json"), &stale).unwrap();
+        let error = verify_vercel_output(&plan, temp.path()).unwrap_err();
+        assert!(error.contains("does not match this app's bundle plan"), "{error}");
+
+        let temp = tempfile::tempdir().unwrap();
+        packaged(&plan, temp.path());
+        fs::remove_file(func(temp.path()).join("executable")).unwrap();
+        let error = verify_vercel_output(&plan, temp.path()).unwrap_err();
+        assert!(error.contains("bundle vision has no executable"), "{error}");
+
+        // aarch64 (183) — e.g. built natively on an ARM Mac.
+        let temp = tempfile::tempdir().unwrap();
+        packaged(&plan, temp.path());
+        fs::write(func(temp.path()).join("executable"), elf(183)).unwrap();
+        let error = verify_vercel_output(&plan, temp.path()).unwrap_err();
+        assert!(error.contains("not an x86-64 Linux"), "{error}");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let temp = tempfile::tempdir().unwrap();
+            packaged(&plan, temp.path());
+            let executable = func(temp.path()).join("executable");
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o644)).unwrap();
+            let error = verify_vercel_output(&plan, temp.path()).unwrap_err();
+            assert!(error.contains("not marked executable"), "{error}");
+        }
+
+        let temp = tempfile::tempdir().unwrap();
+        packaged(&plan, temp.path());
+        fs::remove_dir_all(func(temp.path()).join("resources")).unwrap();
+        let error = verify_vercel_output(&plan, temp.path()).unwrap_err();
+        assert!(error.contains("declares asset resources/vision"), "{error}");
+    }
+
+    #[test]
+    fn missing_declared_asset_fails_before_building() {
+        let temp = tempfile::tempdir().unwrap();
+        let error = check_declared_assets(temp.path(), &vision_plan()).unwrap_err();
+        assert!(error.contains("bundle vision declares asset resources/vision"), "{error}");
+        fs::create_dir_all(temp.path().join("resources/vision")).unwrap();
+        check_declared_assets(temp.path(), &vision_plan()).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn build_command_runs_then_nextrs_owns_the_metadata() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("app-root");
+        fs::create_dir_all(root.join("app/api/ping")).unwrap();
+        fs::write(root.join("app/api/ping/route.rs"), "pub async fn get() {} ").unwrap();
+        fs::write(
+            root.join("nextrs.toml"),
+            "[app]\nname='t'\nurl='https://t.example'\n[vercel]\nregions=['pdx1']\n",
+        )
+        .unwrap();
+        let plan_file = temp.path().join("plan.json");
+        write_json(&plan_file, &plan(&root).unwrap()).unwrap();
+        let fake = temp.path().join("fake-elf");
+        fs::write(&fake, elf(62)).unwrap();
+        let output = temp.path().join("out");
+        // Stale content from a previous run must be cleared first.
+        fs::create_dir_all(&output).unwrap();
+        fs::write(output.join("stale"), "x").unwrap();
+
+        let script = format!(
+            "set -e; test \"$NEXTRS_SKIP_BUNDLE\" = 1; test \"$NEXTRS_BUILD_TARGET\" = vercel; \
+             f=\"$NEXTRS_BUNDLE_OUTPUT/functions/__nextrs_functions/default.func\"; mkdir -p \"$f\"; \
+             cp {} \"$f/executable\"; chmod +x \"$f/executable\"; \
+             cp {} \"$NEXTRS_BUNDLE_OUTPUT/bundle-manifest.json\"",
+            fake.display(),
+            plan_file.display()
+        );
+        build_with_command(&root, &script, &output).unwrap();
+        assert!(!output.join("stale").exists());
+        let vc: Value = serde_json::from_slice(
+            &fs::read(function_dir(&output, "default").join(".vc-config.json")).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(vc["regions"], json!(["pdx1"]));
+        assert!(output.join("config.json").is_file());
+
+        let error = build_with_command(&root, "true", &output).unwrap_err();
+        assert!(error.contains("broke a packaging rule"), "{error}");
+        let error = build_with_command(&root, "exit 3", &output).unwrap_err();
+        assert!(error.contains("failed with"), "{error}");
+    }
+
     #[test]
     fn rejects_ambiguous_dynamic_routes_before_building() {
         let temp = tempfile::tempdir().unwrap();

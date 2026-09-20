@@ -241,7 +241,18 @@ while `/` and `/api/todos` belong to `default`. Each bundle retains applicable
 middleware. `nextrs deploy --preview` builds separate Vercel functions and the
 routing rules that keep those public URLs unchanged.
 
-See the [server bundles guide](../../site/content/docs/server-bundles.md).
+`bundles build --vercel --output <DIR>` writes the deployable layout anywhere,
+and `bundles verify` checks a directory against the packaging rules that
+`nextrs deploy` applies to a `[build] command` (for apps that must compile in
+a container):
+
+```bash
+cargo run -p cargo-nextrs --bin nextrs -- bundles build --vercel --root examples/react-todos --output /tmp/todos-out
+cargo run -p cargo-nextrs --bin nextrs -- bundles verify --root examples/react-todos --output /tmp/todos-out
+```
+
+See the [server bundles guide](../../site/content/docs/server-bundles.md) and the
+[custom build guide](../../site/content/docs/custom-build.md).
 
 The repository's integration checks exercise native builds with
 `python3 scripts/test-server-bundles.py`; add `--vercel` to build and run the

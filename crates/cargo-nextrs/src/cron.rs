@@ -43,6 +43,17 @@ pub struct NextrsConfig {
     pub vercel: Option<VercelConfig>,
     /// Optional deploy-command settings (`env_file`).
     pub deploy: Option<crate::env_file::DeployConfig>,
+    /// Optional custom build step for `nextrs deploy`.
+    pub build: Option<BuildConfig>,
+}
+
+#[derive(Debug, Default, Deserialize, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct BuildConfig {
+    /// Shell command `nextrs deploy` runs from the app root instead of
+    /// compiling the server bundles itself. It must leave a complete bundle
+    /// output in `$NEXTRS_BUNDLE_OUTPUT`; nextrs verifies it before upload.
+    pub command: Option<String>,
 }
 
 /// The knobs a nextrs app's `vercel.json` actually varies on. Everything
