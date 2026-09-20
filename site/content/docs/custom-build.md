@@ -1,6 +1,6 @@
 +++
 title = "Custom Build Command"
-description = "Compile your server somewhere nextrs deploy can't — a container, a remote builder — and let nextrs verify the result"
+description = "For apps linking native libraries (OpenCV, .so files, GLIBC version errors on Vercel): build in a container with [build] command and let nextrs deploy verify the packaged output"
 section = "Guides"
 order = 15
 +++
@@ -16,6 +16,19 @@ workstation can't start on Vercel's older runtime. The fix is to compile
 somewhere with old enough libraries, usually a container.
 
 `[build] command` lets you do that without giving up `nextrs deploy`.
+
+## When you need this
+
+You need it if the deployed function fails at startup with errors like:
+
+```
+/var/task/executable: /lib64/libc.so.6: version `GLIBC_2.38' not found
+error while loading shared libraries: libopencv_core.so.412: cannot open shared object file
+```
+
+or if you are maintaining your own deploy script only because the server has
+to be compiled in a container. You do **not** need it for ordinary Rust
+dependencies, including ones that compile bundled C code from source.
 
 ## What it changes
 

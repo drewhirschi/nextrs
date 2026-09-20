@@ -337,7 +337,7 @@ pub fn preflight_cloudflare_credentials(
         .filter(|value| !value.is_empty())
         .ok_or_else(|| {
             format!(
-                "Cloudflare cron routes are configured, but CRON_SECRET is not set.{}\n  It must match the value on the Vercel app. Pull it with:\n    vercel env pull .vercel/.env.production.local --environment=production\n  or set [deploy] env_file in nextrs.toml.",
+                "Cloudflare cron routes are configured, but CRON_SECRET is not set.{}\n  It must match the value on the Vercel app. Pull it with:\n    vercel env pull .vercel/.env.production.local --environment=production\n  or set [deploy] env_file in nextrs.toml.\n  See https://nextrs.hirschi.dev/docs/config#deploy-env-files",
                 env_files.describe_missing("CRON_SECRET")
             )
         })?;
