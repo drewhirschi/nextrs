@@ -84,8 +84,31 @@ nextrs generate        # writes .nextrs/cloudflare/{worker.js,wrangler.toml},
 nextrs cron deploy     # generate + `wrangler deploy` + sync CRON_SECRET
 ```
 
-`cron deploy` discovers annotated routes, reads `CRON_SECRET` from the environment, deploys the Worker,
-and stores the secret with it. It talks to Cloudflare one of two ways:
+`cron deploy` discovers annotated routes, reads `CRON_SECRET`, deploys the Worker,
+and stores the secret with it.
+
+Credentials come from the process environment first. Anything unset there is
+filled from env files in the app root — target-specific files before the
+generic one, first hit wins per key:
+
+1. `.vercel/.env.production.local` (what `vercel pull` / `vercel env pull` writes)
+2. `.env.production.local`
+3. `.env.production`
+4. `.env.local`
+5. `.env`
+
+`nextrs deploy --preview` reads the `preview` files instead and never the
+production ones. To be explicit, name the file (or a list) in `nextrs.toml`;
+this replaces the search, and a missing file is an error:
+
+```toml
+[deploy]
+env_file = ".vercel/.env.production.local"
+```
+
+Values are never printed — only how many variables were loaded.
+
+It talks to Cloudflare one of two ways:
 
 - **API-direct (no wrangler, no Node):** set `CLOUDFLARE_API_TOKEN` (an
   API token with the *Workers Scripts: Edit* permission) and

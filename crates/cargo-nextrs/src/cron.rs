@@ -41,6 +41,8 @@ pub struct NextrsConfig {
     pub deployment: nextrs::server_bundles::DeploymentSettings,
     /// Optional Vercel overrides. Framework defaults are used when absent.
     pub vercel: Option<VercelConfig>,
+    /// Optional deploy-command settings (`env_file`).
+    pub deploy: Option<crate::env_file::DeployConfig>,
 }
 
 /// The knobs a nextrs app's `vercel.json` actually varies on. Everything
@@ -312,12 +314,22 @@ fn warn_subdaily_vercel(crons: &[CronEntry]) {
 
 /// Validate external-provider credentials before a potentially expensive
 /// Vercel build. Returns the secret when Cloudflare cron routes exist.
-pub fn preflight_cloudflare_credentials(crons: &[&CronEntry]) -> Result<Option<String>, String> {
+pub fn preflight_cloudflare_credentials(
+    crons: &[&CronEntry],
+    env_files: &crate::env_file::Report,
+) -> Result<Option<String>, String> {
     if crons.is_empty() {
         return Ok(None);
     }
-    let secret = std::env::var("CRON_SECRET").ok().filter(|value| !value.is_empty())
-        .ok_or("Cloudflare cron routes are configured, but CRON_SECRET is missing; set it to the same value configured on the Vercel app")?;
+    let secret = std::env::var("CRON_SECRET")
+        .ok()
+        .filter(|value| !value.is_empty())
+        .ok_or_else(|| {
+            format!(
+                "Cloudflare cron routes are configured, but CRON_SECRET is not set.{}\n  It must match the value on the Vercel app. Pull it with:\n    vercel env pull .vercel/.env.production.local --environment=production\n  or set [deploy] env_file in nextrs.toml.",
+                env_files.describe_missing("CRON_SECRET")
+            )
+        })?;
     let token = std::env::var("CLOUDFLARE_API_TOKEN")
         .ok()
         .filter(|value| !value.is_empty());
@@ -437,7 +449,14 @@ pub fn deploy(root: &Path) -> Result<(), String> {
 
     preflight(root, &cloudflare)?;
 
-    let secret = preflight_cloudflare_credentials(&cloudflare)?.expect("cloudflare crons exist");
+    let env_files = crate::env_file::load(
+        root,
+        None,
+        crate::env_file::Target::Production,
+        config.deploy.as_ref(),
+    )?;
+    let secret = preflight_cloudflare_credentials(&cloudflare, &env_files)?
+        .expect("cloudflare crons exist");
 
     let api = (
         std::env::var("CLOUDFLARE_API_TOKEN")

@@ -26,6 +26,7 @@ create-nextrs-app = { path = "../create-nextrs-app", version = "0.1.6" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 toml = "0.8"
+dotenvy = "0.15"
 ureq = "2"
 syn = { version = "2", features = ["full"] }
 
