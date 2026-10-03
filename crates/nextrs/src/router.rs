@@ -402,6 +402,7 @@ fn build_jobs_endpoints(jobs: Arc<Vec<crate::conventions::JobEntry>>) -> Router 
 
     // The stale-reclaim cutoff must clear the slowest registered job.
     let max_timeout_ms = jobs.iter().map(|j| j.timeout_ms).max().unwrap_or(60_000);
+    crate::jobs::set_max_timeout_ms(max_timeout_ms);
     let sweep = move |req: Request| async move { crate::jobs::handle_sweep(max_timeout_ms, req).await };
     router = router.route(
         &format!("{NX_JOBS_PREFIX}/sweep"),
@@ -482,6 +483,12 @@ fn build_route_table(
     }
     #[cfg(not(feature = "jobs"))]
     let _ = &jobs;
+    // The admin portal (logs + jobs dashboards); every route 404s until the
+    // root credentials are set in the env.
+    #[cfg(feature = "admin")]
+    {
+        router = router.merge(crate::admin::router());
+    }
 
     // Fleet-uniform start-temperature telemetry; also anchors uptime_ms to
     // router construction (≈ process boot).
@@ -2509,7 +2516,7 @@ mod tests {
 mod jobs_endpoint_tests {
     use super::*;
     use crate::conventions::{JobEntry, RouteRegistry, job_run_fn};
-    use crate::jobs::{JobId, JobRow, JobStatus, JobStore as _};
+    use crate::jobs::{JobId, JobRow, JobStatus};
     use axum::body::Body;
     use tower::util::ServiceExt;
 

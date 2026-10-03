@@ -496,9 +496,47 @@ static LOCAL_ADDR: OnceLock<std::net::SocketAddr> = OnceLock::new();
 /// Tell the jobs subsystem the locally bound address, so self-POSTs work in
 /// dev where `bind_with_fallback` may not land on `$PORT`. One line in the
 /// app's `main` after binding; a no-op for apps without jobs.
+///
+/// Off Vercel it also starts an in-process sweeper (every 30s), so locally
+/// a job's longer back-offs and stale runs are picked up the way a production
+/// cron hitting `/__nx/jobs/sweep` would. `NEXTRS_JOBS_LOCAL_SWEEP=0` opts out.
 pub fn announce_local_addr(addr: std::net::SocketAddr) {
-    let _ = LOCAL_ADDR.set(addr);
+    if LOCAL_ADDR.set(addr).is_err() || on_vercel() {
+        return;
+    }
+    if matches!(std::env::var("NEXTRS_JOBS_LOCAL_SWEEP").as_deref(), Ok("0" | "false" | "off")) {
+        return;
+    }
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        runtime.spawn(async {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(30));
+            tick.tick().await; // the first tick is immediate; skip it
+            loop {
+                tick.tick().await;
+                if let Err(e) = sweep(max_timeout_ms(), 50).await {
+                    tracing::warn!(error = %e, "local job sweep failed");
+                }
+            }
+        });
+    }
 }
+
+static MAX_TIMEOUT_MS: OnceLock<u64> = OnceLock::new();
+
+/// Record the slowest registered job's timeout (the router does, at build).
+pub(crate) fn set_max_timeout_ms(ms: u64) {
+    let _ = MAX_TIMEOUT_MS.set(ms);
+}
+
+fn max_timeout_ms() -> u64 {
+    MAX_TIMEOUT_MS.get().copied().unwrap_or(60_000)
+}
+
+/// Back-offs up to this long are retried by the failed run itself (it waits,
+/// then re-delivers) instead of waiting for the next sweep — so a 2s back-off
+/// is actually 2s. Longer ones are the sweeper's: holding an instance for
+/// minutes would bill for idle time.
+const SELF_RETRY_MAX_MS: i64 = 60_000;
 
 /// Where this deployment answers HTTP. `NEXTRS_BASE_URL` → Vercel's
 /// deployment host → the announced local addr → localhost best-effort.
@@ -759,10 +797,23 @@ pub(crate) async fn run_and_record(
                 tracing::error!(job = entry.name, id = %row.id, error = %e, "mark_failed failed");
             }
             match next {
-                Some(at) => tracing::error!(
-                    job = entry.name, id = %row.id, attempt = row.attempts, ms,
-                    error = %err, retry_at_ms = at, "job failed; will retry"
-                ),
+                Some(at) => {
+                    tracing::error!(
+                        job = entry.name, id = %row.id, attempt = row.attempts, ms,
+                        error = %err, retry_at_ms = at, "job failed; will retry"
+                    );
+                    // Short back-off: this run (still inside its WaitUntil)
+                    // sleeps and re-delivers. Claiming is atomic, so a sweep
+                    // that gets there first just wins the race.
+                    let delay = at - now_ms();
+                    if delay <= SELF_RETRY_MAX_MS {
+                        tokio::time::sleep(std::time::Duration::from_millis(delay.max(0) as u64)).await;
+                        if let Err(e) = deliver(entry.name, &row.id).await {
+                            tracing::warn!(job = entry.name, id = %row.id, error = %e,
+                                "self-retry delivery failed; the sweep will deliver it");
+                        }
+                    }
+                }
                 None => tracing::error!(
                     job = entry.name, id = %row.id, attempt = row.attempts, ms,
                     error = %err, "job dead: max attempts exhausted"

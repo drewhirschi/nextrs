@@ -84,6 +84,7 @@ impl RouteTelemetry {
         Arc::clone(&self.capture)
     }
 
+    #[cfg_attr(not(feature = "logs"), allow(dead_code))]
     pub(crate) fn is_emitted(&self) -> bool {
         self.emitted.load(Ordering::Relaxed)
     }

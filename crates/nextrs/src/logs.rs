@@ -28,6 +28,10 @@
 //!     .init();
 //! ```
 
+// Without the `logs` feature the capture plumbing is compiled (WaitUntil and
+// jobs call into it) but nothing feeds or saves it.
+#![cfg_attr(not(feature = "logs"), allow(dead_code))]
+
 use std::collections::VecDeque;
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};

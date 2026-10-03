@@ -12,6 +12,8 @@ pub mod seed;
 pub mod speculation;
 pub mod telemetry;
 pub mod wait_until;
+#[cfg(feature = "admin")]
+pub mod admin;
 #[cfg(feature = "jobs")]
 pub mod jobs;
 #[cfg(feature = "libsql")]
