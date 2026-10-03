@@ -1,7 +1,36 @@
 # Jobs, logs, and the admin dashboards
 
 - **Date:** 2026-10-02
-- **Status:** design agreed in discussion, nothing built
+- **Status:** implemented on `feat/jobs-logs-admin` (2026-10-03): jobs v2 + log
+  capture in ee431c4, admin portal c8dee4a, CLI d2bb7cc, react-todos demo
+  2f95e54. User docs: site `/docs/jobs`, `/docs/admin`.
+
+## As built — where the implementation differs from the design below
+
+- **Built on jobs v1**, ported from `feat/background-jobs` (e5984ea). Jobs
+  live in `app/jobs/<name>/job.rs`; enqueue is calling the function. The
+  macro arguments are `max_attempts`, `timeout_secs`, `backoff_secs`, and
+  `max_backoff_secs`, not `retries` / `backoff = "exponential(…)"`. The
+  attempt number comes from `nextrs::jobs::current()`, not a `JobCtx`
+  argument.
+- **Paths:** the dashboards are `/__nx/admin/logs` and `/__nx/admin/jobs`,
+  the JSON API is `/__nx/admin/api/*`, and login is `/__nx/admin/login`.
+  `/__nx/jobs/*` stays v1's machine endpoints (run, sweep, status).
+- **Tables** are `__nextrs_jobs` and `__nextrs_logs`.
+- **Sampling** defaults to keeping everything (`NEXTRS_LOGS_SAMPLE=1.0`).
+  5xx, warn, slow, and cold requests are always kept.
+- **Short back-offs (≤ 60s) self-retry** inside the failed run's
+  `WaitUntil`. Longer ones wait for the sweep. Locally a 30s in-process
+  sweeper runs.
+- **`nextrs admin set-password`** writes `NEXTRS_ADMIN_USER` and the hash to
+  `.env.local` and prints the `vercel env add` lines. `nextrs deploy` does not
+  push them.
+- **Login lockout** is per instance, in memory, not in Turso. Argon2 is the
+  main brute-force cost.
+- **Not yet:** the admin routes merge into the app's router rather than a
+  separate `nx-admin` server bundle. "Edit payload & retry" is not built.
+  The fleet console is still later.
+
 - **Related:** [platform-manifest.md](platform-manifest.md) (background work tiers),
   route telemetry (`crates/nextrs/src/telemetry.rs`, shipped 0.5.0),
   `WaitUntil` (`crates/nextrs/src/wait_until.rs`), server bundles

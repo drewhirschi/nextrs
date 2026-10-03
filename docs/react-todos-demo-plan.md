@@ -1,7 +1,11 @@
 # react-todos: demonstrating jobs, logs, admin, and realtime
 
 - **Date:** 2026-10-02
-- **Status:** plan, nothing built
+- **Status:** steps 0–4 implemented on `feat/jobs-logs-admin` (2026-10-03).
+  Steps 0–3 are in 2f95e54 and step 4 in a7a4aec. Paths and macro arguments
+  changed in the build; see "As built" in [jobs-and-logs.md](jobs-and-logs.md).
+  In short: dashboards are at `/__nx/admin/{logs,jobs}`, and the demo job is
+  the existing `audit-todo`, not a new `announce_todo`.
 - **Designs:** [jobs-and-logs.md](jobs-and-logs.md), realtime relay (below; no
   standalone doc yet), [platform-manifest.md](platform-manifest.md)
 
