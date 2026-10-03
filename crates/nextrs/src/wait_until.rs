@@ -77,8 +77,11 @@ impl WaitUntil {
     where
         F: Future<Output = ()> + Send + 'static,
     {
+        // Inside a request, the future joins the request's log capture: its
+        // lines land in the same record, and the record waits for it.
+        let future = crate::logs::wrap_background(future);
         match &self.scheduler {
-            Some(scheduler) => scheduler(Box::pin(future)),
+            Some(scheduler) => scheduler(future),
             None => {
                 tokio::spawn(future);
             }

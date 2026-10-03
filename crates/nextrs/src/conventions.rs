@@ -78,7 +78,7 @@ pub type JobRunFn = Box<
     dyn Fn(
             serde_json::Value,
             http::Extensions,
-        ) -> Pin<Box<dyn Future<Output = Result<(), String>> + Send>>
+        ) -> Pin<Box<dyn Future<Output = Result<serde_json::Value, String>> + Send>>
         + Send
         + Sync,
 >;
@@ -93,6 +93,10 @@ pub struct JobEntry {
     pub timeout_ms: u64,
     /// Retry budget (`__NEXTRS_JOB_MAX_ATTEMPTS`).
     pub max_attempts: u32,
+    /// First retry delay; doubles per attempt (`__NEXTRS_JOB_BACKOFF_MS`).
+    pub backoff_ms: u64,
+    /// Ceiling for the doubling delay (`__NEXTRS_JOB_MAX_BACKOFF_MS`).
+    pub max_backoff_ms: u64,
 }
 
 /// Wrap a macro-generated `__nextrs_job_run` as a [`JobRunFn`] — codegen
@@ -100,7 +104,7 @@ pub struct JobEntry {
 pub fn job_run_fn<F, Fut>(f: F) -> JobRunFn
 where
     F: Fn(serde_json::Value, http::Extensions) -> Fut + Send + Sync + 'static,
-    Fut: Future<Output = Result<(), String>> + Send + 'static,
+    Fut: Future<Output = Result<serde_json::Value, String>> + Send + 'static,
 {
     Box::new(move |payload, ext| Box::pin(f(payload, ext)))
 }

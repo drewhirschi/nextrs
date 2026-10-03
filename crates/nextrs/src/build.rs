@@ -720,7 +720,9 @@ fn emit_jobs(out: &mut String, routes: &[DiscoveredRoute]) {
              crate::{module}::__nextrs_job_run(payload, &ext).await\n        \
              }}),\n        \
              timeout_ms: crate::{module}::__NEXTRS_JOB_TIMEOUT_MS,\n        \
-             max_attempts: crate::{module}::__NEXTRS_JOB_MAX_ATTEMPTS,\n    \
+             max_attempts: crate::{module}::__NEXTRS_JOB_MAX_ATTEMPTS,\n        \
+             backoff_ms: crate::{module}::__NEXTRS_JOB_BACKOFF_MS,\n        \
+             max_backoff_ms: crate::{module}::__NEXTRS_JOB_MAX_BACKOFF_MS,\n    \
              }});"
         );
     }

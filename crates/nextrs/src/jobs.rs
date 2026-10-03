@@ -8,8 +8,11 @@
 //! answers `202` immediately, and runs the real body behind the request's
 //! [`WaitUntil`](crate::WaitUntil) — platform-backed on Vercel, `tokio::spawn`
 //! locally — with a per-job timeout. `Err`/timeout mark the row failed with
-//! exponential back-off (`30s · 2^(n-1)`, capped at 1h) until `max_attempts`,
-//! then `dead`. The authed sweep route (`/__nx/jobs/sweep`) re-delivers due
+//! exponential back-off (`backoff_secs · 2^(n-1)`, default 30s, capped at
+//! `max_backoff_secs`, default 1h) until `max_attempts`, then `dead`. Every
+//! attempt is kept in the row's `history` — duration, error, and the
+//! `tracing` lines it logged (with the [`crate::logs`] layer installed) — and
+//! a successful job's return value is stored as `result`. The authed sweep route (`/__nx/jobs/sweep`) re-delivers due
 //! rows; drive it from any cron.
 //!
 //! Durability lives in the row, not the kick-off POST: enqueue still returns
@@ -18,8 +21,8 @@
 //!
 //! Storage resolves lazily, once per process: an explicit [`set_store`] wins;
 //! else `NEXTRS_JOBS_DB_URL`/`NEXTRS_JOBS_DB_TOKEN` (falling back to
-//! `TURSO_DATABASE_URL`/`TURSO_AUTH_TOKEN`) selects the libsql store (feature
-//! `jobs-libsql`); else the in-memory store. On Vercel a missing DB or
+//! `NEXTRS_DB_URL`/`TURSO_DATABASE_URL` and the matching tokens) selects the
+//! libsql store (feature `libsql`); else the in-memory store. On Vercel a missing DB or
 //! missing `NEXTRS_JOBS_SECRET` fails loud at enqueue — never a silently
 //! non-durable queue in production.
 
@@ -132,6 +135,66 @@ pub struct JobRow {
     pub last_error: Option<String>,
     pub created_at: i64,
     pub updated_at: i64,
+    /// A succeeded job's return value (`null` for `()` jobs).
+    #[serde(default)]
+    pub result: Option<serde_json::Value>,
+    /// Finished attempts, oldest first (the newest [`MAX_HISTORY`] are kept).
+    #[serde(default)]
+    pub history: Vec<JobAttempt>,
+}
+
+/// Attempts kept per row; older ones are dropped from `history`.
+pub const MAX_HISTORY: usize = 20;
+
+/// One finished attempt of a job.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+pub struct JobAttempt {
+    /// 1-based attempt number.
+    pub n: u32,
+    /// Unix ms when the attempt started.
+    pub started_at: i64,
+    pub ms: u64,
+    /// `None` when the attempt succeeded.
+    pub error: Option<String>,
+    /// `tracing` lines the attempt logged (needs the `logs` layer installed).
+    #[serde(default)]
+    pub lines: Vec<crate::logs::LogLine>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub dropped_lines: usize,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
+}
+
+/// Append `attempt` to `history`, keeping the newest [`MAX_HISTORY`].
+pub(crate) fn push_history(history: &mut Vec<JobAttempt>, attempt: JobAttempt) {
+    history.push(attempt);
+    if history.len() > MAX_HISTORY {
+        let excess = history.len() - MAX_HISTORY;
+        history.drain(..excess);
+    }
+}
+
+/// Filter for [`JobStore::list`]. Empty = newest rows.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct JobQuery {
+    pub status: Option<JobStatus>,
+    pub name: Option<String>,
+    /// Page backwards: rows created strictly before this unix ms.
+    pub before: Option<i64>,
+    pub limit: Option<u32>,
+}
+
+impl JobQuery {
+    pub(crate) fn limit(&self) -> u32 {
+        self.limit.unwrap_or(50).min(500)
+    }
+    fn matches(&self, r: &JobRow) -> bool {
+        self.status.is_none_or(|s| r.status == s)
+            && self.name.as_ref().is_none_or(|n| &r.name == n)
+            && self.before.is_none_or(|b| r.created_at < b)
+    }
 }
 
 // --------------------------------------------------------------------- errors
@@ -214,17 +277,31 @@ pub trait JobStore: Send + Sync {
     /// `attempts`. `None` when the row is missing or not claimable — the
     /// double-delivery guard.
     fn claim(&self, id: &JobId) -> StoreFuture<'_, Option<JobRow>>;
-    fn mark_succeeded(&self, id: &JobId) -> StoreFuture<'_, ()>;
+    /// Record a successful attempt and the job's return value.
+    fn mark_succeeded(&self, id: &JobId, attempt: JobAttempt, result: serde_json::Value) -> StoreFuture<'_, ()>;
+    /// Record a failed attempt (its `error` becomes `last_error`).
     /// `next_run_at: Some(ms)` → retryable `failed`; `None` → terminal `dead`.
-    fn mark_failed(&self, id: &JobId, error: &str, next_run_at: Option<i64>) -> StoreFuture<'_, ()>;
+    fn mark_failed(&self, id: &JobId, attempt: JobAttempt, next_run_at: Option<i64>) -> StoreFuture<'_, ()>;
+    /// Manual retry: a `failed`/`dead`/`succeeded` row goes back to `queued`,
+    /// due now. `None` when the row is missing or currently queued/running.
+    fn requeue(&self, id: &JobId) -> StoreFuture<'_, Option<JobRow>>;
+    /// Delete terminal (`succeeded`/`dead`) rows last touched before `cutoff`.
+    fn prune(&self, cutoff: i64) -> StoreFuture<'_, u64>;
     /// Non-terminal rows due at or before `now`, oldest first.
     fn due(&self, now: i64, limit: u32) -> StoreFuture<'_, Vec<JobRow>>;
     /// `running` rows untouched since `cutoff` go back to due-now `failed`
     /// (instance died mid-run). Returns how many were reclaimed.
     fn reclaim_stale(&self, cutoff: i64) -> StoreFuture<'_, u32>;
     fn get(&self, id: &JobId) -> StoreFuture<'_, Option<JobRow>>;
+    /// Rows matching `query`, newest first — the dashboard's data.
+    fn list(&self, query: JobQuery) -> StoreFuture<'_, Vec<JobRow>>;
     /// Recent rows, newest first — the status endpoint's data.
-    fn recent(&self, limit: u32) -> StoreFuture<'_, Vec<JobRow>>;
+    fn recent(&self, limit: u32) -> StoreFuture<'_, Vec<JobRow>> {
+        self.list(JobQuery {
+            limit: Some(limit),
+            ..Default::default()
+        })
+    }
 }
 
 /// In-memory [`JobStore`]. The local-dev default: durable within the process,
@@ -269,21 +346,22 @@ impl JobStore for MemoryJobStore {
             })
         })
     }
-    fn mark_succeeded(&self, id: &JobId) -> StoreFuture<'_, ()> {
+    fn mark_succeeded(&self, id: &JobId, attempt: JobAttempt, result: serde_json::Value) -> StoreFuture<'_, ()> {
         let id = id.clone();
         Box::pin(async move {
             self.with(|rows| {
                 if let Some(row) = rows.get_mut(&id.0) {
                     row.status = JobStatus::Succeeded;
                     row.next_run_at = None;
+                    row.result = Some(result);
+                    push_history(&mut row.history, attempt);
                     row.updated_at = now_ms();
                 }
             })
         })
     }
-    fn mark_failed(&self, id: &JobId, error: &str, next_run_at: Option<i64>) -> StoreFuture<'_, ()> {
+    fn mark_failed(&self, id: &JobId, attempt: JobAttempt, next_run_at: Option<i64>) -> StoreFuture<'_, ()> {
         let id = id.clone();
-        let error = error.to_string();
         Box::pin(async move {
             self.with(|rows| {
                 if let Some(row) = rows.get_mut(&id.0) {
@@ -293,9 +371,36 @@ impl JobStore for MemoryJobStore {
                         JobStatus::Dead
                     };
                     row.next_run_at = next_run_at;
-                    row.last_error = Some(error);
+                    row.last_error = attempt.error.clone();
+                    push_history(&mut row.history, attempt);
                     row.updated_at = now_ms();
                 }
+            })
+        })
+    }
+    fn requeue(&self, id: &JobId) -> StoreFuture<'_, Option<JobRow>> {
+        let id = id.clone();
+        Box::pin(async move {
+            self.with(|rows| {
+                let row = rows.get_mut(&id.0)?;
+                if matches!(row.status, JobStatus::Queued | JobStatus::Running) {
+                    return None;
+                }
+                row.status = JobStatus::Queued;
+                row.next_run_at = Some(now_ms());
+                row.updated_at = now_ms();
+                Some(row.clone())
+            })
+        })
+    }
+    fn prune(&self, cutoff: i64) -> StoreFuture<'_, u64> {
+        Box::pin(async move {
+            self.with(|rows| {
+                let before = rows.len();
+                rows.retain(|_, r| {
+                    !(matches!(r.status, JobStatus::Succeeded | JobStatus::Dead) && r.updated_at < cutoff)
+                });
+                (before - rows.len()) as u64
             })
         })
     }
@@ -338,12 +443,12 @@ impl JobStore for MemoryJobStore {
         let id = id.clone();
         Box::pin(async move { self.with(|rows| rows.get(&id.0).cloned()) })
     }
-    fn recent(&self, limit: u32) -> StoreFuture<'_, Vec<JobRow>> {
+    fn list(&self, query: JobQuery) -> StoreFuture<'_, Vec<JobRow>> {
         Box::pin(async move {
             self.with(|rows| {
-                let mut all: Vec<JobRow> = rows.values().cloned().collect();
+                let mut all: Vec<JobRow> = rows.values().filter(|r| query.matches(r)).cloned().collect();
                 all.sort_by_key(|r| std::cmp::Reverse(r.created_at));
-                all.truncate(limit as usize);
+                all.truncate(query.limit() as usize);
                 all
             })
         })
@@ -367,7 +472,7 @@ fn on_vercel() -> bool {
 
 /// Resolve the process-wide store. See the module docs for the order.
 pub(crate) fn store() -> Result<&'static Arc<dyn JobStore>, StoreError> {
-    #[cfg(feature = "jobs-libsql")]
+    #[cfg(feature = "libsql")]
     {
         if STORE.get().is_none() {
             if let Some(store) = libsql_store::from_env() {
@@ -377,8 +482,8 @@ pub(crate) fn store() -> Result<&'static Arc<dyn JobStore>, StoreError> {
     }
     if STORE.get().is_none() && on_vercel() {
         return Err(StoreError(
-            "nextrs jobs: no durable store on Vercel — set NEXTRS_JOBS_DB_URL/_TOKEN \
-             (or TURSO_DATABASE_URL/_AUTH_TOKEN) and enable the `jobs-libsql` feature, \
+            "nextrs jobs: no durable store on Vercel — set NEXTRS_DB_URL/_TOKEN \
+             (or TURSO_DATABASE_URL/_AUTH_TOKEN) and enable the `libsql` feature, \
              or install one with nextrs::jobs::set_store()"
                 .into(),
         ));
@@ -512,6 +617,8 @@ pub async fn enqueue(
             last_error: None,
             created_at: now,
             updated_at: now,
+            result: None,
+            history: Vec::new(),
         })
         .await?;
     let delivered = match deliver(name, &id).await {
@@ -560,11 +667,30 @@ fn http_client() -> &'static reqwest::Client {
 // ------------------------------------------------------------------- running
 
 /// Retry back-off after the `attempts`-th failed attempt:
-/// `30s · 2^(attempts-1)`, capped at 1 hour.
-pub(crate) fn backoff_ms(attempts: u32) -> i64 {
-    let base: i64 = 30_000;
-    let shifted = base.saturating_mul(1i64 << (attempts.saturating_sub(1)).min(20));
-    shifted.min(3_600_000)
+/// `base · 2^(attempts-1)`, capped at `max`.
+pub(crate) fn backoff_ms(attempts: u32, base: u64, max: u64) -> i64 {
+    let shifted = (base as i64).saturating_mul(1i64 << (attempts.saturating_sub(1)).min(20));
+    shifted.min(max as i64)
+}
+
+/// The attempt the current task is running, inside a job body.
+#[derive(Clone, Debug)]
+pub struct CurrentJob {
+    pub id: JobId,
+    pub name: String,
+    /// 1-based.
+    pub attempt: u32,
+    pub max_attempts: u32,
+}
+
+tokio::task_local! {
+    static CURRENT: CurrentJob;
+}
+
+/// Which job and attempt is running — `None` outside a job body. Handy for
+/// attempt-aware behavior and for tagging your own logs.
+pub fn current() -> Option<CurrentJob> {
+    CURRENT.try_with(Clone::clone).ok()
 }
 
 /// Run one claimed job to completion and record the outcome. This is the
@@ -576,17 +702,36 @@ pub(crate) async fn run_and_record(
     ext: http::Extensions,
 ) {
     tracing::info!(job = entry.name, id = %row.id, attempt = row.attempts, "job started");
+    let started_at = now_ms();
     let started = std::time::Instant::now();
-    let outcome = tokio::time::timeout(
+    // The attempt's own log capture, and `current()` for the body.
+    let capture = crate::logs::Capture::new();
+    let current = CurrentJob {
+        id: row.id.clone(),
+        name: row.name.clone(),
+        attempt: row.attempts,
+        max_attempts: row.max_attempts,
+    };
+    let body = tokio::time::timeout(
         std::time::Duration::from_millis(entry.timeout_ms),
         (entry.run)(row.payload.clone(), ext),
-    )
-    .await;
+    );
+    let outcome = crate::logs::scope(Arc::clone(&capture), CURRENT.scope(current, body)).await;
+    // WaitUntil work the body started still writes to this attempt's lines.
+    capture.wait_idle(std::time::Duration::from_secs(10)).await;
     let ms = started.elapsed().as_millis() as u64;
-    let error = match outcome {
-        Ok(Ok(())) => None,
-        Ok(Err(e)) => Some(e),
-        Err(_) => Some(format!("timed out after {} ms", entry.timeout_ms)),
+    let (result, error) = match outcome {
+        Ok(Ok(value)) => (Some(value), None),
+        Ok(Err(e)) => (None, Some(e)),
+        Err(_) => (None, Some(format!("timed out after {} ms", entry.timeout_ms))),
+    };
+    let attempt = JobAttempt {
+        n: row.attempts,
+        started_at,
+        ms,
+        error: error.clone(),
+        lines: capture.lines(),
+        dropped_lines: capture.dropped(),
     };
     let store = match store() {
         Ok(s) => s,
@@ -598,18 +743,19 @@ pub(crate) async fn run_and_record(
     };
     match error {
         None => {
-            if let Err(e) = store.mark_succeeded(&row.id).await {
+            let result = result.unwrap_or(serde_json::Value::Null);
+            if let Err(e) = store.mark_succeeded(&row.id, attempt, result).await {
                 tracing::error!(job = entry.name, id = %row.id, error = %e, "mark_succeeded failed");
             }
             tracing::info!(job = entry.name, id = %row.id, attempt = row.attempts, ms, "job succeeded");
         }
         Some(err) => {
             let next = if row.attempts < row.max_attempts {
-                Some(now_ms() + backoff_ms(row.attempts))
+                Some(now_ms() + backoff_ms(row.attempts, entry.backoff_ms, entry.max_backoff_ms))
             } else {
                 None
             };
-            if let Err(e) = store.mark_failed(&row.id, &err, next).await {
+            if let Err(e) = store.mark_failed(&row.id, attempt, next).await {
                 tracing::error!(job = entry.name, id = %row.id, error = %e, "mark_failed failed");
             }
             match next {
@@ -626,6 +772,28 @@ pub(crate) async fn run_and_record(
     }
 }
 
+/// Manual retry (the dashboard's Retry button): requeue a finished row and
+/// kick it off now. A dead job gets one more attempt; a succeeded job runs
+/// again with the same payload. Delivery failure is fine — the sweep runs it.
+pub async fn retry(id: &JobId) -> Result<Option<JobRow>, StoreError> {
+    let store = store()?;
+    let Some(row) = store.requeue(id).await? else {
+        return Ok(None);
+    };
+    if let Err(err) = deliver(&row.name, &row.id).await {
+        tracing::warn!(job = %row.name, id = %row.id, error = %err, "retry delivery failed; the sweep will deliver it");
+    }
+    Ok(Some(row))
+}
+
+/// Days to keep finished job rows (`NEXTRS_JOBS_RETENTION_DAYS`, default 30).
+fn retention_days() -> i64 {
+    std::env::var("NEXTRS_JOBS_RETENTION_DAYS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(30)
+}
+
 /// Sweep pass: reclaim stale `running` rows, then re-deliver due rows.
 /// `max_timeout_ms` is the largest registered job timeout — the stale cutoff
 /// is `now - (max_timeout + 60s)` so no live run gets reclaimed.
@@ -635,6 +803,11 @@ pub(crate) async fn sweep(max_timeout_ms: u64, limit: u32) -> Result<serde_json:
     let reclaimed = store
         .reclaim_stale(now - (max_timeout_ms as i64) - 60_000)
         .await?;
+    let pruned = store.prune(now - retention_days() * 86_400_000).await?;
+    #[cfg(feature = "logs")]
+    let pruned_logs = crate::logs::prune_expired().await.unwrap_or(0);
+    #[cfg(not(feature = "logs"))]
+    let pruned_logs = 0u64;
     let due = store.due(now, limit).await?;
     let mut dispatched = 0u32;
     for row in &due {
@@ -649,6 +822,8 @@ pub(crate) async fn sweep(max_timeout_ms: u64, limit: u32) -> Result<serde_json:
         "reclaimed": reclaimed,
         "due": due.len(),
         "dispatched": dispatched,
+        "pruned": pruned,
+        "pruned_logs": pruned_logs,
     }))
 }
 
@@ -711,7 +886,18 @@ pub(crate) async fn handle_run(
     if row.name != jobs[idx].name {
         // A row delivered to the wrong route; put it back in the queue.
         let _ = store
-            .mark_failed(&row.id, "delivered to wrong job route", Some(now_ms()))
+            .mark_failed(
+                &row.id,
+                JobAttempt {
+                    n: row.attempts,
+                    started_at: now_ms(),
+                    ms: 0,
+                    error: Some("delivered to wrong job route".into()),
+                    lines: Vec::new(),
+                    dropped_lines: 0,
+                },
+                Some(now_ms()),
+            )
             .await;
         return (StatusCode::CONFLICT, "job name mismatch").into_response();
     }
@@ -753,9 +939,9 @@ pub(crate) async fn handle_status(
     }
 }
 
-#[cfg(feature = "jobs-libsql")]
+#[cfg(feature = "libsql")]
 mod libsql_store;
-#[cfg(feature = "jobs-libsql")]
+#[cfg(feature = "libsql")]
 pub use libsql_store::LibsqlJobStore;
 
 #[cfg(test)]
@@ -774,6 +960,19 @@ mod tests {
             last_error: None,
             created_at: now_ms(),
             updated_at: now_ms(),
+            result: None,
+            history: Vec::new(),
+        }
+    }
+
+    fn attempt(n: u32, error: Option<&str>) -> JobAttempt {
+        JobAttempt {
+            n,
+            started_at: now_ms(),
+            ms: 1,
+            error: error.map(Into::into),
+            lines: Vec::new(),
+            dropped_lines: 0,
         }
     }
 
@@ -789,7 +988,7 @@ mod tests {
         assert!(s.claim(&JobId("a".into())).await.unwrap().is_none());
 
         // Retryable failure → failed + due; claimable again.
-        s.mark_failed(&JobId("a".into()), "boom", Some(now_ms() - 1))
+        s.mark_failed(&JobId("a".into()), attempt(1, Some("boom")), Some(now_ms() - 1))
             .await
             .unwrap();
         let due = s.due(now_ms(), 10).await.unwrap();
@@ -798,20 +997,38 @@ mod tests {
         assert_eq!(again.attempts, 2);
 
         // Terminal failure → dead; not claimable, not due.
-        s.mark_failed(&JobId("a".into()), "boom", None).await.unwrap();
+        s.mark_failed(&JobId("a".into()), attempt(2, Some("boom")), None).await.unwrap();
         assert!(s.claim(&JobId("a".into())).await.unwrap().is_none());
         assert!(s.due(now_ms(), 10).await.unwrap().is_empty());
         let got = s.get(&JobId("a".into())).await.unwrap().unwrap();
         assert_eq!(got.status, JobStatus::Dead);
         assert_eq!(got.last_error.as_deref(), Some("boom"));
+        assert_eq!(got.history.iter().map(|a| a.n).collect::<Vec<_>>(), [1, 2]);
+
+        // Manual retry: dead → queued and due; a queued row can't be requeued.
+        let requeued = s.requeue(&JobId("a".into())).await.unwrap().unwrap();
+        assert_eq!(requeued.status, JobStatus::Queued);
+        assert!(s.requeue(&JobId("a".into())).await.unwrap().is_none());
 
         // Success path on a fresh row.
         s.insert(row("b")).await.unwrap();
         s.claim(&JobId("b".into())).await.unwrap().unwrap();
-        s.mark_succeeded(&JobId("b".into())).await.unwrap();
+        s.mark_succeeded(&JobId("b".into()), attempt(1, None), serde_json::json!({"sent": true}))
+            .await
+            .unwrap();
         let got = s.get(&JobId("b".into())).await.unwrap().unwrap();
         assert_eq!(got.status, JobStatus::Succeeded);
         assert_eq!(got.next_run_at, None);
+        assert_eq!(got.result, Some(serde_json::json!({"sent": true})));
+
+        // Filtered listing + pruning of old terminal rows.
+        let succeeded = s
+            .list(JobQuery { status: Some(JobStatus::Succeeded), ..Default::default() })
+            .await
+            .unwrap();
+        assert_eq!(succeeded.len(), 1);
+        assert_eq!(s.prune(now_ms() + 1).await.unwrap(), 1);
+        assert!(s.get(&JobId("b".into())).await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -830,12 +1047,24 @@ mod tests {
 
     #[test]
     fn backoff_doubles_and_caps() {
-        assert_eq!(backoff_ms(1), 30_000);
-        assert_eq!(backoff_ms(2), 60_000);
-        assert_eq!(backoff_ms(3), 120_000);
-        assert_eq!(backoff_ms(7), 1_920_000);
-        assert_eq!(backoff_ms(8), 3_600_000); // capped
-        assert_eq!(backoff_ms(200), 3_600_000); // shift stays sane
+        let (base, max) = (30_000, 3_600_000);
+        assert_eq!(backoff_ms(1, base, max), 30_000);
+        assert_eq!(backoff_ms(2, base, max), 60_000);
+        assert_eq!(backoff_ms(3, base, max), 120_000);
+        assert_eq!(backoff_ms(7, base, max), 1_920_000);
+        assert_eq!(backoff_ms(8, base, max), 3_600_000); // capped
+        assert_eq!(backoff_ms(200, base, max), 3_600_000); // shift stays sane
+        assert_eq!(backoff_ms(3, 2_000, 60_000), 8_000); // custom base
+    }
+
+    #[test]
+    fn history_keeps_the_newest_attempts() {
+        let mut h = Vec::new();
+        for n in 1..=(MAX_HISTORY as u32 + 3) {
+            push_history(&mut h, attempt(n, None));
+        }
+        assert_eq!(h.len(), MAX_HISTORY);
+        assert_eq!(h.first().unwrap().n, 4);
     }
 
     #[test]

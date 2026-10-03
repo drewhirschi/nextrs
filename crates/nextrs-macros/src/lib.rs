@@ -533,11 +533,12 @@ fn seed_companion(item: proc_macro2::TokenStream, url: &str) -> Option<proc_macr
 ///
 /// ```ignore
 /// // in app/jobs/audit-todo/job.rs
-/// #[nextrs::job(max_attempts = 5, timeout_secs = 120)]   // both optional
+/// // all optional; defaults: 5 attempts, 60s timeout, 30s back-off doubling to 1h
+/// #[nextrs::job(max_attempts = 5, timeout_secs = 120, backoff_secs = 2, max_backoff_secs = 60)]
 /// pub async fn audit_todo(
 ///     Extension(ctx): Extension<TodosCtx>,   // 0..n app-state extensions
 ///     payload: AuditTodo,                    // at most one payload arg
-/// ) -> Result<(), anyhow::Error> { ... }     // or `-> ()`
+/// ) -> Result<Audited, anyhow::Error> { ... } // or `-> ()`; `Audited: Serialize`
 /// ```
 ///
 /// Calling `audit_todo(payload)` from app code does **not** run the body: the
@@ -546,12 +547,17 @@ fn seed_companion(item: proc_macro2::TokenStream, url: &str) -> Option<proc_macr
 /// (`/__nx/jobs/<name>`) on this deployment. The body runs inside *that*
 /// request, behind the framework-managed `WaitUntil` — user code never touches
 /// `WaitUntil`, timeouts, or retries. `Err`, panic, or timeout mark the row
-/// failed and it retries with exponential back-off up to `max_attempts`.
+/// failed and it retries with exponential back-off (`backoff_secs · 2^(n-1)`,
+/// capped at `max_backoff_secs`) up to `max_attempts`. An `Ok` value is
+/// stored as the row's `result`; every attempt (duration, error, captured
+/// log lines) is kept in its `history`. Inside the body,
+/// `nextrs::jobs::current()` says which attempt is running.
 ///
 /// Emitted alongside the wrapper (all `#[doc(hidden)]`, consumed by the
 /// build-time codegen): `__nextrs_job_run` (JSON-payload runner the framework
 /// route calls), `__NEXTRS_JOB_NAME`, `__NEXTRS_JOB_TIMEOUT_MS`,
-/// `__NEXTRS_JOB_MAX_ATTEMPTS`.
+/// `__NEXTRS_JOB_MAX_ATTEMPTS`, `__NEXTRS_JOB_BACKOFF_MS`,
+/// `__NEXTRS_JOB_MAX_BACKOFF_MS`.
 #[proc_macro_attribute]
 pub fn job(args: TokenStream, item: TokenStream) -> TokenStream {
     let file = Span::call_site().file();
@@ -603,9 +609,12 @@ fn job_expand(
     use quote::quote;
     use syn::parse::Parser;
 
-    // ---- macro args: `max_attempts = N`, `timeout_secs = N`, both optional.
+    // ---- macro args, all optional: `max_attempts = N`, `timeout_secs = N`,
+    // `backoff_secs = N` (first retry delay, doubling), `max_backoff_secs = N`.
     let mut max_attempts: u32 = 5;
     let mut timeout_ms: u64 = 60_000;
+    let mut backoff_ms: u64 = 30_000;
+    let mut max_backoff_ms: u64 = 3_600_000;
     let parsed =
         syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated
             .parse2(args)?;
@@ -630,10 +639,15 @@ fn job_expand(
         match key.as_str() {
             "max_attempts" => max_attempts = lit_int.base10_parse()?,
             "timeout_secs" => timeout_ms = lit_int.base10_parse::<u64>()?.saturating_mul(1000),
+            "backoff_secs" => backoff_ms = lit_int.base10_parse::<u64>()?.saturating_mul(1000),
+            "max_backoff_secs" => {
+                max_backoff_ms = lit_int.base10_parse::<u64>()?.saturating_mul(1000)
+            }
             _ => {
                 return Err(syn::Error::new_spanned(
                     &nv.path,
-                    "#[nextrs::job]: unknown argument (expected `max_attempts` or `timeout_secs`)",
+                    "#[nextrs::job]: unknown argument (expected `max_attempts`, `timeout_secs`, \
+                     `backoff_secs`, or `max_backoff_secs`)",
                 ))
             }
         }
@@ -713,8 +727,8 @@ fn job_expand(
                 _ => {
                     return Err(syn::Error::new_spanned(
                         other,
-                        "#[nextrs::job]: job functions return `()` or `Result<(), E: Display>` \
-                         — the result lives in the job row, not the call site",
+                        "#[nextrs::job]: job functions return `()` or `Result<T: Serialize, E: Display>` \
+                         — the result lives in the job row (and the dashboard), not the call site",
                     ))
                 }
             },
@@ -760,12 +774,16 @@ fn job_expand(
     let call = if fallible {
         quote! {
             match __nextrs_job_impl(#(#call_args),*).await {
-                Ok(_) => Ok(()),
+                Ok(v) => ::nextrs::serde_json::to_value(&v)
+                    .map_err(|e| ::std::format!("return value did not serialize: {e}")),
                 Err(e) => Err(::std::string::ToString::to_string(&e)),
             }
         }
     } else {
-        quote! { __nextrs_job_impl(#(#call_args),*).await; Ok(()) }
+        quote! {
+            __nextrs_job_impl(#(#call_args),*).await;
+            Ok(::nextrs::serde_json::Value::Null)
+        }
     };
 
     // (3) The enqueue wrapper under the original name — what app code calls.
@@ -791,7 +809,7 @@ fn job_expand(
         pub async fn __nextrs_job_run(
             __payload_json: ::nextrs::serde_json::Value,
             _ext: &::nextrs::http::Extensions,
-        ) -> ::core::result::Result<(), ::std::string::String> {
+        ) -> ::core::result::Result<::nextrs::serde_json::Value, ::std::string::String> {
             #payload_stmt
             #(#ext_stmts)*
             #call
@@ -803,6 +821,10 @@ fn job_expand(
         pub const __NEXTRS_JOB_TIMEOUT_MS: ::core::primitive::u64 = #timeout_ms;
         #[doc(hidden)]
         pub const __NEXTRS_JOB_MAX_ATTEMPTS: ::core::primitive::u32 = #max_attempts;
+        #[doc(hidden)]
+        pub const __NEXTRS_JOB_BACKOFF_MS: ::core::primitive::u64 = #backoff_ms;
+        #[doc(hidden)]
+        pub const __NEXTRS_JOB_MAX_BACKOFF_MS: ::core::primitive::u64 = #max_backoff_ms;
 
         #[doc = #wrapper_doc]
         pub async fn #orig_ident(

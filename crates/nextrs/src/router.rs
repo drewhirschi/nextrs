@@ -567,10 +567,13 @@ async fn render_route(
         http.request.method = %req.method(),
     );
 
+    let capture = telemetry.capture();
     let mw_start = std::time::Instant::now();
-    let mw_result = run_middlewares(&entries, &path, req)
-        .instrument(span.clone())
-        .await;
+    let mw_result = crate::logs::scope(
+        Arc::clone(&capture),
+        run_middlewares(&entries, &path, req).instrument(span.clone()),
+    )
+    .await;
     telemetry.record_mw(mw_start.elapsed());
     let req = match mw_result {
         Ok(req) => req,
@@ -603,7 +606,11 @@ async fn render_route(
             yield Ok(Bytes::from(slot_div));
 
             let handler_start = std::time::Instant::now();
-            let page_html = entries[idx].page.as_ref().unwrap()(req).instrument(span).await;
+            let page_html = crate::logs::scope(
+                capture,
+                entries[idx].page.as_ref().unwrap()(req).instrument(span),
+            )
+            .await;
             stream_telemetry.record_handler(handler_start.elapsed());
             let swap_chunk = format!(
                 r#"<template id="{}">{}</template>{}"#,
@@ -622,7 +629,11 @@ async fn render_route(
             .unwrap()
     } else {
         let handler_start = std::time::Instant::now();
-        let page_html = entries[idx].page.as_ref().unwrap()(req).instrument(span).await;
+        let page_html = crate::logs::scope(
+            capture,
+            entries[idx].page.as_ref().unwrap()(req).instrument(span),
+        )
+        .await;
         telemetry.record_handler(handler_start.elapsed());
         let full = format!("{}{}{}", before, page_html, after);
         let mut response = Html(full).into_response();
@@ -648,10 +659,13 @@ async fn handle_method_route(
         http.request.method = %req.method(),
     );
 
+    let capture = telemetry.capture();
     let mw_start = std::time::Instant::now();
-    let mw_result = run_middlewares(&entries, &path, req)
-        .instrument(span.clone())
-        .await;
+    let mw_result = crate::logs::scope(
+        Arc::clone(&capture),
+        run_middlewares(&entries, &path, req).instrument(span.clone()),
+    )
+    .await;
     telemetry.record_mw(mw_start.elapsed());
     let req = match mw_result {
         Ok(req) => req,
@@ -663,7 +677,7 @@ async fn handle_method_route(
 
     let route_fn = &entries[idx].methods[method_idx].1;
     let handler_start = std::time::Instant::now();
-    let mut response = route_fn(req).instrument(span).await;
+    let mut response = crate::logs::scope(capture, route_fn(req).instrument(span)).await;
     telemetry.record_handler(handler_start.elapsed());
     response.extensions_mut().insert(telemetry);
     response
@@ -2504,13 +2518,16 @@ mod jobs_endpoint_tests {
         registry.add_job(JobEntry {
             name: "test-job",
             run: job_run_fn(|payload, _ext| async move {
+                tracing::info!(attempt = crate::jobs::current().map(|c| c.attempt), "test job running");
                 match payload.get("fail").and_then(|v| v.as_bool()) {
                     Some(true) => Err("intentional failure".to_string()),
-                    _ => Ok(()),
+                    _ => Ok(serde_json::json!({ "ok": true })),
                 }
             }),
             timeout_ms: 5_000,
             max_attempts: 2,
+            backoff_ms: 30_000,
+            max_backoff_ms: 3_600_000,
         });
         build_router(registry)
     }
@@ -2530,6 +2547,8 @@ mod jobs_endpoint_tests {
                 last_error: None,
                 created_at: now,
                 updated_at: now,
+                result: None,
+                history: Vec::new(),
             })
             .await
             .unwrap();
@@ -2586,6 +2605,31 @@ mod jobs_endpoint_tests {
         // …and the row reaches `succeeded` shortly after (spawn-backed locally).
         let row = wait_for_status("rt-happy", JobStatus::Succeeded).await;
         assert_eq!(row.attempts, 1);
+        assert_eq!(row.result, Some(serde_json::json!({ "ok": true })));
+        assert_eq!(row.history.len(), 1);
+        assert_eq!(row.history[0].n, 1);
+        assert_eq!(row.history[0].error, None);
+    }
+
+    #[cfg(feature = "logs")]
+    #[tokio::test]
+    async fn job_attempt_history_captures_its_log_lines() {
+        use tracing_subscriber::prelude::*;
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(crate::logs::layer()),
+        );
+        insert_row("rt-lines", serde_json::json!({})).await;
+        let secret = crate::jobs::jobs_secret().unwrap();
+        let resp = jobs_router()
+            .oneshot(run_request("rt-lines", Some(&secret)))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::ACCEPTED);
+        let row = wait_for_status("rt-lines", JobStatus::Succeeded).await;
+        let lines = &row.history[0].lines;
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].msg, "test job running");
+        assert_eq!(lines[0].fields["attempt"], 1);
     }
 
     #[tokio::test]
@@ -2682,5 +2726,81 @@ mod jobs_endpoint_tests {
         // server listening at the local base URL) — that's the sweep's
         // durability contract, not an error.
         assert!(json["due"].as_u64().unwrap() >= 1, "{json}");
+    }
+}
+
+#[cfg(all(test, feature = "logs"))]
+mod logs_capture_tests {
+    use super::*;
+    use crate::conventions::{RouteEntry, RouteRegistry};
+    use tower::ServiceExt;
+    use tracing_subscriber::prelude::*;
+
+    #[tokio::test]
+    async fn request_record_holds_handler_and_wait_until_lines() {
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(crate::logs::layer()),
+        );
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/api/logs-capture-test".into(),
+            page: None,
+            layout: None,
+            loading: None,
+            middleware: None,
+            methods: vec![(
+                http::Method::POST,
+                Box::new(|req: Request| {
+                    Box::pin(async move {
+                        let wait = req
+                            .extensions()
+                            .get::<crate::WaitUntil>()
+                            .cloned()
+                            .unwrap_or_default();
+                        tracing::info!(title = "milk", "adding todo");
+                        wait.wait_until(async {
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                            tracing::warn!("audit ran late");
+                        });
+                        (http::StatusCode::CREATED, "ok").into_response()
+                    })
+                }),
+            )],
+            prefetch: None,
+        });
+        let resp = build_router(registry)
+            .oneshot(
+                Request::post("/api/logs-capture-test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::CREATED);
+
+        let query = crate::logs::LogQuery {
+            route: Some("/api/logs-capture-test".into()),
+            ..Default::default()
+        };
+        let mut found = None;
+        for _ in 0..100 {
+            if let Some(r) = crate::logs::store().query(query.clone()).await.unwrap().pop() {
+                found = Some(r);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let record = found.expect("request record was never saved");
+        assert_eq!(record.method, "POST");
+        assert_eq!(record.status, 201);
+        assert_eq!(record.level.as_deref(), Some("warn"));
+        let msgs: Vec<(&str, bool)> = record
+            .lines
+            .iter()
+            .map(|l| (l.msg.as_str(), l.after_response))
+            .collect();
+        assert_eq!(msgs, [("adding todo", false), ("audit ran late", true)]);
+        assert_eq!(record.lines[0].fields["title"], "milk");
+        assert!(record.segments.iter().any(|(n, _)| n == "handler"));
     }
 }

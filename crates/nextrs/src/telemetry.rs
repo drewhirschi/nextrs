@@ -48,6 +48,10 @@ pub struct RouteTelemetry {
     segments: Mutex<Vec<Segment>>,
     streaming: AtomicBool,
     emitted: AtomicBool,
+    /// Wall-clock start, for the saved request record.
+    started_at_ms: i64,
+    /// The request's log capture (see [`crate::logs`]).
+    capture: Arc<crate::logs::Capture>,
 }
 
 pub(crate) type Handle = Arc<RouteTelemetry>;
@@ -70,7 +74,44 @@ impl RouteTelemetry {
             segments: Mutex::new(Vec::new()),
             streaming: AtomicBool::new(false),
             emitted: AtomicBool::new(false),
+            started_at_ms: crate::logs::now_ms(),
+            capture: crate::logs::Capture::new(),
         })
+    }
+
+    /// The request's log capture; the router runs the route inside it.
+    pub(crate) fn capture(&self) -> Arc<crate::logs::Capture> {
+        Arc::clone(&self.capture)
+    }
+
+    pub(crate) fn is_emitted(&self) -> bool {
+        self.emitted.load(Ordering::Relaxed)
+    }
+
+    /// Snapshot this request as a saved log record.
+    #[cfg_attr(not(feature = "logs"), allow(dead_code))]
+    pub(crate) fn to_request_log(&self) -> crate::logs::RequestLog {
+        let mut segments: Vec<(String, f64)> = Vec::new();
+        if let Some(mw) = self.mw_ms() {
+            segments.push(("mw".into(), mw));
+        }
+        segments.extend(self.segments_ms().into_iter().map(|(n, ms)| (n.into_owned(), ms)));
+        if let Some(h) = self.handler_ms() {
+            segments.push(("handler".into(), h));
+        }
+        crate::logs::RequestLog {
+            id: format!("req_{:016x}", crate::logs::random_u64()),
+            ts: self.started_at_ms,
+            method: self.method.as_str().to_string(),
+            route: self.route.to_string(),
+            status: self.status.get().copied().unwrap_or(0),
+            ms: ms(self.start.elapsed()),
+            cold: self.cold.get().copied().unwrap_or(false),
+            level: self.capture.max_level(),
+            segments,
+            lines: self.capture.lines(),
+            dropped_lines: self.capture.dropped(),
+        }
     }
 
     pub(crate) fn record_mw(&self, dur: Duration) {
@@ -282,6 +323,8 @@ impl<S: Send + Sync> FromRequestParts<S> for Timing {
 /// flag it reads is already on the response. Responses without a handle
 /// (static files, health endpoint) pass through untouched.
 pub(crate) async fn record(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    #[cfg(feature = "logs")]
+    let wait = req.extensions().get::<crate::WaitUntil>().cloned().unwrap_or_default();
     let mut resp = next.run(req).await;
     let Some(handle) = resp.extensions().get::<Handle>().cloned() else {
         return resp;
@@ -298,7 +341,37 @@ pub(crate) async fn record(req: axum::extract::Request, next: axum::middleware::
     if !handle.is_streaming() {
         handle.emit();
     }
+    #[cfg(feature = "logs")]
+    if crate::logs::enabled() {
+        save_request_log(&wait, handle);
+    }
     resp
+}
+
+/// Save the request's log record once it is complete: after the request's
+/// `WaitUntil` work finishes (so background lines are in it) and, for
+/// streaming pages, after the stream ends. Scheduled on the request's own
+/// `WaitUntil`, so on Vercel the instance stays up for the write.
+#[cfg(feature = "logs")]
+fn save_request_log(wait: &crate::WaitUntil, handle: Handle) {
+    const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+    let capture = handle.capture();
+    if !handle.is_streaming() {
+        capture.mark_responded();
+    }
+    wait.wait_until(async move {
+        if handle.is_streaming() {
+            let deadline = std::time::Instant::now() + MAX_WAIT;
+            while !handle.is_emitted() && std::time::Instant::now() < deadline {
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
+            capture.mark_responded();
+        }
+        capture.wait_idle(MAX_WAIT).await;
+        let record = handle.to_request_log();
+        drop(handle);
+        crate::logs::save(record).await;
+    });
 }
 
 /// `Server-Timing` is on unless `NEXTRS_SERVER_TIMING` opts out (`0`, `false`,

@@ -3,6 +3,7 @@ pub mod cron;
 pub mod discovery;
 pub mod error;
 pub mod health;
+pub mod logs;
 pub mod openapi;
 pub mod params;
 pub mod router;
@@ -13,6 +14,8 @@ pub mod telemetry;
 pub mod wait_until;
 #[cfg(feature = "jobs")]
 pub mod jobs;
+#[cfg(feature = "libsql")]
+mod db;
 
 /// Deprecated path for [`speculation`] — kept for one release. This module
 /// only ever controlled document-level Speculation Rules; the data-prefetch
