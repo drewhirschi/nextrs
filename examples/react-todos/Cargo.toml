@@ -38,7 +38,8 @@ nextrs = { version = "0.6.1", features = ["build", "tsx"] }
 [dependencies]
 csv = { version = "1", optional = true }
 # `vercel` enables StreamingVercelLayer for the deploy entry; harmless locally.
-nextrs = { version = "0.6.1", features = ["vercel"] }
+# `jobs` enables background jobs (app/jobs/<name>/job.rs + the /__nx/jobs routes).
+nextrs = { version = "0.6.1", features = ["vercel", "jobs"] }
 axum = "0.8"
 tokio = { version = "1", features = ["full"] }
 tower = "0.5"

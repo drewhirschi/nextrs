@@ -78,5 +78,16 @@ pub async fn post(
     wait.wait_until(async move {
         tracing::info!(title, "audit: todo created (ran after the response)");
     });
+    // Work that must not be lost goes through a job instead
+    // (app/jobs/audit-todo/job.rs): this persists a row and POSTs
+    // /__nx/jobs/audit-todo, where the body runs with retries and a timeout.
+    let audit = crate::jobs::audit_todo_job::AuditTodo {
+        id: todo.id,
+        title: todo.title.clone(),
+    };
+    match crate::jobs::audit_todo(audit).await {
+        Ok(handle) => tracing::info!(job_id = %handle.id, delivered = handle.delivered, "audit job enqueued"),
+        Err(e) => tracing::warn!(error = %e, "audit job enqueue failed"),
+    }
     Json(todo)
 }

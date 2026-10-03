@@ -40,6 +40,10 @@ pub struct DiscoveredRoute {
     /// `prefetch.rs` (legacy name `props.rs`) — server data for a `page.tsx`
     /// (Rust-only; requires the page slot to be `.tsx`, enforced by codegen).
     pub prefetch: Option<PathBuf>,
+    /// `job.rs` (background job) — only meaningful under `app/jobs/<name>/`,
+    /// enforced by codegen. The job's stable name is the directory path under
+    /// `app/jobs/`.
+    pub job: Option<PathBuf>,
 }
 
 /// Converts a directory name to a URL segment.
@@ -123,6 +127,7 @@ fn scan_dir(app_root: &Path, current: &Path, routes: &mut BTreeMap<String, Disco
     // filename in build.rs codegen. `props.rs` wins if both somehow coexist.
     let prefetch =
         optional_path(current, "props.rs").or_else(|| optional_path(current, "prefetch.rs"));
+    let job = optional_path(current, "job.rs");
 
     if page.exists()
         || layout.exists()
@@ -131,6 +136,7 @@ fn scan_dir(app_root: &Path, current: &Path, routes: &mut BTreeMap<String, Disco
         || middleware.is_some()
         || route.is_some()
         || prefetch.is_some()
+        || job.is_some()
     {
         routes.insert(
             url_path.clone(),
@@ -144,6 +150,7 @@ fn scan_dir(app_root: &Path, current: &Path, routes: &mut BTreeMap<String, Disco
                 middleware,
                 route,
                 prefetch,
+                job,
             },
         );
     }

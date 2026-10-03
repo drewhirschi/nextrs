@@ -11,6 +11,8 @@ pub mod seed;
 pub mod speculation;
 pub mod telemetry;
 pub mod wait_until;
+#[cfg(feature = "jobs")]
+pub mod jobs;
 
 /// Deprecated path for [`speculation`] — kept for one release. This module
 /// only ever controlled document-level Speculation Rules; the data-prefetch
@@ -54,6 +56,9 @@ pub use nextrs_macros::cron;
 /// `rsx! { <main>...</main> }` — JSX-shaped HTML for Rust server components,
 /// returning [`rsx::Rsx`]. See [`nextrs_macros::rsx`] and `docs/rsx-server-components.md`.
 pub use nextrs_macros::rsx;
+/// `#[nextrs::job]` — a background job in `app/jobs/<name>/job.rs` with retries and back-off.
+/// See [`nextrs_macros::job`] and [`jobs`] (feature `jobs`).
+pub use nextrs_macros::job;
 
 #[cfg(feature = "vercel")]
 pub mod vercel;

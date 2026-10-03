@@ -162,7 +162,8 @@ fn build_router_with_public_inner(
     let speculation = Arc::new(speculation.resolve(&registry.react_pages));
     let entries = Arc::new(registry.entries);
     let not_found = Arc::new(registry.not_found);
-    let router = build_route_table(Arc::clone(&entries), Arc::clone(&speculation));
+    let jobs = Arc::new(registry.jobs);
+    let router = build_route_table(Arc::clone(&entries), Arc::clone(&speculation), jobs);
     let path = public_dir.as_ref();
 
     let router = if path.is_dir() {
@@ -261,7 +262,8 @@ pub fn build_router_with_speculation(
     let speculation = Arc::new(speculation.resolve(&registry.react_pages));
     let entries = Arc::new(registry.entries);
     let not_found = Arc::new(registry.not_found);
-    let router = build_route_table(Arc::clone(&entries), Arc::clone(&speculation));
+    let jobs = Arc::new(registry.jobs);
+    let router = build_route_table(Arc::clone(&entries), Arc::clone(&speculation), jobs);
     with_not_found_fallback(router, entries, not_found, speculation)
         .layer(axum::middleware::map_response(crate::health::stamp))
         // Outermost so it sees the cold flag `stamp` just wrote.
@@ -372,9 +374,52 @@ fn build_prefetch_endpoint(entries: Arc<Vec<RouteEntry>>) -> Router {
     )
 }
 
+/// Reserved path prefix of the background-job routes (`POST
+/// /__nx/jobs/<name>` per job, plus `/sweep` and the status root). Mounted
+/// only when the registry has jobs and the `jobs` feature is enabled.
+pub const NX_JOBS_PREFIX: &str = "/__nx/jobs";
+
+/// Mount the per-job run routes plus the sweep and status endpoints. All of
+/// them are authed (shared secret; sweep also takes `Bearer $CRON_SECRET`).
+/// One route per job keeps every execution its own invocation with a distinct
+/// `request_path` — legible in platform logs without any custom plumbing.
+#[cfg(feature = "jobs")]
+fn build_jobs_endpoints(jobs: Arc<Vec<crate::conventions::JobEntry>>) -> Router {
+    use axum::routing::post;
+
+    let mut router = Router::new();
+    for idx in 0..jobs.len() {
+        let path = format!("{}/{}", NX_JOBS_PREFIX, jobs[idx].name);
+        let jobs_for_route = Arc::clone(&jobs);
+        router = router.route(
+            &path,
+            post(move |req: Request| {
+                let jobs = Arc::clone(&jobs_for_route);
+                async move { crate::jobs::handle_run(jobs, idx, req).await }
+            }),
+        );
+    }
+
+    // The stale-reclaim cutoff must clear the slowest registered job.
+    let max_timeout_ms = jobs.iter().map(|j| j.timeout_ms).max().unwrap_or(60_000);
+    let sweep = move |req: Request| async move { crate::jobs::handle_sweep(max_timeout_ms, req).await };
+    router = router.route(
+        &format!("{NX_JOBS_PREFIX}/sweep"),
+        get(sweep).post(sweep),
+    );
+    router.route(
+        NX_JOBS_PREFIX,
+        get(|req: Request| async move { crate::jobs::handle_status(req).await }),
+    )
+}
+
 /// Build just the route table (matched routes, no fallback) from the registry's
 /// entries, with the resolved speculation script threaded into page rendering.
-fn build_route_table(entries: Arc<Vec<RouteEntry>>, speculation: Arc<ResolvedSpeculation>) -> Router {
+fn build_route_table(
+    entries: Arc<Vec<RouteEntry>>,
+    speculation: Arc<ResolvedSpeculation>,
+    jobs: Arc<Vec<crate::conventions::JobEntry>>,
+) -> Router {
     let mut router = Router::new();
 
     for i in 0..entries.len() {
@@ -428,6 +473,15 @@ fn build_route_table(entries: Arc<Vec<RouteEntry>>, speculation: Arc<ResolvedSpe
     if entries.iter().any(|e| e.prefetch.is_some()) {
         router = router.merge(build_prefetch_endpoint(Arc::clone(&entries)));
     }
+
+    // Background jobs: one authed POST route per registered job, plus sweep
+    // and status. Apps without jobs don't reserve the prefix.
+    #[cfg(feature = "jobs")]
+    if !jobs.is_empty() {
+        router = router.merge(build_jobs_endpoints(Arc::clone(&jobs)));
+    }
+    #[cfg(not(feature = "jobs"))]
+    let _ = &jobs;
 
     // Fleet-uniform start-temperature telemetry; also anchors uptime_ms to
     // router construction (≈ process boot).
@@ -2434,5 +2488,199 @@ mod tests {
         let st = server_timing(&resp);
         assert!(st.contains("route;desc=\"/__nx/prefetch/todos\""), "{st}");
         assert!(st.contains("handler;dur="), "{st}");
+    }
+}
+
+#[cfg(all(test, feature = "jobs"))]
+mod jobs_endpoint_tests {
+    use super::*;
+    use crate::conventions::{JobEntry, RouteRegistry, job_run_fn};
+    use crate::jobs::{JobId, JobRow, JobStatus, JobStore as _};
+    use axum::body::Body;
+    use tower::util::ServiceExt;
+
+    fn jobs_router() -> Router {
+        let mut registry = RouteRegistry::new();
+        registry.add_job(JobEntry {
+            name: "test-job",
+            run: job_run_fn(|payload, _ext| async move {
+                match payload.get("fail").and_then(|v| v.as_bool()) {
+                    Some(true) => Err("intentional failure".to_string()),
+                    _ => Ok(()),
+                }
+            }),
+            timeout_ms: 5_000,
+            max_attempts: 2,
+        });
+        build_router(registry)
+    }
+
+    async fn insert_row(id: &str, payload: serde_json::Value) {
+        let now = crate::jobs::now_ms();
+        crate::jobs::store()
+            .unwrap()
+            .insert(JobRow {
+                id: JobId(id.into()),
+                name: "test-job".into(),
+                payload,
+                status: JobStatus::Queued,
+                attempts: 0,
+                max_attempts: 2,
+                next_run_at: Some(now),
+                last_error: None,
+                created_at: now,
+                updated_at: now,
+            })
+            .await
+            .unwrap();
+    }
+
+    fn run_request(id: &str, secret: Option<&str>) -> http::Request<Body> {
+        let mut builder = http::Request::builder()
+            .method("POST")
+            .uri("/__nx/jobs/test-job")
+            .header("content-type", "application/json");
+        if let Some(secret) = secret {
+            builder = builder.header(crate::jobs::JOBS_SECRET_HEADER, secret);
+        }
+        builder
+            .body(Body::from(format!("{{\"id\":{id:?}}}")))
+            .unwrap()
+    }
+
+    async fn wait_for_status(id: &str, want: JobStatus) -> JobRow {
+        for _ in 0..200 {
+            let row = crate::jobs::store()
+                .unwrap()
+                .get(&JobId(id.into()))
+                .await
+                .unwrap()
+                .expect("row exists");
+            if row.status == want {
+                return row;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("job {id} never reached {want:?}");
+    }
+
+    #[tokio::test]
+    async fn job_route_is_fail_closed_without_secret() {
+        let resp = jobs_router()
+            .oneshot(run_request("missing", None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn job_route_runs_job_in_background_and_records_success() {
+        insert_row("rt-happy", serde_json::json!({})).await;
+        let secret = crate::jobs::jobs_secret().unwrap();
+        let resp = jobs_router()
+            .oneshot(run_request("rt-happy", Some(&secret)))
+            .await
+            .unwrap();
+        // 202 comes back before the job body has necessarily run…
+        assert_eq!(resp.status(), http::StatusCode::ACCEPTED);
+        // …and the row reaches `succeeded` shortly after (spawn-backed locally).
+        let row = wait_for_status("rt-happy", JobStatus::Succeeded).await;
+        assert_eq!(row.attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn job_route_conflicts_on_double_delivery() {
+        insert_row("rt-conflict", serde_json::json!({})).await;
+        let secret = crate::jobs::jobs_secret().unwrap();
+        let router = jobs_router();
+        let first = router
+            .clone()
+            .oneshot(run_request("rt-conflict", Some(&secret)))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), http::StatusCode::ACCEPTED);
+        wait_for_status("rt-conflict", JobStatus::Succeeded).await;
+        // Terminal row: redelivery loses the claim race → 409, no re-run.
+        let second = router
+            .oneshot(run_request("rt-conflict", Some(&secret)))
+            .await
+            .unwrap();
+        assert_eq!(second.status(), http::StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn failed_job_gets_backoff_then_dead() {
+        insert_row("rt-fail", serde_json::json!({"fail": true})).await;
+        let secret = crate::jobs::jobs_secret().unwrap();
+        let router = jobs_router();
+        let resp = router
+            .clone()
+            .oneshot(run_request("rt-fail", Some(&secret)))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::ACCEPTED);
+        // Attempt 1 of 2 → retryable failure with a future next_run_at.
+        let row = wait_for_status("rt-fail", JobStatus::Failed).await;
+        assert_eq!(row.attempts, 1);
+        assert!(row.next_run_at.unwrap() > crate::jobs::now_ms());
+        assert_eq!(row.last_error.as_deref(), Some("intentional failure"));
+        // Attempt 2 of 2 → dead.
+        let resp = router
+            .oneshot(run_request("rt-fail", Some(&secret)))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::ACCEPTED);
+        let row = wait_for_status("rt-fail", JobStatus::Dead).await;
+        assert_eq!(row.attempts, 2);
+        assert_eq!(row.next_run_at, None);
+    }
+
+    #[tokio::test]
+    async fn status_endpoint_is_authed_and_reports() {
+        use http_body_util::BodyExt;
+        let router = jobs_router();
+        let unauthed = http::Request::builder()
+            .method("GET")
+            .uri("/__nx/jobs")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.clone().oneshot(unauthed).await.unwrap();
+        assert_eq!(resp.status(), http::StatusCode::UNAUTHORIZED);
+
+        insert_row("rt-status", serde_json::json!({})).await;
+        let secret = crate::jobs::jobs_secret().unwrap();
+        let authed = http::Request::builder()
+            .method("GET")
+            .uri("/__nx/jobs")
+            .header(crate::jobs::JOBS_SECRET_HEADER, &secret)
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(authed).await.unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.get("counts").is_some(), "{json}");
+        assert!(json.get("recent").is_some(), "{json}");
+    }
+
+    #[tokio::test]
+    async fn sweep_reports_due_rows() {
+        use http_body_util::BodyExt;
+        insert_row("rt-sweep", serde_json::json!({})).await;
+        let secret = crate::jobs::jobs_secret().unwrap();
+        let req = http::Request::builder()
+            .method("POST")
+            .uri("/__nx/jobs/sweep")
+            .header(crate::jobs::JOBS_SECRET_HEADER, &secret)
+            .body(Body::empty())
+            .unwrap();
+        let resp = jobs_router().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // At least our row is due; delivery itself may fail in-test (no
+        // server listening at the local base URL) — that's the sweep's
+        // durability contract, not an error.
+        assert!(json["due"].as_u64().unwrap() >= 1, "{json}");
     }
 }
