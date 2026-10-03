@@ -489,6 +489,12 @@ fn build_route_table(
     {
         router = router.merge(crate::admin::router());
     }
+    // The in-process realtime hub's WebSocket endpoint (404s when a relay
+    // is configured).
+    #[cfg(feature = "realtime")]
+    {
+        router = router.merge(crate::realtime::router());
+    }
 
     // Fleet-uniform start-temperature telemetry; also anchors uptime_ms to
     // router construction (≈ process boot).

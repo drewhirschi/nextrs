@@ -39,6 +39,10 @@ logs = ["dep:tracing-subscriber"]
 # a root login from the deploy env (NEXTRS_ADMIN_USER +
 # NEXTRS_ADMIN_PASSWORD_HASH; fail-closed — every admin route 404s when unset).
 admin = ["jobs", "logs", "dep:argon2", "dep:password-hash", "dep:hmac", "dep:sha2"]
+# Enables `nextrs::realtime`: ordered change frames to browsers over
+# WebSockets — an in-process hub locally, or the generated Cloudflare Durable
+# Object relay (`nextrs realtime generate`) when NEXTRS_REALTIME_URL is set.
+realtime = ["axum/ws", "dep:reqwest", "dep:hmac", "dep:sha2"]
 # Enables the `nextrs::build` and `nextrs::docs` modules: codegen invoked from
 # a consumer crate's `build.rs` to emit a `generated_registry()` function from
 # a scan of `app/`, and pre-rendered docs content + llms.txt from a scan of a

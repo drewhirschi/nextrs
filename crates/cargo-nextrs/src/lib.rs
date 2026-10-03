@@ -11,6 +11,7 @@ mod bundles;
 mod cron;
 mod deploy;
 mod env_file;
+mod realtime;
 
 const DEFAULT_CLIENT_DIR: &str = ".nextrs/client";
 
@@ -79,6 +80,16 @@ pub fn run_with_args(args: impl IntoIterator<Item = OsString>) -> Result<(), Str
             let root = cron::resolve_root(root)?;
             admin::set_password(&root, user)
         }
+        CommandLine::RealtimeGenerate { root } => {
+            let root = cron::resolve_root(root)?;
+            let summary = realtime::generate(&root)?;
+            eprintln!("nextrs: generated {summary}");
+            Ok(())
+        }
+        CommandLine::RealtimeDeploy { root } => {
+            let root = cron::resolve_root(root)?;
+            realtime::deploy(&root)
+        }
         CommandLine::Logs(options) => admin::logs(&options),
         CommandLine::Jobs(options) => admin::jobs(&options),
         CommandLine::JobsRetry(options) => admin::retry_job(&options),
@@ -114,6 +125,12 @@ enum CommandLine {
     AdminSetPassword {
         root: Option<PathBuf>,
         user: Option<String>,
+    },
+    RealtimeGenerate {
+        root: Option<PathBuf>,
+    },
+    RealtimeDeploy {
+        root: Option<PathBuf>,
     },
     Logs(admin::QueryOptions),
     Jobs(admin::QueryOptions),
@@ -258,6 +275,27 @@ impl CommandLine {
                 }
             }
             return Ok(Self::AdminSetPassword { root, user });
+        }
+        if first == "realtime" {
+            let Some(action) = args.next() else {
+                return Err("missing realtime command; expected `generate` or `deploy`".into());
+            };
+            let mut root = None;
+            while let Some(arg) = args.next() {
+                match arg.to_str() {
+                    Some("--root") => root = Some(required_path(&mut args, "--root")?),
+                    Some("-h" | "--help") => return Ok(Self::Help),
+                    _ => return Err(format!("unexpected argument `{}`", arg.to_string_lossy())),
+                }
+            }
+            return match action.to_str() {
+                Some("generate") => Ok(Self::RealtimeGenerate { root }),
+                Some("deploy") => Ok(Self::RealtimeDeploy { root }),
+                _ => Err(format!(
+                    "unknown realtime command `{}`; expected `generate` or `deploy`",
+                    action.to_string_lossy()
+                )),
+            };
         }
         if first == "logs" || first == "jobs" {
             let logs = first == "logs";
@@ -841,7 +879,7 @@ fn io_error(error: std::io::Error) -> String {
 
 fn print_help() {
     println!(
-        "nextrs\n\nUSAGE:\n    nextrs new <PATH> [OPTIONS]\n    nextrs dev [--bin <NAME>] [-- <APP_ARGS>]\n    nextrs client generate [OPTIONS]\n    nextrs generate [--root <PATH>]\n    nextrs bundles plan [--root <PATH>]\n    nextrs bundles build [--root <PATH>] [--bin <NAME>] [--dev | --vercel] [--output <PATH>]\n    nextrs bundles verify [--root <PATH>] [--output <PATH>]\n    nextrs deploy [--root <PATH>] [--preview] [--skip-cron]\n    nextrs cron generate [--root <PATH>]\n    nextrs cron deploy [--root <PATH>]\n    nextrs admin set-password [--root <PATH>] [--user <NAME>]\n    nextrs logs [<ID>] [--route <R>] [--status 5xx] [--level warn] [--since 1h] [--limit N] [--url <URL>] [--json]\n    nextrs jobs [<ID>] [--status failed] [--name <JOB>] [--limit N] [--url <URL>] [--json]\n    nextrs jobs retry <ID> [--url <URL>]\n\nRun the same commands as `cargo nextrs ...` or `nextrs ...`.\n\nCLIENT OPTIONS:\n    --root <PATH>        nextrs application root (default: current directory)\n    --client-dir <PATH>  generated package relative to the app root (default: .nextrs/client)\n    --config <PATH>      external-client config; defaults to .nextrs/client/nextrs.client.json when present\n    -h, --help           Print help\n\nCONFIG:\n    nextrs.toml is the app config source. `generate` writes managed .nextrs/vercel.json from\n    [vercel], discovers #[nextrs::cron] routes, and writes provider plumbing.\n\nDEPLOY:\n    `deploy` runs generate, a local prebuilt Vercel deployment, then deploys\n    explicit Cloudflare cron triggers. --preview and --skip-cron skip triggers.\n\nCRON:\n    Declare GET schedules with #[nextrs::cron(schedule = \"...\")]. Vercel is\n    the default provider; use provider = \"cloudflare\" explicitly when wanted.\n    `cron generate` aliases `generate`; `cron deploy` ships Cloudflare Workers\n    using CRON_SECRET and either API credentials or wrangler.\n\nENV FILES:\n    `deploy` and `cron deploy` fill unset credentials from\n    .vercel/.env.<target>.local, .env.<target>.local, .env.<target>, .env.local,\n    then .env (process env always wins). Override with [deploy] env_file in\n    nextrs.toml.\n\nCUSTOM BUILD:\n    [build] command in nextrs.toml makes `deploy` run your command instead of\n    compiling server bundles on this machine (e.g. in a container, for apps\n    linking native libraries). It must write to $NEXTRS_BUNDLE_OUTPUT; deploy\n    verifies the result. `bundles verify` runs the same checks without deploying.\n\nADMIN:\n    Apps built with nextrs's `admin` feature serve /__nx/admin (request logs, jobs).\n    `admin set-password` writes NEXTRS_ADMIN_USER + an argon2 NEXTRS_ADMIN_PASSWORD_HASH\n    to .env.local; add both to the deployment env. `logs`/`jobs` query the app at\n    app.url (or --url) as that user; the password comes from NEXTRS_ADMIN_PASSWORD\n    or a prompt.\n\nDOCS:\n    https://nextrs.hirschi.dev/docs/config         nextrs.toml reference\n    https://nextrs.hirschi.dev/docs/custom-build   custom build command\n    https://nextrs.hirschi.dev/llms.txt            index for agents"
+        "nextrs\n\nUSAGE:\n    nextrs new <PATH> [OPTIONS]\n    nextrs dev [--bin <NAME>] [-- <APP_ARGS>]\n    nextrs client generate [OPTIONS]\n    nextrs generate [--root <PATH>]\n    nextrs bundles plan [--root <PATH>]\n    nextrs bundles build [--root <PATH>] [--bin <NAME>] [--dev | --vercel] [--output <PATH>]\n    nextrs bundles verify [--root <PATH>] [--output <PATH>]\n    nextrs deploy [--root <PATH>] [--preview] [--skip-cron]\n    nextrs cron generate [--root <PATH>]\n    nextrs cron deploy [--root <PATH>]\n    nextrs realtime generate [--root <PATH>]\n    nextrs realtime deploy [--root <PATH>]\n    nextrs admin set-password [--root <PATH>] [--user <NAME>]\n    nextrs logs [<ID>] [--route <R>] [--status 5xx] [--level warn] [--since 1h] [--limit N] [--url <URL>] [--json]\n    nextrs jobs [<ID>] [--status failed] [--name <JOB>] [--limit N] [--url <URL>] [--json]\n    nextrs jobs retry <ID> [--url <URL>]\n\nRun the same commands as `cargo nextrs ...` or `nextrs ...`.\n\nCLIENT OPTIONS:\n    --root <PATH>        nextrs application root (default: current directory)\n    --client-dir <PATH>  generated package relative to the app root (default: .nextrs/client)\n    --config <PATH>      external-client config; defaults to .nextrs/client/nextrs.client.json when present\n    -h, --help           Print help\n\nCONFIG:\n    nextrs.toml is the app config source. `generate` writes managed .nextrs/vercel.json from\n    [vercel], discovers #[nextrs::cron] routes, and writes provider plumbing.\n\nDEPLOY:\n    `deploy` runs generate, a local prebuilt Vercel deployment, then deploys\n    explicit Cloudflare cron triggers. --preview and --skip-cron skip triggers.\n\nCRON:\n    Declare GET schedules with #[nextrs::cron(schedule = \"...\")]. Vercel is\n    the default provider; use provider = \"cloudflare\" explicitly when wanted.\n    `cron generate` aliases `generate`; `cron deploy` ships Cloudflare Workers\n    using CRON_SECRET and either API credentials or wrangler.\n\nENV FILES:\n    `deploy` and `cron deploy` fill unset credentials from\n    .vercel/.env.<target>.local, .env.<target>.local, .env.<target>, .env.local,\n    then .env (process env always wins). Override with [deploy] env_file in\n    nextrs.toml.\n\nCUSTOM BUILD:\n    [build] command in nextrs.toml makes `deploy` run your command instead of\n    compiling server bundles on this machine (e.g. in a container, for apps\n    linking native libraries). It must write to $NEXTRS_BUNDLE_OUTPUT; deploy\n    verifies the result. `bundles verify` runs the same checks without deploying.\n\nREALTIME:\n    Apps using nextrs's `realtime` feature serve WebSockets in-process. On serverless,\n    `realtime generate` writes a Cloudflare Durable Object relay to\n    .nextrs/cloudflare/realtime/; `realtime deploy` ships it with wrangler and sets\n    NEXTRS_REALTIME_SECRET. Then set NEXTRS_REALTIME_URL + the same secret on the app.\n\nADMIN:\n    Apps built with nextrs's `admin` feature serve /__nx/admin (request logs, jobs).\n    `admin set-password` writes NEXTRS_ADMIN_USER + an argon2 NEXTRS_ADMIN_PASSWORD_HASH\n    to .env.local; add both to the deployment env. `logs`/`jobs` query the app at\n    app.url (or --url) as that user; the password comes from NEXTRS_ADMIN_PASSWORD\n    or a prompt.\n\nDOCS:\n    https://nextrs.hirschi.dev/docs/config         nextrs.toml reference\n    https://nextrs.hirschi.dev/docs/custom-build   custom build command\n    https://nextrs.hirschi.dev/llms.txt            index for agents"
     );
 }
 

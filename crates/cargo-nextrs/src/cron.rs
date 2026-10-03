@@ -27,7 +27,7 @@ pub const VERCEL_CONFIG_FILE: &str = ".nextrs/vercel.json";
 const GENERATED_README: &str = ".nextrs/README.md";
 
 /// Wrangler pins Worker runtime behavior to this date; bump deliberately.
-const COMPATIBILITY_DATE: &str = "2026-08-01";
+pub(crate) const COMPATIBILITY_DATE: &str = "2026-08-01";
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -643,7 +643,7 @@ fn multipart(parts: &[(&str, Option<&str>, &str, &[u8])]) -> (String, Vec<u8>) {
     (format!("multipart/form-data; boundary={boundary}"), body)
 }
 
-fn worker_name(app: &AppConfig) -> String {
+pub(crate) fn worker_name(app: &AppConfig) -> String {
     format!("{}-cron", app.name)
 }
 
@@ -693,7 +693,7 @@ fn preflight(root: &Path, crons: &[&CronEntry]) -> Result<(), String> {
     )
 }
 
-fn run_wrangler(
+pub(crate) fn run_wrangler(
     root: &Path,
     config: &Path,
     args: &[&str],
@@ -860,7 +860,7 @@ crons = [{schedules}]
     )
 }
 
-fn write(path: &Path, content: &str) -> Result<(), String> {
+pub(crate) fn write(path: &Path, content: &str) -> Result<(), String> {
     let temporary = path.with_extension(format!(
         "{}.tmp",
         path.extension()

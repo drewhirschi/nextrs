@@ -18,6 +18,17 @@ pub mod admin;
 pub mod jobs;
 #[cfg(feature = "libsql")]
 mod db;
+#[cfg(feature = "realtime")]
+pub mod realtime;
+
+/// The Cloudflare relay worker for [`realtime`](crate::realtime), as source.
+/// Always compiled (no feature) so the CLI can generate it without pulling in
+/// the runtime's WebSocket and HTTP-client dependencies.
+pub mod realtime_relay {
+    /// `worker.js` for `nextrs realtime generate`. Its ticket HMAC and frame
+    /// format match `nextrs::realtime` (shared test vector in both).
+    pub const WORKER_JS: &str = include_str!("realtime/relay-worker.js");
+}
 
 /// Deprecated path for [`speculation`] — kept for one release. This module
 /// only ever controlled document-level Speculation Rules; the data-prefetch
