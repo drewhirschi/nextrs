@@ -128,6 +128,7 @@ const packageJson = JSON.parse(
 );
 await import(packageJson.name);
 await import(`${packageJson.name}/react-query`);
+await import(`${packageJson.name}/realtime`);
 console.log(
   `normalized ${rewritten} ESM specifiers; verified package exports and ${emittedFiles.filter((file) => file.endsWith(".d.ts")).length} declarations without any`,
 );

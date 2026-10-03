@@ -82,29 +82,39 @@ pub struct UpdateTodoRequest {
 #[nextrs::api]
 pub async fn patch(
     Extension(ctx): Extension<TodosCtx>,
+    wait: nextrs::WaitUntil,
     Path(id): Path<u64>,
     Json(req): Json<UpdateTodoRequest>,
 ) -> Result<Json<Option<TodoDetail>>, ApiError> {
-    Ok(Json(
-        ctx.set_done(id, req.done)
-            .await
-            .map_err(db_error)?
-            .map(|t| TodoDetail {
-                id: t.id,
-                title: t.title,
-                done: t.done,
-                prev: None,
-                next: None,
-            }),
-    ))
+    let updated = ctx.set_done(id, req.done).await.map_err(db_error)?.map(|t| TodoDetail {
+        id: t.id,
+        title: t.title,
+        done: t.done,
+        prev: None,
+        next: None,
+    });
+    if let Some(todo) = &updated {
+        react_todos::live::todos_changed(
+            &wait,
+            nextrs::realtime::RealtimeChange::upsert(id.to_string(), nextrs::serde_json::json!(todo)),
+        );
+    }
+    Ok(Json(updated))
 }
 
 // Effect-only endpoint: a bare `StatusCode` return infers a body-less 200 —
 // the escape hatch for handlers with nothing to serialize.
 #[nextrs::api]
-pub async fn delete(Extension(ctx): Extension<TodosCtx>, Path(id): Path<u64>) -> StatusCode {
+pub async fn delete(
+    Extension(ctx): Extension<TodosCtx>,
+    wait: nextrs::WaitUntil,
+    Path(id): Path<u64>,
+) -> StatusCode {
     match ctx.remove(id).await {
-        Ok(true) => StatusCode::OK,
+        Ok(true) => {
+            react_todos::live::todos_changed(&wait, nextrs::realtime::RealtimeChange::delete(id.to_string()));
+            StatusCode::OK
+        }
         Ok(false) => StatusCode::NOT_FOUND,
         Err(e) => {
             tracing::error!(error = %e, "delete failed");

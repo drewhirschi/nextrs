@@ -1,5 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
+import { getApiLiveTicket } from "@react-todos/client";
 import {
+  useLiveTopic,
   useGetApiTodosFromUrl,
   usePostApiTodos,
   usePatchApiTodosById,
@@ -17,6 +19,16 @@ export default function Todos() {
   // server-seeded entry — because they all share the canonical query key.
   const invalidate = () =>
     queryClient.invalidateQueries({ queryKey: getGetApiTodosQueryKey() });
+
+  // Realtime: another tab's add/toggle lands here within a moment. Every
+  // mutation publishes to the "todos" topic (src/live.rs); this refetches.
+  // The ticket route decides who may listen (app/api/live/ticket/route.rs).
+  const live = useLiveTopic({
+    topic: "todos",
+    ticket: () => getApiLiveTicket({ topic: "todos" }).then((r) => r.data),
+    onChange: invalidate,
+    onResync: invalidate,
+  });
 
   // URL-bound: the filter lives in the page URL (?status=open), not in
   // useState — so a shared link shows the same view, back/forward walks
@@ -58,6 +70,9 @@ export default function Todos() {
     <section>
       <div className="row">
         <h1>Todos</h1>
+        <span className={`badge ${live === "live" ? "badge-done" : "badge-open"}`} title="Realtime connection">
+          {live === "live" ? "● live" : live}
+        </span>
         {/* setParams soft-navigates: the URL becomes ?status=open, this hook
             re-keys off it, and the previous filter stays warm in the cache. */}
         <select
@@ -109,10 +124,11 @@ export default function Todos() {
         <code>prefetch.rs</code> — no fetch on load.
       </p>
       <p className="muted">
-        Heads up: todos are stored in process memory with no database, so they
-        reset on cold starts and aren&apos;t shared across serverless instances.
-        Storage lives in one file (<code>core/todos.rs</code>) — swapping in a
-        real DB wouldn&apos;t touch the page or the API.
+        Open this page in two tabs: changes in one show up in the other
+        (<code>nextrs::realtime</code>). Todos live in Turso when{" "}
+        <code>NEXTRS_DB_URL</code> is set, in process memory otherwise — one
+        file (<code>core/todos.rs</code>) decides. Add <code>boom</code> or{" "}
+        <code>flaky: …</code> and look at <code>/__nx/admin</code>.
       </p>
     </section>
   );

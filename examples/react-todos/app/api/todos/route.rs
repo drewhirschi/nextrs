@@ -103,5 +103,10 @@ pub async fn post(
         Ok(handle) => tracing::info!(job_id = %handle.id, delivered = handle.delivered, "audit job enqueued"),
         Err(e) => tracing::warn!(error = %e, "audit job enqueue failed"),
     }
+    // Every other open tab refetches (src/live.rs, app/page.tsx).
+    react_todos::live::todos_changed(
+        &wait,
+        nextrs::realtime::RealtimeChange::upsert(todo.id.to_string(), nextrs::serde_json::json!(&todo)),
+    );
     Ok(Json(todo))
 }
