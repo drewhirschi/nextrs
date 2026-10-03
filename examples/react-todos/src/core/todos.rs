@@ -143,10 +143,12 @@ impl TodosCtx {
                 None => true,
             };
             if empty {
-                for (title, done) in SEED {
+                // Fixed ids + OR IGNORE: two cold instances racing on an
+                // empty table seed the three demo todos once, not twice.
+                for (i, (title, done)) in SEED.iter().enumerate() {
                     conn.execute(
-                        "INSERT INTO todos (title, done) VALUES (?1, ?2)",
-                        libsql::params![title, done as i64],
+                        "INSERT OR IGNORE INTO todos (id, title, done) VALUES (?1, ?2, ?3)",
+                        libsql::params![i as i64 + 1, *title, *done as i64],
                     )
                     .await
                     .map_err(db_err)?;

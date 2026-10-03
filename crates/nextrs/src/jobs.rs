@@ -277,7 +277,9 @@ pub trait JobStore: Send + Sync {
     /// `attempts`. `None` when the row is missing or not claimable — the
     /// double-delivery guard.
     fn claim(&self, id: &JobId) -> StoreFuture<'_, Option<JobRow>>;
-    /// Record a successful attempt and the job's return value.
+    /// Record a successful attempt and the job's return value. Both `mark_*`
+    /// only apply while the row is still `running` attempt `attempt.n` — a
+    /// run that outlived its reclaim can't overwrite a newer attempt.
     fn mark_succeeded(&self, id: &JobId, attempt: JobAttempt, result: serde_json::Value) -> StoreFuture<'_, ()>;
     /// Record a failed attempt (its `error` becomes `last_error`).
     /// `next_run_at: Some(ms)` → retryable `failed`; `None` → terminal `dead`.
@@ -290,7 +292,9 @@ pub trait JobStore: Send + Sync {
     /// Non-terminal rows due at or before `now`, oldest first.
     fn due(&self, now: i64, limit: u32) -> StoreFuture<'_, Vec<JobRow>>;
     /// `running` rows untouched since `cutoff` go back to due-now `failed`
-    /// (instance died mid-run). Returns how many were reclaimed.
+    /// (instance died mid-run) — or to `dead` once their attempts are spent,
+    /// so a job that kills its instance can't retry forever. Returns how
+    /// many were reclaimed.
     fn reclaim_stale(&self, cutoff: i64) -> StoreFuture<'_, u32>;
     fn get(&self, id: &JobId) -> StoreFuture<'_, Option<JobRow>>;
     /// Rows matching `query`, newest first — the dashboard's data.
@@ -350,7 +354,10 @@ impl JobStore for MemoryJobStore {
         let id = id.clone();
         Box::pin(async move {
             self.with(|rows| {
-                if let Some(row) = rows.get_mut(&id.0) {
+                if let Some(row) = rows
+                    .get_mut(&id.0)
+                    .filter(|r| r.status == JobStatus::Running && r.attempts == attempt.n)
+                {
                     row.status = JobStatus::Succeeded;
                     row.next_run_at = None;
                     row.result = Some(result);
@@ -364,7 +371,10 @@ impl JobStore for MemoryJobStore {
         let id = id.clone();
         Box::pin(async move {
             self.with(|rows| {
-                if let Some(row) = rows.get_mut(&id.0) {
+                if let Some(row) = rows
+                    .get_mut(&id.0)
+                    .filter(|r| r.status == JobStatus::Running && r.attempts == attempt.n)
+                {
                     row.status = if next_run_at.is_some() {
                         JobStatus::Failed
                     } else {
@@ -427,8 +437,13 @@ impl JobStore for MemoryJobStore {
                 let mut n = 0;
                 for row in rows.values_mut() {
                     if row.status == JobStatus::Running && row.updated_at < cutoff {
-                        row.status = JobStatus::Failed;
-                        row.next_run_at = Some(now_ms());
+                        if row.attempts >= row.max_attempts {
+                            row.status = JobStatus::Dead;
+                            row.next_run_at = None;
+                        } else {
+                            row.status = JobStatus::Failed;
+                            row.next_run_at = Some(now_ms());
+                        }
                         row.last_error
                             .get_or_insert_with(|| "reclaimed: instance died mid-run".into());
                         row.updated_at = now_ms();
@@ -497,15 +512,38 @@ static LOCAL_ADDR: OnceLock<std::net::SocketAddr> = OnceLock::new();
 /// dev where `bind_with_fallback` may not land on `$PORT`. One line in the
 /// app's `main` after binding; a no-op for apps without jobs.
 ///
-/// Off Vercel it also starts an in-process sweeper (every 30s), so locally
-/// a job's longer back-offs and stale runs are picked up the way a production
-/// cron hitting `/__nx/jobs/sweep` would. `NEXTRS_JOBS_LOCAL_SWEEP=0` opts out.
+/// Off Vercel, with the in-memory store, it also starts an in-process
+/// sweeper (every 30s), so locally a job's longer back-offs and stale runs are
+/// picked up the way a production cron hitting `/__nx/jobs/sweep` would.
+///
+/// It does **not** auto-start against a database: a dev server whose env
+/// points at a shared (say, production) Turso would otherwise claim and run
+/// that deployment's jobs with dev code. `NEXTRS_JOBS_LOCAL_SWEEP=1` opts in
+/// (e.g. a single self-hosted server with its own database); `=0` opts out.
 pub fn announce_local_addr(addr: std::net::SocketAddr) {
     if LOCAL_ADDR.set(addr).is_err() || on_vercel() {
         return;
     }
-    if matches!(std::env::var("NEXTRS_JOBS_LOCAL_SWEEP").as_deref(), Ok("0" | "false" | "off")) {
-        return;
+    let shared_db = {
+        #[cfg(feature = "libsql")]
+        {
+            crate::db::env_url(&["NEXTRS_JOBS_DB_URL"], &["NEXTRS_JOBS_DB_TOKEN"]).is_some()
+        }
+        #[cfg(not(feature = "libsql"))]
+        {
+            false
+        }
+    };
+    match std::env::var("NEXTRS_JOBS_LOCAL_SWEEP").as_deref() {
+        Ok("0" | "false" | "off") => return,
+        Ok("1" | "true" | "on") => {}
+        _ if shared_db => {
+            tracing::info!(
+                "jobs: local sweeper off (a database is configured; NEXTRS_JOBS_LOCAL_SWEEP=1 to run it)"
+            );
+            return;
+        }
+        _ => {}
     }
     if let Ok(runtime) = tokio::runtime::Handle::try_current() {
         runtime.spawn(async {
@@ -575,10 +613,7 @@ pub(crate) fn jobs_secret() -> Option<String> {
     }
     Some(
         DEV_SECRET
-            .get_or_init(|| {
-                let JobId(hex) = generate_job_id();
-                format!("dev-{hex}")
-            })
+            .get_or_init(|| format!("dev-{}", crate::os_random_hex()))
             .clone(),
     )
 }
@@ -1094,6 +1129,35 @@ mod tests {
         let got = s.get(&JobId("a".into())).await.unwrap().unwrap();
         assert_eq!(got.status, JobStatus::Failed);
         assert!(got.next_run_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn a_job_that_keeps_killing_its_instance_ends_dead() {
+        let s = MemoryJobStore::new();
+        let mut r = row("crash");
+        r.max_attempts = 1;
+        s.insert(r).await.unwrap();
+        s.claim(&JobId("crash".into())).await.unwrap().unwrap();
+        // The instance died mid-run: no mark_*; the sweep reclaims it.
+        assert_eq!(s.reclaim_stale(now_ms() + 10_000).await.unwrap(), 1);
+        let got = s.get(&JobId("crash".into())).await.unwrap().unwrap();
+        assert_eq!(got.status, JobStatus::Dead, "attempts spent → dead, not retried forever");
+        assert_eq!(got.next_run_at, None);
+    }
+
+    #[tokio::test]
+    async fn a_zombie_run_cannot_overwrite_a_newer_attempt() {
+        let s = MemoryJobStore::new();
+        s.insert(row("z")).await.unwrap();
+        s.claim(&JobId("z".into())).await.unwrap().unwrap(); // attempt 1
+        s.reclaim_stale(now_ms() + 10_000).await.unwrap();
+        s.claim(&JobId("z".into())).await.unwrap().unwrap(); // attempt 2 running
+        // Attempt 1 finally finishes and reports — it must be ignored.
+        s.mark_succeeded(&JobId("z".into()), attempt(1, None), serde_json::json!("stale"))
+            .await
+            .unwrap();
+        let got = s.get(&JobId("z".into())).await.unwrap().unwrap();
+        assert_eq!((got.status, got.attempts, got.result), (JobStatus::Running, 2, None));
     }
 
     #[test]

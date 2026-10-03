@@ -673,6 +673,13 @@ fn job_convention_error(route: &DiscoveredRoute) -> Option<String> {
             route.url_path
         ));
     }
+    // `/__nx/jobs/sweep` is the framework's sweep route.
+    if name == "sweep" {
+        return Some(format!(
+            "nextrs: job.rs at {} — `sweep` is reserved (it's /__nx/jobs/sweep); rename the directory",
+            route.url_path
+        ));
+    }
     if route.page.exists() || route.route.is_some() || route.prefetch.is_some() {
         return Some(format!(
             "nextrs: job.rs at {} cannot share a directory with page/route/prefetch files — jobs are not URL routes",
@@ -1776,6 +1783,11 @@ mod tests {
             (
                 vec![("jobs/y", vec![("job.rs", "pub async fn y() {}\n")])],
                 "has no #[nextrs::job]",
+            ),
+            // A name that collides with the framework's sweep route.
+            (
+                vec![("jobs/sweep", vec![("job.rs", JOB_BODY)])],
+                "`sweep` is reserved",
             ),
         ] {
             let structure: Vec<(&str, &[(&str, &str)])> = structure

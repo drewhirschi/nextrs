@@ -192,6 +192,7 @@ impl super::JobStore for LibsqlJobStore {
     fn mark_succeeded(&self, id: &JobId, attempt: JobAttempt, result: serde_json::Value) -> StoreFuture<'_, ()> {
         let id = id.clone();
         Box::pin(async move {
+            let attempt_n = attempt.n;
             let history = self.history_with(&id, attempt).await?;
             let result = serde_json::to_string(&result).map_err(err)?;
             self.conn()
@@ -200,8 +201,8 @@ impl super::JobStore for LibsqlJobStore {
                     "UPDATE __nextrs_jobs
                      SET status = 'succeeded', next_run_at = NULL, result = ?2,
                          history = ?3, updated_at = ?4
-                     WHERE id = ?1",
-                    libsql::params![id.0, result, history, now_ms()],
+                     WHERE id = ?1 AND status = 'running' AND attempts = ?5",
+                    libsql::params![id.0, result, history, now_ms(), attempt_n],
                 )
                 .await
                 .map_err(|e| StoreError(format!("mark_succeeded: {e}")))?;
@@ -214,14 +215,15 @@ impl super::JobStore for LibsqlJobStore {
         Box::pin(async move {
             let status = if next_run_at.is_some() { "failed" } else { "dead" };
             let error = attempt.error.clone();
+            let attempt_n = attempt.n;
             let history = self.history_with(&id, attempt).await?;
             self.conn()
                 .await?
                 .execute(
                     "UPDATE __nextrs_jobs
                      SET status = ?2, next_run_at = ?3, last_error = ?4, history = ?5, updated_at = ?6
-                     WHERE id = ?1",
-                    libsql::params![id.0, status, next_run_at, error, history, now_ms()],
+                     WHERE id = ?1 AND status = 'running' AND attempts = ?7",
+                    libsql::params![id.0, status, next_run_at, error, history, now_ms(), attempt_n],
                 )
                 .await
                 .map_err(|e| StoreError(format!("mark_failed: {e}")))?;
@@ -295,7 +297,8 @@ impl super::JobStore for LibsqlJobStore {
                 .await?
                 .execute(
                     "UPDATE __nextrs_jobs
-                     SET status = 'failed', next_run_at = ?2,
+                     SET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'failed' END,
+                         next_run_at = CASE WHEN attempts >= max_attempts THEN NULL ELSE ?2 END,
                          last_error = COALESCE(last_error, 'reclaimed: instance died mid-run'),
                          updated_at = ?2
                      WHERE status = 'running' AND updated_at < ?1",
@@ -406,8 +409,36 @@ mod tests {
             .unwrap();
         assert!(listed.iter().any(|r| r.id == id));
 
+        // A stale report for an older attempt is ignored.
+        s.mark_failed(&id, attempt(1, Some("zombie")), None).await.unwrap();
+        assert_eq!(s.get(&id).await.unwrap().unwrap().status, JobStatus::Succeeded);
+
         let requeued = s.requeue(&id).await.unwrap().unwrap();
         assert_eq!(requeued.status, JobStatus::Queued);
         assert!(s.requeue(&id).await.unwrap().is_none());
+
+        // A run that killed its instance with no attempts left is reclaimed
+        // as dead, not retried forever.
+        let crash = JobId(format!("c{}", now_ms()));
+        s.insert(JobRow {
+            id: crash.clone(),
+            name: "libsql-test".into(),
+            payload: serde_json::json!({}),
+            status: JobStatus::Queued,
+            attempts: 0,
+            max_attempts: 1,
+            next_run_at: Some(now_ms()),
+            last_error: None,
+            created_at: now_ms(),
+            updated_at: now_ms(),
+            result: None,
+            history: vec![],
+        })
+        .await
+        .unwrap();
+        s.claim(&crash).await.unwrap().unwrap();
+        assert!(s.reclaim_stale(now_ms() + 10_000).await.unwrap() >= 1);
+        let row = s.get(&crash).await.unwrap().unwrap();
+        assert_eq!((row.status, row.next_run_at), (JobStatus::Dead, None));
     }
 }

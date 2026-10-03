@@ -69,6 +69,10 @@ pub struct Capture {
     pending: AtomicUsize,
     idle: tokio::sync::Notify,
     responded: AtomicBool,
+    /// The request's record as of its telemetry summary (set by `emit`, which
+    /// also runs from the telemetry's `Drop` for abandoned streams), so the
+    /// saver never needs to keep the request's telemetry alive.
+    snapshot: Mutex<Option<RequestLog>>,
 }
 
 impl Capture {
@@ -80,7 +84,28 @@ impl Capture {
             pending: AtomicUsize::new(0),
             idle: tokio::sync::Notify::new(),
             responded: AtomicBool::new(false),
+            snapshot: Mutex::new(None),
         })
+    }
+
+    pub(crate) fn set_snapshot(&self, record: RequestLog) {
+        if let Ok(mut slot) = self.snapshot.lock() {
+            *slot = Some(record);
+        }
+    }
+
+    pub(crate) fn has_snapshot(&self) -> bool {
+        self.snapshot.lock().map(|s| s.is_some()).unwrap_or(false)
+    }
+
+    /// The snapshot with this capture's current lines (background work may
+    /// have logged since the summary was taken).
+    pub(crate) fn take_record(&self) -> Option<RequestLog> {
+        let mut record = self.snapshot.lock().ok()?.take()?;
+        record.lines = self.lines();
+        record.level = self.max_level();
+        record.dropped_lines = self.dropped();
+        Some(record)
     }
 
     fn push(&self, mut line: LogLine) {
@@ -169,18 +194,21 @@ pub(crate) fn wrap_background<F>(fut: F) -> std::pin::Pin<Box<dyn Future<Output 
 where
     F: Future<Output = ()> + Send + 'static,
 {
+    struct Done(Arc<Capture>);
+    impl Drop for Done {
+        fn drop(&mut self) {
+            self.0.end_background();
+        }
+    }
     match current() {
         Some(cap) => {
             cap.begin_background();
-            let guard_cap = Arc::clone(&cap);
+            // Built now, not inside the async block: a future dropped before
+            // its first poll (runtime shutdown, a discarding scheduler) must
+            // still release its count, or the record waits out MAX_WAIT.
+            let done = Done(Arc::clone(&cap));
             Box::pin(CAPTURE.scope(cap, async move {
-                struct Done(Arc<Capture>);
-                impl Drop for Done {
-                    fn drop(&mut self) {
-                        self.0.end_background();
-                    }
-                }
-                let _done = Done(guard_cap);
+                let _done = done;
                 fut.await;
             }))
         }
@@ -606,6 +634,16 @@ mod tests {
         assert!(keep(&warned, 1.0));
         assert!(!keep(&ok, 1.0));
         assert!(keep(&ok, 0.5)); // default rate 1.0 keeps everything else
+    }
+
+    #[tokio::test]
+    async fn a_background_future_dropped_unpolled_releases_its_count() {
+        let cap = Capture::new();
+        let fut = scope(Arc::clone(&cap), async { wrap_background(async {}) }).await;
+        drop(fut); // never polled
+        let started = std::time::Instant::now();
+        cap.wait_idle(Duration::from_secs(5)).await;
+        assert!(started.elapsed() < Duration::from_secs(1), "wait_idle stalled on a leaked count");
     }
 
     #[tokio::test]

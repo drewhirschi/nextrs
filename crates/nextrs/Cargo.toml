@@ -98,6 +98,8 @@ serde_urlencoded = "0.7"
 # into an internal router to reuse axum's path matching.
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
+# OS randomness for per-process secrets (jobs/realtime dev fallbacks).
+getrandom = "0.2"
 http = "1"
 async-stream = "0.3.6"
 bytes = "1.11.1"

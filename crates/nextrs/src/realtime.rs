@@ -120,8 +120,9 @@ pub fn relay_url() -> Option<String> {
 
 static DEV_SECRET: OnceLock<String> = OnceLock::new();
 
-/// `NEXTRS_REALTIME_SECRET`; off Vercel without a relay, a random
-/// per-process secret (tickets are only checked by this process then).
+/// `NEXTRS_REALTIME_SECRET`; off Vercel without a relay, a 256-bit secret
+/// from the OS RNG, per process (tickets are only checked by this process
+/// then, so a single long-lived server is safe without configuring one).
 fn secret() -> Result<String, RealtimeError> {
     if let Ok(s) = std::env::var("NEXTRS_REALTIME_SECRET") {
         if s.len() >= 16 {
@@ -134,9 +135,7 @@ fn secret() -> Result<String, RealtimeError> {
             "set NEXTRS_REALTIME_SECRET (shared with the relay worker) — tickets and publishes are signed with it".into(),
         ));
     }
-    Ok(DEV_SECRET
-        .get_or_init(|| format!("dev-{:016x}{:016x}", crate::logs::random_u64(), crate::logs::random_u64()))
-        .clone())
+    Ok(DEV_SECRET.get_or_init(crate::os_random_hex).clone())
 }
 
 /// Why a realtime call failed.

@@ -110,7 +110,10 @@ hash goes there, never the password.
   answers 404.
 - **Sessions** are a signed, `HttpOnly`, `SameSite=Strict` cookie that
   lasts 12 hours. Changing the password logs every session out.
-- **Lockout:** an IP is locked out for 15 minutes after 10 failed logins.
+- **Lockout:** a client is locked out for 15 minutes after 10 failed
+  logins. Clients are told apart by `X-Forwarded-For` only behind a proxy
+  that sets it: Vercel, or `NEXTRS_TRUST_PROXY=1`. Otherwise every direct
+  client shares one bucket.
 - **Dev shortcut:** a plain `NEXTRS_ADMIN_PASSWORD` works locally, never on
   Vercel.
 

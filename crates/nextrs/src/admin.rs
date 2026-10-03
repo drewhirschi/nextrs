@@ -16,9 +16,12 @@
 //! - **Sessions** are a signed cookie (12h). The signing key derives from the
 //!   password hash, so changing the password logs every session out.
 //!   `SameSite=Strict` covers CSRF for the Retry form.
-//! - **Brute force:** argon2 makes each guess slow, and an IP is locked out for
-//!   15 minutes after 10 failures. The counter is per instance (best effort on
-//!   serverless, where instances don't share memory).
+//! - **Brute force:** argon2 makes each guess slow (verified off the async
+//!   workers), and a client is locked out for 15 minutes after 10 failures.
+//!   The counter is per instance (best effort on serverless). The client IP
+//!   comes from `X-Forwarded-For` only behind a proxy that sets it — Vercel,
+//!   or `NEXTRS_TRUST_PROXY=1`; otherwise all direct clients share one bucket
+//!   (a lockout then affects every direct client, the safe direction).
 //!
 //! Pages: `/__nx/admin/logs`, `/__nx/admin/logs/{id}`, `/__nx/admin/jobs`,
 //! `/__nx/admin/jobs/{id}` (with Retry). JSON for scripts and the CLI, which
@@ -228,15 +231,26 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
 
 static FAILURES: Mutex<Option<HashMap<String, (u32, i64)>>> = Mutex::new(None);
 
+/// The lockout key. A forwarded-for header is only trustworthy when a proxy
+/// we control writes it; a client talking to us directly could rotate it to
+/// dodge the lockout.
 fn client_ip(headers: &HeaderMap) -> String {
+    let trusted = on_vercel() || matches!(std::env::var("NEXTRS_TRUST_PROXY").as_deref(), Ok("1" | "true"));
+    if !trusted {
+        return "direct".into();
+    }
     headers
         .get("x-forwarded-for")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.split(',').next())
         .or_else(|| headers.get("x-real-ip").and_then(|v| v.to_str().ok()))
         .map(|s| s.trim().to_string())
-        .unwrap_or_else(|| "local".into())
+        .unwrap_or_else(|| "direct".into())
 }
+
+/// Most distinct clients tracked; past this, expired entries are dropped
+/// (and, if that's not enough, the map is reset) so it can't grow unbounded.
+const MAX_TRACKED: usize = 10_000;
 
 fn locked_out(ip: &str, now: i64) -> bool {
     let guard = FAILURES.lock().unwrap_or_else(|e| e.into_inner());
@@ -249,6 +263,12 @@ fn locked_out(ip: &str, now: i64) -> bool {
 fn record_failure(ip: &str, now: i64) {
     let mut guard = FAILURES.lock().unwrap_or_else(|e| e.into_inner());
     let map = guard.get_or_insert_with(HashMap::new);
+    if map.len() >= MAX_TRACKED {
+        map.retain(|_, (_, until)| *until > now);
+        if map.len() >= MAX_TRACKED {
+            map.clear();
+        }
+    }
     let entry = map.entry(ip.to_string()).or_insert((0, 0));
     if entry.1 <= now {
         *entry = (0, now + LOCKOUT_MS);
@@ -319,7 +339,7 @@ fn page_access(headers: &HeaderMap, uri: &http::Uri) -> Access {
 }
 
 /// JSON API: session cookie or HTTP Basic (for scripts and the CLI).
-fn api_access(headers: &HeaderMap) -> Access {
+async fn api_access(headers: &HeaderMap) -> Access {
     let Some(creds) = creds() else {
         return Access::Denied(StatusCode::NOT_FOUND.into_response());
     };
@@ -332,7 +352,12 @@ fn api_access(headers: &HeaderMap) -> Access {
         return Access::Denied((StatusCode::TOO_MANY_REQUESTS, "locked out").into_response());
     }
     if headers.contains_key(header::AUTHORIZATION) {
-        if basic_auth_ok(&creds, headers) {
+        // argon2 is deliberately slow; keep it off the async workers.
+        let owned = headers.clone();
+        let ok = tokio::task::spawn_blocking(move || basic_auth_ok(&creds, &owned))
+            .await
+            .unwrap_or(false);
+        if ok {
             clear_failures(&ip);
             return Access::Granted;
         }
@@ -530,7 +555,7 @@ async fn logs_page(headers: HeaderMap, uri: http::Uri, Query(p): Query<LogParams
     for r in &records {
         let _ = write!(
             body,
-            r#"<tr class="link" onclick="location.href='{ADMIN_PREFIX}/logs/{id}'"><td>{time}</td><td>{method}</td><td><a href="{ADMIN_PREFIX}/logs/{id}">{route}</a></td><td>{status}</td><td class="num">{ms}</td><td>{level}</td><td class="num">{lines}</td></tr>"#,
+            r#"<tr class="link" data-href="{ADMIN_PREFIX}/logs/{id}"><td>{time}</td><td>{method}</td><td><a href="{ADMIN_PREFIX}/logs/{id}">{route}</a></td><td>{status}</td><td class="num">{ms}</td><td>{level}</td><td class="num">{lines}</td></tr>"#,
             id = esc(&r.id),
             time = time_html(r.ts),
             method = esc(&r.method),
@@ -694,7 +719,7 @@ async fn jobs_page(headers: HeaderMap, uri: http::Uri, Query(p): Query<JobParams
     for r in &rows {
         let _ = write!(
             body,
-            r#"<tr class="link" onclick="location.href='{ADMIN_PREFIX}/jobs/{id}'"><td>{time}</td><td>{name}</td><td><a href="{ADMIN_PREFIX}/jobs/{id}"><code>{short}</code></a></td><td>{status}</td><td class="num">{attempts}/{max}</td><td class="err">{err}</td></tr>"#,
+            r#"<tr class="link" data-href="{ADMIN_PREFIX}/jobs/{id}"><td>{time}</td><td>{name}</td><td><a href="{ADMIN_PREFIX}/jobs/{id}"><code>{short}</code></a></td><td>{status}</td><td class="num">{attempts}/{max}</td><td class="err">{err}</td></tr>"#,
             id = esc(&r.id.0),
             short = esc(&r.id.0[..r.id.0.len().min(8)]),
             time = time_html(r.created_at),
@@ -810,7 +835,7 @@ fn json_err(status: StatusCode, msg: &str) -> Response {
 }
 
 async fn api_logs(headers: HeaderMap, Query(p): Query<LogParams>) -> Response {
-    require!(api_access(&headers));
+    require!(api_access(&headers).await);
     match crate::logs::store().query(p.query()).await {
         Ok(records) => axum::Json(serde_json::json!({ "records": records })).into_response(),
         Err(e) => json_err(StatusCode::INTERNAL_SERVER_ERROR, &e.to_string()),
@@ -818,7 +843,7 @@ async fn api_logs(headers: HeaderMap, Query(p): Query<LogParams>) -> Response {
 }
 
 async fn api_log(headers: HeaderMap, Path(id): Path<String>) -> Response {
-    require!(api_access(&headers));
+    require!(api_access(&headers).await);
     match crate::logs::store().get(&id).await {
         Ok(Some(r)) => axum::Json(r).into_response(),
         Ok(None) => json_err(StatusCode::NOT_FOUND, "no such request"),
@@ -827,7 +852,7 @@ async fn api_log(headers: HeaderMap, Path(id): Path<String>) -> Response {
 }
 
 async fn api_jobs(headers: HeaderMap, Query(p): Query<JobParams>) -> Response {
-    require!(api_access(&headers));
+    require!(api_access(&headers).await);
     let result = async { crate::jobs::store()?.list(p.query()).await }.await;
     match result {
         Ok(jobs) => axum::Json(serde_json::json!({ "jobs": jobs })).into_response(),
@@ -836,7 +861,7 @@ async fn api_jobs(headers: HeaderMap, Query(p): Query<JobParams>) -> Response {
 }
 
 async fn api_job(headers: HeaderMap, Path(id): Path<String>) -> Response {
-    require!(api_access(&headers));
+    require!(api_access(&headers).await);
     let result = async { crate::jobs::store()?.get(&JobId(id)).await }.await;
     match result {
         Ok(Some(row)) => axum::Json(row).into_response(),
@@ -846,7 +871,7 @@ async fn api_job(headers: HeaderMap, Path(id): Path<String>) -> Response {
 }
 
 async fn api_retry(headers: HeaderMap, Path(id): Path<String>) -> Response {
-    require!(api_access(&headers));
+    require!(api_access(&headers).await);
     match crate::jobs::retry(&JobId(id)).await {
         Ok(Some(row)) => (StatusCode::ACCEPTED, axum::Json(row)).into_response(),
         Ok(None) => json_err(StatusCode::CONFLICT, "job is missing, queued, or running"),
@@ -985,7 +1010,8 @@ fn shell(title: &str, active: Option<&str>, body: &str) -> Html<String> {
 <meta name="robots" content="noindex"><title>{title} · nextrs admin</title>
 <style>{CSS}</style></head>
 <body>{nav}<main>{body}</main>
-<script>for(const t of document.querySelectorAll('time[data-ms]')){{const d=new Date(+t.dataset.ms);t.title=t.textContent;t.textContent=d.toLocaleString();}}</script>
+<script>for(const t of document.querySelectorAll('time[data-ms]')){{const d=new Date(+t.dataset.ms);t.title=t.textContent;t.textContent=d.toLocaleString();}}
+for(const r of document.querySelectorAll('tr[data-href]')){{r.addEventListener('click',(e)=>{{if(!e.target.closest('a'))location.assign(r.dataset.href);}});}}</script>
 </body></html>"#,
         title = esc(title)
     ))

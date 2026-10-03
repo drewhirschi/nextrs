@@ -84,11 +84,6 @@ impl RouteTelemetry {
         Arc::clone(&self.capture)
     }
 
-    #[cfg_attr(not(feature = "logs"), allow(dead_code))]
-    pub(crate) fn is_emitted(&self) -> bool {
-        self.emitted.load(Ordering::Relaxed)
-    }
-
     /// Snapshot this request as a saved log record.
     #[cfg_attr(not(feature = "logs"), allow(dead_code))]
     pub(crate) fn to_request_log(&self) -> crate::logs::RequestLog {
@@ -174,6 +169,12 @@ impl RouteTelemetry {
     pub(crate) fn emit(&self) {
         if self.emitted.swap(true, Ordering::Relaxed) {
             return;
+        }
+        // Hand the saved-log path a snapshot, so it never has to keep this
+        // telemetry alive (which would block the Drop backstop below).
+        #[cfg(feature = "logs")]
+        if crate::logs::enabled() {
+            self.capture.set_snapshot(self.to_request_log());
         }
         let segments = self
             .segments_ms()
@@ -357,21 +358,28 @@ pub(crate) async fn record(req: axum::extract::Request, next: axum::middleware::
 fn save_request_log(wait: &crate::WaitUntil, handle: Handle) {
     const MAX_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
     let capture = handle.capture();
-    if !handle.is_streaming() {
+    let streaming = handle.is_streaming();
+    if !streaming {
         capture.mark_responded();
     }
+    // Only the capture moves into the task. Holding `handle` would keep an
+    // abandoned stream's telemetry alive, so its Drop (which emits, and so
+    // snapshots) couldn't run and this task would sit out MAX_WAIT.
+    drop(handle);
     wait.wait_until(async move {
-        if handle.is_streaming() {
+        if streaming {
             let deadline = std::time::Instant::now() + MAX_WAIT;
-            while !handle.is_emitted() && std::time::Instant::now() < deadline {
+            while !capture.has_snapshot() && std::time::Instant::now() < deadline {
                 tokio::time::sleep(std::time::Duration::from_millis(25)).await;
             }
             capture.mark_responded();
         }
         capture.wait_idle(MAX_WAIT).await;
-        let record = handle.to_request_log();
-        drop(handle);
-        crate::logs::save(record).await;
+        // No snapshot: a stream still running after MAX_WAIT. Its summary
+        // still reaches tracing; only the saved record is skipped.
+        if let Some(record) = capture.take_record() {
+            crate::logs::save(record).await;
+        }
     });
 }
 

@@ -2631,6 +2631,9 @@ mod jobs_endpoint_tests {
         let _guard = tracing::subscriber::set_default(
             tracing_subscriber::registry().with(crate::logs::layer()),
         );
+        // Parallel tests without a subscriber can cache these callsites as
+        // "never interested"; re-evaluate now that this thread has one.
+        tracing::callsite::rebuild_interest_cache();
         insert_row("rt-lines", serde_json::json!({})).await;
         let secret = crate::jobs::jobs_secret().unwrap();
         let resp = jobs_router()
@@ -2754,6 +2757,9 @@ mod logs_capture_tests {
         let _guard = tracing::subscriber::set_default(
             tracing_subscriber::registry().with(crate::logs::layer()),
         );
+        // Parallel tests without a subscriber can cache these callsites as
+        // "never interested"; re-evaluate now that this thread has one.
+        tracing::callsite::rebuild_interest_cache();
         let mut registry = RouteRegistry::new();
         registry.add(RouteEntry {
             path: "/api/logs-capture-test".into(),

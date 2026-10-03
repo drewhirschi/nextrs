@@ -18,6 +18,16 @@ pub mod admin;
 pub mod jobs;
 #[cfg(feature = "libsql")]
 mod db;
+
+/// A 256-bit hex secret from the OS RNG, for per-process fallback secrets.
+/// Never derived from time or pids: a fallback can end up guarding a real
+/// single-server deployment.
+#[cfg_attr(not(any(feature = "jobs", feature = "realtime")), allow(dead_code))]
+pub(crate) fn os_random_hex() -> String {
+    let mut bytes = [0u8; 32];
+    getrandom::getrandom(&mut bytes).expect("nextrs: the OS random number generator is unavailable");
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
+}
 #[cfg(feature = "realtime")]
 pub mod realtime;
 

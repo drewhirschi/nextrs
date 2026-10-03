@@ -76,8 +76,11 @@ t=2.1s  attempt 2 → Ok({"message_id": "m_123"}) → row {succeeded, result}
 - **Longer back-offs:** picked up by the sweep, `GET /__nx/jobs/sweep`.
   Point a cron at it. It accepts `Authorization: Bearer $CRON_SECRET`, so a
   [`#[nextrs::cron]`](/docs/crons) schedule works as-is.
-- **Locally:** a 30-second in-process sweeper does the same, so jobs behave
-  the way they do in production.
+- **Locally:** with the in-memory store, a 30-second in-process sweeper does
+  the same, so jobs behave the way they do in production. It stays off when
+  a database is configured, so a dev server pointed at production can't run
+  production's jobs. `NEXTRS_JOBS_LOCAL_SWEEP=1` turns it on, for example on
+  a self-hosted server with its own database.
 - **Delivery is at least once.** A job whose instance dies mid-run is
   reclaimed and runs again, so make job bodies safe to repeat.
 

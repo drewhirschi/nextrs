@@ -38,6 +38,7 @@ pub(crate) async fn connect(url: &str, token: &str, migration: &str) -> Result<l
 
 /// `ALTER TABLE ... ADD COLUMN` that tolerates the column already existing —
 /// how the framework's tables grow without a migration framework.
+#[cfg_attr(not(feature = "jobs"), allow(dead_code))]
 pub(crate) async fn add_column(conn: &libsql::Connection, table: &str, column_def: &str) -> Result<(), String> {
     match conn
         .execute(&format!("ALTER TABLE {table} ADD COLUMN {column_def}"), ())
