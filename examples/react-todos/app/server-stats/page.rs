@@ -17,7 +17,10 @@ use react_todos::core::todos::TodosCtx;
 
 pub async fn page(Extension(todos): Extension<TodosCtx>) -> Rsx {
     // Server-only work — the demo's stand-in for a DB query.
-    let all = todos.list(false).await;
+    let all = todos.list(false).await.unwrap_or_else(|e| {
+        tracing::error!(error = %e, "server-stats: list failed");
+        Vec::new()
+    });
     let done = all.iter().filter(|t| t.done).count();
     let counts = TodoStatsCounts {
         all: all.len() as f64,

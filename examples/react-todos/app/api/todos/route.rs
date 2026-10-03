@@ -3,6 +3,7 @@
 
 use axum::{Extension, Json};
 use axum::extract::Query;
+use nextrs::ApiError;
 use react_todos::core::todos::TodosCtx;
 use serde::{Deserialize, Serialize};
 use utoipa::{IntoParams, ToSchema};
@@ -58,10 +59,13 @@ pub async fn get(
     Extension(ctx): Extension<TodosCtx>,
     timing: nextrs::Timing,
     Query(f): Query<TodosFilter>,
-) -> Json<Vec<Todo>> {
+) -> Result<Json<Vec<Todo>>, ApiError> {
     let open_only = f.status.as_deref() == Some("open");
-    let todos = timing.span("db", ctx.list(open_only)).await;
-    Json(todos.into_iter().map(Into::into).collect())
+    let todos = timing.span("db", ctx.list(open_only)).await.map_err(|e| {
+        tracing::error!(error = %e, "list failed");
+        ApiError::internal("could not load todos")
+    })?;
+    Ok(Json(todos.into_iter().map(Into::into).collect()))
 }
 
 #[nextrs::api]
@@ -69,8 +73,18 @@ pub async fn post(
     Extension(ctx): Extension<TodosCtx>,
     wait: nextrs::WaitUntil,
     Json(req): Json<AddTodoRequest>,
-) -> Json<Todo> {
-    let todo: Todo = ctx.add(req.title).await.into();
+) -> Result<Json<Todo>, ApiError> {
+    // These lines land in this request's saved log record (nextrs::logs):
+    // add a todo titled "boom" and find the error at /__nx/admin/logs.
+    tracing::info!(title = %req.title, "adding todo");
+    let todo: Todo = ctx
+        .add(req.title)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "insert failed");
+            ApiError::internal("could not add the todo")
+        })?
+        .into();
     // Background work after the response: locally this is a plain spawn; on
     // Vercel (behind StreamingVercelLayer) it's registered with the runtime's
     // waitUntil so it isn't killed when the invocation ends.
@@ -89,5 +103,5 @@ pub async fn post(
         Ok(handle) => tracing::info!(job_id = %handle.id, delivered = handle.delivered, "audit job enqueued"),
         Err(e) => tracing::warn!(error = %e, "audit job enqueue failed"),
     }
-    Json(todo)
+    Ok(Json(todo))
 }

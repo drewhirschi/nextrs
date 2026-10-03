@@ -18,7 +18,14 @@ pub struct Heartbeat {
 
 #[nextrs::cron(schedule = "*/10 * * * *", provider = "cloudflare")]
 pub async fn get(Extension(ctx): Extension<TodosCtx>) -> Result<Json<Heartbeat>, StatusCode> {
-    let open_todos = ctx.list(true).await.len();
+    let open_todos = ctx
+        .list(true)
+        .await
+        .map_err(|e| {
+            tracing::error!(error = %e, "heartbeat: list failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        })?
+        .len();
     tracing::info!(open_todos, "cron heartbeat");
     Ok(Json(Heartbeat { open_todos }))
 }

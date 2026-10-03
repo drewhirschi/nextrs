@@ -23,20 +23,33 @@ pub struct AuditTodo {
     pub title: String,
 }
 
-#[nextrs::job(max_attempts = 3, timeout_secs = 30)]
+/// The job's return value — stored on the row, shown in /__nx/admin/jobs.
+#[derive(Serialize)]
+pub struct Audited {
+    pub open_todos: usize,
+}
+
+// Retries: 3 attempts, 2s back-off doubling (2s, 4s, …) capped at 30s.
+#[nextrs::job(max_attempts = 3, timeout_secs = 30, backoff_secs = 2, max_backoff_secs = 30)]
 pub async fn audit_todo(
     Extension(ctx): Extension<TodosCtx>,
     payload: AuditTodo,
-) -> Result<(), String> {
+) -> Result<Audited, String> {
     // Real apps would write an audit log, call a webhook, sync a search
-    // index… The demo proves the pieces: payload round-trip, app state, and
-    // the structured job lifecycle logs around this line.
-    let open = ctx.list(true).await.len();
-    tracing::info!(
-        id = payload.id,
-        title = %payload.title,
-        open_todos = open,
-        "audit: todo created (ran as a background job)"
-    );
-    Ok(())
+    // index… The demo proves the pieces: payload round-trip, app state, a
+    // stored return value, and retries — every line below lands in the
+    // attempt's log at /__nx/admin/jobs.
+    let attempt = nextrs::jobs::current().map_or(1, |job| job.attempt);
+    tracing::info!(id = payload.id, title = %payload.title, attempt, "auditing todo");
+
+    // Demo hook: titles starting with "flaky:" fail their first attempt, so
+    // the dashboard shows a failed attempt, the back-off, and the retry.
+    if payload.title.starts_with("flaky:") && attempt == 1 {
+        tracing::warn!("audit webhook answered 503");
+        return Err("audit webhook 503 (demo: 'flaky:' titles fail their first attempt)".into());
+    }
+
+    let open_todos = ctx.list(true).await.map_err(|e| e.to_string())?.len();
+    tracing::info!(open_todos, "audit: todo created (ran as a background job)");
+    Ok(Audited { open_todos })
 }

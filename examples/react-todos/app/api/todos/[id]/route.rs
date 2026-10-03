@@ -54,9 +54,10 @@ pub async fn get(
     let todo = ctx
         .get(id)
         .await
+        .map_err(db_error)?
         .ok_or_else(|| ApiError::not_found("no todo with that id").with_code("todo_not_found"))?;
     let (prev, next) = if q.neighbors.unwrap_or(false) {
-        ctx.neighbors(id).await
+        ctx.neighbors(id).await.map_err(db_error)?
     } else {
         (None, None)
     };
@@ -83,10 +84,11 @@ pub async fn patch(
     Extension(ctx): Extension<TodosCtx>,
     Path(id): Path<u64>,
     Json(req): Json<UpdateTodoRequest>,
-) -> Json<Option<TodoDetail>> {
-    Json(
+) -> Result<Json<Option<TodoDetail>>, ApiError> {
+    Ok(Json(
         ctx.set_done(id, req.done)
             .await
+            .map_err(db_error)?
             .map(|t| TodoDetail {
                 id: t.id,
                 title: t.title,
@@ -94,16 +96,26 @@ pub async fn patch(
                 prev: None,
                 next: None,
             }),
-    )
+    ))
 }
 
 // Effect-only endpoint: a bare `StatusCode` return infers a body-less 200 —
 // the escape hatch for handlers with nothing to serialize.
 #[nextrs::api]
 pub async fn delete(Extension(ctx): Extension<TodosCtx>, Path(id): Path<u64>) -> StatusCode {
-    if ctx.remove(id).await {
-        StatusCode::OK
-    } else {
-        StatusCode::NOT_FOUND
+    match ctx.remove(id).await {
+        Ok(true) => StatusCode::OK,
+        Ok(false) => StatusCode::NOT_FOUND,
+        Err(e) => {
+            tracing::error!(error = %e, "delete failed");
+            StatusCode::INTERNAL_SERVER_ERROR
+        }
     }
+}
+
+/// Log the store failure (it lands in the request's log record) and answer a
+/// generic 500 — the cause stays server-side.
+fn db_error(e: react_todos::core::todos::TodosError) -> ApiError {
+    tracing::error!(error = %e, "todo store failed");
+    ApiError::internal("the todo store failed")
 }

@@ -15,13 +15,16 @@
 use nextrs::vercel::StreamingVercelLayer;
 use tower::ServiceBuilder;
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::prelude::*;
 
 #[tokio::main]
 async fn main() -> Result<(), vercel_runtime::Error> {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .with_writer(std::io::stdout)
-        .json()
+    tracing_subscriber::registry()
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with(tracing_subscriber::fmt::layer().json().with_writer(std::io::stdout))
+        // Saves each request's lines (and each job attempt's) to the log store,
+        // so they outlive Vercel's own retention.
+        .with(nextrs::logs::layer())
         .init();
 
     let router = react_todos::with_cold_start_headers(react_todos::app());

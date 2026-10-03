@@ -4,11 +4,15 @@
 //! limited to local process setup and serving.
 
 use tracing_subscriber::EnvFilter;
+use tracing_subscriber::prelude::*;
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+    tracing_subscriber::registry()
+        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
+        .with(tracing_subscriber::fmt::layer())
+        // Saves each request's lines (and each job attempt's) for /__nx/admin.
+        .with(nextrs::logs::layer())
         .init();
 
     let app = react_todos::app();
