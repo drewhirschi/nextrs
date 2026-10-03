@@ -702,7 +702,14 @@ async fn jobs_page(headers: HeaderMap, uri: http::Uri, Query(p): Query<JobParams
             status = job_badge(r.status),
             attempts = r.attempts,
             max = r.max_attempts,
-            err = esc(&truncate(r.last_error.as_deref().unwrap_or(""), 80)),
+            // An earlier attempt's error is noise once the job succeeded.
+            err = esc(&truncate(
+                match r.status {
+                    JobStatus::Failed | JobStatus::Dead => r.last_error.as_deref().unwrap_or(""),
+                    _ => "",
+                },
+                80,
+            )),
         );
     }
     if rows.is_empty() {

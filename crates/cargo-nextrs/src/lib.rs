@@ -6,6 +6,7 @@ use std::process::{Command, ExitCode};
 
 use serde_json::Value;
 
+mod admin;
 mod bundles;
 mod cron;
 mod deploy;
@@ -74,6 +75,13 @@ pub fn run_with_args(args: impl IntoIterator<Item = OsString>) -> Result<(), Str
             let root = cron::resolve_root(root)?;
             cron::deploy(&root)
         }
+        CommandLine::AdminSetPassword { root, user } => {
+            let root = cron::resolve_root(root)?;
+            admin::set_password(&root, user)
+        }
+        CommandLine::Logs(options) => admin::logs(&options),
+        CommandLine::Jobs(options) => admin::jobs(&options),
+        CommandLine::JobsRetry(options) => admin::retry_job(&options),
     }
 }
 
@@ -103,6 +111,13 @@ enum CommandLine {
     CronDeploy {
         root: Option<PathBuf>,
     },
+    AdminSetPassword {
+        root: Option<PathBuf>,
+        user: Option<String>,
+    },
+    Logs(admin::QueryOptions),
+    Jobs(admin::QueryOptions),
+    JobsRetry(admin::QueryOptions),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -223,6 +238,62 @@ impl CommandLine {
                 )),
             };
         }
+        if first == "admin" {
+            let Some(action) = args.next() else {
+                return Err("missing admin command; expected `set-password`".into());
+            };
+            if action != "set-password" {
+                return Err(format!(
+                    "unknown admin command `{}`; expected `set-password`",
+                    action.to_string_lossy()
+                ));
+            }
+            let (mut root, mut user) = (None, None);
+            while let Some(arg) = args.next() {
+                match arg.to_str() {
+                    Some("--root") => root = Some(required_path(&mut args, "--root")?),
+                    Some("--user") => user = Some(required_string(&mut args, "--user")?),
+                    Some("-h" | "--help") => return Ok(Self::Help),
+                    _ => return Err(format!("unexpected argument `{}`", arg.to_string_lossy())),
+                }
+            }
+            return Ok(Self::AdminSetPassword { root, user });
+        }
+        if first == "logs" || first == "jobs" {
+            let logs = first == "logs";
+            let mut options = admin::QueryOptions::default();
+            let mut retry = false;
+            while let Some(arg) = args.next() {
+                let flag = arg.to_str().unwrap_or("");
+                match flag {
+                    "--root" => options.root = Some(required_path(&mut args, "--root")?),
+                    "--url" => options.url = Some(required_string(&mut args, "--url")?),
+                    "--json" => options.json = true,
+                    "-h" | "--help" => return Ok(Self::Help),
+                    "--route" | "--level" | "--since" if logs => {
+                        let value = required_string(&mut args, flag)?;
+                        options.params.push((flag[2..].to_string(), value));
+                    }
+                    "--name" if !logs => {
+                        options.params.push(("name".into(), required_string(&mut args, flag)?));
+                    }
+                    "--status" | "--limit" => {
+                        let value = required_string(&mut args, flag)?;
+                        options.params.push((flag[2..].to_string(), value));
+                    }
+                    "retry" if !logs && !retry && options.id.is_none() => retry = true,
+                    _ if !flag.starts_with('-') && options.id.is_none() => options.id = Some(flag.to_string()),
+                    _ => return Err(format!("unexpected argument `{}`", arg.to_string_lossy())),
+                }
+            }
+            return Ok(if logs {
+                Self::Logs(options)
+            } else if retry {
+                Self::JobsRetry(options)
+            } else {
+                Self::Jobs(options)
+            });
+        }
         if first != "client" {
             return Err(format!("unknown command `{}`", first.to_string_lossy()));
         }
@@ -270,6 +341,12 @@ fn create_app(args: Vec<OsString>) -> Result<(), String> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     create_nextrs_app::run_with_args_named("nextrs new", args).map_err(io_error)
+}
+
+fn required_string(args: &mut impl Iterator<Item = OsString>, flag: &str) -> Result<String, String> {
+    args.next()
+        .and_then(|v| v.into_string().ok())
+        .ok_or_else(|| format!("{flag} requires a value"))
 }
 
 fn required_path(args: &mut impl Iterator<Item = OsString>, flag: &str) -> Result<PathBuf, String> {
@@ -764,7 +841,7 @@ fn io_error(error: std::io::Error) -> String {
 
 fn print_help() {
     println!(
-        "nextrs\n\nUSAGE:\n    nextrs new <PATH> [OPTIONS]\n    nextrs dev [--bin <NAME>] [-- <APP_ARGS>]\n    nextrs client generate [OPTIONS]\n    nextrs generate [--root <PATH>]\n    nextrs bundles plan [--root <PATH>]\n    nextrs bundles build [--root <PATH>] [--bin <NAME>] [--dev | --vercel] [--output <PATH>]\n    nextrs bundles verify [--root <PATH>] [--output <PATH>]\n    nextrs deploy [--root <PATH>] [--preview] [--skip-cron]\n    nextrs cron generate [--root <PATH>]\n    nextrs cron deploy [--root <PATH>]\n\nRun the same commands as `cargo nextrs ...` or `nextrs ...`.\n\nCLIENT OPTIONS:\n    --root <PATH>        nextrs application root (default: current directory)\n    --client-dir <PATH>  generated package relative to the app root (default: .nextrs/client)\n    --config <PATH>      external-client config; defaults to .nextrs/client/nextrs.client.json when present\n    -h, --help           Print help\n\nCONFIG:\n    nextrs.toml is the app config source. `generate` writes managed .nextrs/vercel.json from\n    [vercel], discovers #[nextrs::cron] routes, and writes provider plumbing.\n\nDEPLOY:\n    `deploy` runs generate, a local prebuilt Vercel deployment, then deploys\n    explicit Cloudflare cron triggers. --preview and --skip-cron skip triggers.\n\nCRON:\n    Declare GET schedules with #[nextrs::cron(schedule = \"...\")]. Vercel is\n    the default provider; use provider = \"cloudflare\" explicitly when wanted.\n    `cron generate` aliases `generate`; `cron deploy` ships Cloudflare Workers\n    using CRON_SECRET and either API credentials or wrangler.\n\nENV FILES:\n    `deploy` and `cron deploy` fill unset credentials from\n    .vercel/.env.<target>.local, .env.<target>.local, .env.<target>, .env.local,\n    then .env (process env always wins). Override with [deploy] env_file in\n    nextrs.toml.\n\nCUSTOM BUILD:\n    [build] command in nextrs.toml makes `deploy` run your command instead of\n    compiling server bundles on this machine (e.g. in a container, for apps\n    linking native libraries). It must write to $NEXTRS_BUNDLE_OUTPUT; deploy\n    verifies the result. `bundles verify` runs the same checks without deploying.\n\nDOCS:\n    https://nextrs.hirschi.dev/docs/config         nextrs.toml reference\n    https://nextrs.hirschi.dev/docs/custom-build   custom build command\n    https://nextrs.hirschi.dev/llms.txt            index for agents"
+        "nextrs\n\nUSAGE:\n    nextrs new <PATH> [OPTIONS]\n    nextrs dev [--bin <NAME>] [-- <APP_ARGS>]\n    nextrs client generate [OPTIONS]\n    nextrs generate [--root <PATH>]\n    nextrs bundles plan [--root <PATH>]\n    nextrs bundles build [--root <PATH>] [--bin <NAME>] [--dev | --vercel] [--output <PATH>]\n    nextrs bundles verify [--root <PATH>] [--output <PATH>]\n    nextrs deploy [--root <PATH>] [--preview] [--skip-cron]\n    nextrs cron generate [--root <PATH>]\n    nextrs cron deploy [--root <PATH>]\n    nextrs admin set-password [--root <PATH>] [--user <NAME>]\n    nextrs logs [<ID>] [--route <R>] [--status 5xx] [--level warn] [--since 1h] [--limit N] [--url <URL>] [--json]\n    nextrs jobs [<ID>] [--status failed] [--name <JOB>] [--limit N] [--url <URL>] [--json]\n    nextrs jobs retry <ID> [--url <URL>]\n\nRun the same commands as `cargo nextrs ...` or `nextrs ...`.\n\nCLIENT OPTIONS:\n    --root <PATH>        nextrs application root (default: current directory)\n    --client-dir <PATH>  generated package relative to the app root (default: .nextrs/client)\n    --config <PATH>      external-client config; defaults to .nextrs/client/nextrs.client.json when present\n    -h, --help           Print help\n\nCONFIG:\n    nextrs.toml is the app config source. `generate` writes managed .nextrs/vercel.json from\n    [vercel], discovers #[nextrs::cron] routes, and writes provider plumbing.\n\nDEPLOY:\n    `deploy` runs generate, a local prebuilt Vercel deployment, then deploys\n    explicit Cloudflare cron triggers. --preview and --skip-cron skip triggers.\n\nCRON:\n    Declare GET schedules with #[nextrs::cron(schedule = \"...\")]. Vercel is\n    the default provider; use provider = \"cloudflare\" explicitly when wanted.\n    `cron generate` aliases `generate`; `cron deploy` ships Cloudflare Workers\n    using CRON_SECRET and either API credentials or wrangler.\n\nENV FILES:\n    `deploy` and `cron deploy` fill unset credentials from\n    .vercel/.env.<target>.local, .env.<target>.local, .env.<target>, .env.local,\n    then .env (process env always wins). Override with [deploy] env_file in\n    nextrs.toml.\n\nCUSTOM BUILD:\n    [build] command in nextrs.toml makes `deploy` run your command instead of\n    compiling server bundles on this machine (e.g. in a container, for apps\n    linking native libraries). It must write to $NEXTRS_BUNDLE_OUTPUT; deploy\n    verifies the result. `bundles verify` runs the same checks without deploying.\n\nADMIN:\n    Apps built with nextrs's `admin` feature serve /__nx/admin (request logs, jobs).\n    `admin set-password` writes NEXTRS_ADMIN_USER + an argon2 NEXTRS_ADMIN_PASSWORD_HASH\n    to .env.local; add both to the deployment env. `logs`/`jobs` query the app at\n    app.url (or --url) as that user; the password comes from NEXTRS_ADMIN_PASSWORD\n    or a prompt.\n\nDOCS:\n    https://nextrs.hirschi.dev/docs/config         nextrs.toml reference\n    https://nextrs.hirschi.dev/docs/custom-build   custom build command\n    https://nextrs.hirschi.dev/llms.txt            index for agents"
     );
 }
 

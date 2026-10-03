@@ -393,10 +393,12 @@ dependencies = [
 name = "cargo-nextrs"
 version = "0.3.0"
 dependencies = [
+ "argon2",
  "cargo-nextrs-dev",
  "create-nextrs-app",
  "dotenvy",
  "nextrs",
+ "password-hash",
  "regex",
  "serde",
  "serde_json",

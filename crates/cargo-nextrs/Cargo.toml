@@ -28,6 +28,9 @@ serde_json = { version = "1", features = ["preserve_order"] }
 toml = "0.8"
 dotenvy = "0.15"
 ureq = "2"
+# `nextrs admin set-password` hashes with argon2id; salts from the OS RNG.
+argon2 = "0.5"
+password-hash = { version = "0.5", features = ["getrandom"] }
 syn = { version = "2", features = ["full"] }
 
 [dev-dependencies]
