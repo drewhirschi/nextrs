@@ -1,5 +1,5 @@
 // Shared "boot an app binary on a free port" helpers for the e2e scripts
-// (smoke.mjs, hover.mjs). Binaries must already be built:
+// (smoke.mjs, hover.mjs, live-admin.mjs). Binaries must already be built:
 // cargo build -p site -p react-todos
 import { spawn } from "node:child_process";
 import { createServer } from "node:net";

@@ -115,6 +115,12 @@ jobs:
       - name: Hover preload regression
         run: node e2e/hover.mjs
 
+      # The react-todos demos are browser-shaped promises: tab B updates when
+      # tab A adds, a 500 is findable in /__nx/admin, a flaky job retries
+      # itself (docs/react-todos-demo-plan.md).
+      - name: Realtime + admin regression
+        run: node e2e/live-admin.mjs
+
   deploy-docs:
     name: Deploy and verify docs from this commit
     needs: test-and-smoke
