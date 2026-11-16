@@ -1533,17 +1533,33 @@ fn app_shell_entry(routes: &[DiscoveredRoute], client_helper: &Path) -> String {
     );
     out.push_str("Object.assign(window, { __nx_router__: router });\n\n");
 
-    // Soft navigation + intent preload. NX_APP_ROUTES is the list of URLs this
+    // Soft navigation + preload. NX_APP_ROUTES is the list of URLs this
     // router can render; app_shell_nav.ts (spliced in verbatim) intercepts
-    // clicks on plain <a> tags for them and preloads the destination on
-    // intent — hover, plus ForesightJS's mouse-trajectory / tab / scroll /
-    // touch prediction.
+    // clicks on plain <a> tags for them, warms route chunks for links on
+    // screen, preloads data on intent (hover, plus ForesightJS's
+    // mouse-trajectory / tab / scroll / touch prediction), and measures how
+    // much each strategy helped.
     let route_patterns = pages
         .iter()
         .map(|pg| route_regex(&pg.url_path))
         .collect::<Vec<_>>()
         .join(", ");
     let _ = writeln!(out, "const NX_APP_ROUTES = [{route_patterns}];");
+    // Per route, same order as NX_APP_ROUTES: its template (what preload
+    // stats report — never a concrete URL), whether it has prefetch.rs data,
+    // and its page chunk. The import() names the same module as the route's
+    // lazy component, so it resolves to that chunk.
+    out.push_str("const NX_ROUTE_INFO = [\n");
+    for pg in &pages {
+        let _ = writeln!(
+            out,
+            "  {{ path: {:?}, data: {}, chunk: () => import({:?}) }},",
+            pg.url_path,
+            pg.prefetch.is_some(),
+            pg.page.tsx.as_ref().unwrap().display().to_string()
+        );
+    }
+    out.push_str("];\n");
     out.push_str(APP_SHELL_NAV);
 
     out.push_str(
@@ -2659,6 +2675,22 @@ console.log(Logo(), generated, dependency);
         assert_eq!(s.matches(".preloadRoute(").count(), 1, "{s}");
         assert!(s.contains("nxPreload(url, \"hover\")"), "{s}");
         assert!(s.contains("nxPreload(url, nxSignal)"), "{s}");
+        // Per-route info, index-aligned with NX_APP_ROUTES: the template the
+        // stats report, the has-data flag, and the chunk the on-screen
+        // preload warms without running a loader.
+        assert!(s.contains(r"const NX_APP_ROUTES = [/^\/$/, /^\/about$/];"), "{s}");
+        let root_page = tmp.path().join("page.tsx").display().to_string();
+        assert!(
+            s.contains(&format!(
+                "  {{ path: \"/\", data: false, chunk: () => import({root_page:?}) }},\n  {{ path: \"/about\","
+            )),
+            "{s}"
+        );
+        assert!(s.contains("NX_ROUTE_INFO[i].chunk()"), "{s}");
+        // Stats are collected locally and shipped only when the server's
+        // meta tag asks for them.
+        assert!(s.contains("meta[name=\"nx-preload-stats\"]"), "{s}");
+        assert!(s.contains("__nx_preload_stats__"), "{s}");
         // The predictor is a lazy chunk (never on the boot path), imported
         // from the file bundle_pages writes beside the shell entry.
         assert!(s.contains("import(\"./__nx_foresight__.mjs\")"), "{s}");
@@ -2668,6 +2700,7 @@ console.log(Logo(), generated, dependency);
         let nav = s.find("function nxAnchorUrl").unwrap();
         assert!(s.find("const router = createRouter(").unwrap() < nav);
         assert!(s.find("const NX_APP_ROUTES = [").unwrap() < nav);
+        assert!(s.find("const NX_ROUTE_INFO = [").unwrap() < nav);
         assert!(nav < s.find("createRoot(document.getElementById").unwrap());
         // Prediction-vector overlay: shipped, off unless asked for.
         assert!(s.contains("__nx_preload_debug__"));

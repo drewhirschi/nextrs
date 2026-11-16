@@ -159,7 +159,7 @@ fn build_router_with_public_inner(
 
     // Build the route table on its own so the not-found surfaces can be wired
     // as the fallback below.
-    let speculation = Arc::new(speculation.resolve(&registry.react_pages));
+    let speculation = Arc::new(resolve_head(speculation, &registry.react_pages));
     let entries = Arc::new(registry.entries);
     let not_found = Arc::new(registry.not_found);
     let jobs = Arc::new(registry.jobs);
@@ -259,7 +259,7 @@ pub fn build_router_with_speculation(
     registry: RouteRegistry,
     speculation: SpeculationConfig,
 ) -> Router {
-    let speculation = Arc::new(speculation.resolve(&registry.react_pages));
+    let speculation = Arc::new(resolve_head(speculation, &registry.react_pages));
     let entries = Arc::new(registry.entries);
     let not_found = Arc::new(registry.not_found);
     let jobs = Arc::new(registry.jobs);
@@ -414,6 +414,26 @@ fn build_jobs_endpoints(jobs: Arc<Vec<crate::conventions::JobEntry>>) -> Router 
     )
 }
 
+/// Everything the router adds to page documents: the speculation rules
+/// (when configured) and, when `NEXTRS_PRELOAD_STATS` is on, the tag in React
+/// page documents that tells the app shell to report preload stats.
+fn resolve_head(speculation: SpeculationConfig, react_pages: &[String]) -> ResolvedSpeculation {
+    head_for(speculation, react_pages, crate::preload_stats::enabled())
+}
+
+fn head_for(
+    speculation: SpeculationConfig,
+    react_pages: &[String],
+    preload_stats: bool,
+) -> ResolvedSpeculation {
+    let resolved = speculation.resolve(react_pages);
+    if preload_stats {
+        resolved.with_shell_tag(crate::preload_stats::SHELL_TAG, react_pages)
+    } else {
+        resolved
+    }
+}
+
 /// Build just the route table (matched routes, no fallback) from the registry's
 /// entries, with the resolved speculation script threaded into page rendering.
 fn build_route_table(
@@ -494,6 +514,14 @@ fn build_route_table(
     #[cfg(feature = "realtime")]
     {
         router = router.merge(crate::realtime::router());
+    }
+    // Opt-in sink for the app shell's preload-effectiveness reports. Not
+    // mounted (a plain 404) unless NEXTRS_PRELOAD_STATS is on.
+    if crate::preload_stats::enabled() {
+        router = router.route(
+            crate::preload_stats::NX_PRELOAD_STATS_PATH,
+            axum::routing::post(crate::preload_stats::handler),
+        );
     }
 
     // Fleet-uniform start-temperature telemetry; also anchors uptime_ms to
@@ -601,7 +629,7 @@ async fn render_route(
     // Inject the speculation-rules <script> into <head>. A no-op for head-less
     // fragments and when speculation is off, so both the streaming and
     // non-streaming branches below can use `before` directly.
-    let before = speculation.inject_into_head(before);
+    let before = speculation.inject_for_route(&path, before);
 
     let has_loading = entries[idx].loading.is_some();
 
@@ -1976,6 +2004,27 @@ mod tests {
     }
 
     // -- Speculation rules -----------------------------------------------------
+
+    #[test]
+    fn preload_stats_tag_reaches_react_documents_only_when_enabled() {
+        let tag = r#"<meta name="nx-preload-stats" content="/__nx/preload-stats">"#;
+        let react = vec!["/".to_string(), "/todos/{id}".to_string()];
+        // React page documents are head-less fragments: the tag is appended.
+        let fragment = r#"<script id="__nx_seeds__">[]</script>"#.to_string();
+        let on = head_for(SpeculationConfig::default(), &react, true);
+        assert_eq!(on.inject_for_route("/todos/{id}", fragment.clone()), format!("{fragment}{tag}"));
+        // Under a layout with a <head>, it goes inside it.
+        let doc = "<html><head></head><body>".to_string();
+        assert_eq!(on.inject_for_route("/", doc.clone()), format!("<html><head>{tag}</head><body>"));
+        // Not a React route (no app shell there to read it): untouched.
+        assert_eq!(on.inject_for_route("/server-stats", doc.clone()), doc);
+        // Off: untouched everywhere.
+        let off = head_for(SpeculationConfig::default(), &react, false);
+        assert_eq!(off.inject_for_route("/", fragment.clone()), fragment);
+        // Independent of speculation: both can be present.
+        let both = head_for(speculation_on(), &react, true).inject_for_route("/", doc);
+        assert!(both.contains("speculationrules") && both.contains("nx-preload-stats"));
+    }
 
     fn speculation_on() -> SpeculationConfig {
         SpeculationConfig {

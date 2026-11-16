@@ -6,8 +6,9 @@
 //! - **prefetch** (data seeding): a route's `prefetch.rs` and the
 //!   `/__nx/prefetch` endpoint warm a React page's query cache.
 //! - **preload** (route chunk warming): the app shell's TanStack router
-//!   preloads a React route's JS chunk on link intent — hover, or a
-//!   predicted hover/focus/tap (`router.preloadRoute`).
+//!   warms a React route's JS chunk when a link to it is on screen, and
+//!   its data on link intent — hover, or a predicted hover/focus/tap
+//!   (`router.preloadRoute`).
 //!
 //! *Speculation* is a third thing: a declarative
 //! `<script type="speculationrules">` injected into the `<head>` of
@@ -206,18 +207,46 @@ impl SpeculationConfig {
             .collect();
         ResolvedSpeculation {
             script: self.script_excluding(&patterns),
+            shell_tag: None,
         }
     }
 }
 
 /// A [`SpeculationConfig`] resolved against a route table: the precomputed
-/// script (if any), injected per response without re-serializing.
+/// script (if any), injected per response without re-serializing. Also
+/// carries the app-shell tag, if any (see `with_shell_tag`).
 #[derive(Debug, Clone, Default)]
 pub(crate) struct ResolvedSpeculation {
     script: Option<String>,
+    shell_tag: Option<(&'static str, std::collections::HashSet<String>)>,
 }
 
 impl ResolvedSpeculation {
+    /// Also emit `tag` in the documents of the given React app-shell routes
+    /// (axum path syntax) — a runtime switch the shell reads on boot.
+    pub(crate) fn with_shell_tag(mut self, tag: &'static str, react_routes: &[String]) -> Self {
+        self.shell_tag = Some((tag, react_routes.iter().cloned().collect()));
+        self
+    }
+
+    /// Everything the router adds to the document prefix of `route`: the
+    /// speculation rules (full documents only), then the shell tag when
+    /// `route` is an app-shell route. React page documents are usually
+    /// head-less fragments, so the tag goes into `<head>` when there is one
+    /// and at the end of the prefix otherwise — the shell finds it either way.
+    pub(crate) fn inject_for_route(&self, route: &str, before: String) -> String {
+        let mut before = self.inject_into_head(before);
+        if let Some((tag, routes)) = &self.shell_tag {
+            if routes.contains(route) {
+                match before.find("</head>") {
+                    Some(at) => before.insert_str(at, tag),
+                    None => before.push_str(tag),
+                }
+            }
+        }
+        before
+    }
+
     /// Same contract as [`SpeculationConfig::inject_into_head`].
     pub(crate) fn inject_into_head(&self, before: String) -> String {
         inject(self.script.as_deref(), before)

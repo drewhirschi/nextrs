@@ -102,6 +102,51 @@ exporter, or flush from background work registered with
 [`WaitUntil`](/docs/react-server-props) so the runtime drains it before
 freezing the instance.
 
+## Preload stats
+
+The app shell [preloads](/docs/streaming#preload) a link's data on intent —
+hover, or a prediction such as the pointer heading for the link. Whether
+prediction is worth its extra requests depends on your app: how slow your
+`prefetch.rs` routes are, and how your users move. Measure it with real
+traffic by setting one environment variable:
+
+```
+NEXTRS_PRELOAD_STATS=1
+```
+
+Each visitor's browser then reports its soft navigations to
+`POST /__nx/preload-stats` when the page is hidden, and the server emits them
+as `tracing` events with target `nextrs::preload` — into the same pipeline as
+rung 3 above (function logs, or your OTel backend).
+
+One `preload navigation` event per soft navigation:
+
+| Field | Meaning |
+|---|---|
+| `http.route` | the route template navigated to |
+| `trigger` | the signal that started the preload: `hover`, `mouse/trajectory`, `tab/forwards`, `touch`, … or `none` |
+| `data` | whether the route has a `prefetch.rs` |
+| `load_ms` | how long the preload took |
+| `lead_hover_ms` | head start hover had before the click (absent: never hovered, e.g. keyboard) |
+| `lead_predicted_ms`, `predictor` | head start the first predictor had, and which one |
+| `wait_none_ms` | the wait with no preload at all (= `load_ms`) |
+| `wait_hover_ms` | the wait if only hover preloaded |
+| `wait_predictive_ms` | the wait with hover and prediction |
+| `saved_ms` | `wait_hover_ms − wait_predictive_ms`: what prediction bought |
+
+One `preload cost` event per report: `hover_fired` / `hover_used` and
+`predicted_fired` / `predicted_used` — preloads started by each kind of
+signal, and how many were followed by a click. The gap is wasted requests.
+
+Read the two together. Average `saved_ms` is the benefit; the predicted
+fired-to-used gap is the price.
+
+Only route templates and timings leave the browser — never a URL, a param
+value, or anything identifying the visitor. The endpoint is unauthenticated,
+so it size-caps and shape-checks every report and rejects anything that is not
+a template and numbers. With the variable unset (the default) the endpoint is
+not mounted and browsers send nothing.
+
 ## What gets measured
 
 - Every matched page and API route, labeled with its route template.

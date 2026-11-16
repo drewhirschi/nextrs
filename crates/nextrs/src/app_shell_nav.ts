@@ -1,7 +1,8 @@
 // Soft navigation + intent preload for the generated app shell.
 //
 // Spliced verbatim into the shell entry by bundle.rs (`app_shell_entry`),
-// after `router` and `NX_APP_ROUTES` are declared. Not a standalone module.
+// after `router`, `NX_APP_ROUTES` and `NX_ROUTE_INFO` (same order: template,
+// has-data flag, chunk loader) are declared. Not a standalone module.
 //
 // Transparent soft navigation: pages and layouts use plain <a> tags (zero
 // app-page changes), so intercept same-origin clicks on URLs this router can
@@ -23,46 +24,106 @@ function nxAnchorUrl(a: Element | null): URL | null {
 function nxAppUrl(e: Event): URL | null {
   return nxAnchorUrl(e.target instanceof Element ? e.target.closest("a") : null);
 }
+function nxRouteIndex(url: URL): number {
+  return NX_APP_ROUTES.findIndex((r) => r.test(url.pathname));
+}
 document.addEventListener("click", (e) => {
   if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
   const url = nxAppUrl(e);
   if (!url) return;
   e.preventDefault();
-  router.navigate({ href: url.pathname + url.search + url.hash });
+  const clicked = performance.now();
+  const nav = router.navigate({ href: url.pathname + url.search + url.hash });
+  nxMeasure(url, clicked, nav);
 });
 
-// ---- Intent preload --------------------------------------------------------
+// ---- Preload ---------------------------------------------------------------
 // Plain anchors have no TanStack <Link> machinery, so defaultPreload:"intent"
-// never sees them — drive the preload here. preloadRoute warms the
-// destination route's lazy CHUNK and runs its loader, and loaders exist only
-// on prefetch-backed routes — so /__nx/prefetch is only hit where the server
-// actually mounts it.
+// never sees them — drive the preload here. Two tiers, by what they cost:
 //
-// Every signal funnels through nxPreload, and each URL preloads at most once
-// per NX_PRELOAD_TTL whichever signal gets there first. The window matches
-// the 30s freshness nxFetchSeeds honours.
+//   CHUNK (static, content-hashed, cached forever) — warmed for every app
+//     link as soon as it is on screen. Nothing to predict: it is nearly free.
+//   DATA (a prefetch.rs run: a function invocation, fresh for 30s) — warmed
+//     only on INTENT, through router.preloadRoute, which also runs the
+//     route's loader. Loaders exist only on prefetch-backed routes, so
+//     /__nx/prefetch is only hit where the server actually mounts it.
+//
+// Intent signals all funnel through nxPreload, and each URL preloads at most
+// once per NX_PRELOAD_TTL whichever gets there first. The window matches the
+// 30s freshness nxFetchSeeds honours.
 const NX_PRELOAD_TTL = 30_000;
-const nxPreloaded = new Map<string, number>();
-function nxPreload(url: URL, signal: string): boolean {
+type NxPreloadRecord = {
+  started: number; // when the preload began
+  trigger: string; // the signal that began it
+  hover?: number; // first time the pointer was ON the link
+  predicted?: number; // first time a predictor fired for it
+  predictor?: string; // ...and which one
+  done?: number; // when the preload settled
+  promise: Promise<unknown>;
+  used?: boolean;
+};
+const nxPreloads = new Map<string, NxPreloadRecord>();
+const nxIsHover = (signal: string) => signal === "hover" || signal === "mouse/hover";
+function nxLive(key: string): NxPreloadRecord | undefined {
+  const rec = nxPreloads.get(key);
+  return rec && performance.now() - rec.started < NX_PRELOAD_TTL ? rec : undefined;
+}
+function nxPreload(url: URL, signal: string) {
   const key = url.pathname + url.search;
   // A link to the page we are already on has nothing to warm.
-  if (key === window.location.pathname + window.location.search) return false;
-  const at = nxPreloaded.get(key);
-  if (at !== undefined && performance.now() - at < NX_PRELOAD_TTL) return false;
-  nxPreloaded.set(key, performance.now());
-  if (nxDebug) console.debug("[nx preload]", signal, key);
-  // NOTE: preloadRoute takes NavigateOptions (to/search), NOT { href } —
-  // buildLocation ignores href and would preload the current route.
-  router
-    .preloadRoute({ to: url.pathname, search: Object.fromEntries(url.searchParams) })
-    .catch(() => {});
-  return true;
+  if (key === window.location.pathname + window.location.search) return;
+  const now = performance.now();
+  let rec = nxLive(key);
+  if (!rec) {
+    if (nxDebug) console.debug("[nx preload]", signal, key);
+    // NOTE: preloadRoute takes NavigateOptions (to/search), NOT { href } —
+    // buildLocation ignores href and would preload the current route.
+    const promise = router
+      .preloadRoute({ to: url.pathname, search: Object.fromEntries(url.searchParams) })
+      .catch(() => {});
+    const started: NxPreloadRecord = { started: now, trigger: signal, promise };
+    promise.then(() => {
+      started.done = performance.now();
+    });
+    nxPreloads.set(key, (rec = started));
+    nxCount(nxStats.fired, signal);
+    nxCount(nxUnsent.fired, signal);
+  }
+  // Remember every signal's first sighting, not just the winner's: that is
+  // what lets nxMeasure say what hover alone would have achieved.
+  if (nxIsHover(signal)) rec.hover ??= now;
+  else {
+    rec.predicted ??= now;
+    rec.predictor ??= signal;
+  }
 }
-// Baseline: the pointer is ON a link. Always wired, so preload works before
-// the predictor below has loaded and wherever it stands down.
+// Baseline intent: the pointer is ON a link. Always wired, so preload works
+// before the predictor below has loaded and wherever it stands down.
 document.addEventListener("mouseover", (e) => {
   const url = nxAppUrl(e);
   if (url) nxPreload(url, "hover");
+});
+
+// Chunk tier: warm the route chunk of every app link that scrolls into view.
+// Bounded by the number of distinct ROUTES on screen, not links — fifty
+// /todos/{id} links are one chunk. Skipped on data-saver / 2g connections.
+const nxConnection = (navigator as any).connection;
+const nxFrugal = !!nxConnection && (nxConnection.saveData || /2g/.test(nxConnection.effectiveType ?? ""));
+const nxChunksWarmed = new Set<number>();
+const nxIdle: (fn: () => void) => void =
+  (window as any).requestIdleCallback?.bind(window) ?? ((fn: () => void) => setTimeout(fn, 200));
+const nxOnScreen = new IntersectionObserver((entries) => {
+  for (const entry of entries) {
+    if (!entry.isIntersecting) continue;
+    nxOnScreen.unobserve(entry.target);
+    const url = nxAnchorUrl(entry.target);
+    const i = url ? nxRouteIndex(url) : -1;
+    if (i < 0 || nxChunksWarmed.has(i)) continue;
+    nxChunksWarmed.add(i);
+    nxIdle(() => {
+      NX_ROUTE_INFO[i].chunk().catch(() => {});
+    });
+  }
 });
 
 // ---- Prediction (ForesightJS) ----------------------------------------------
@@ -75,7 +136,7 @@ document.addEventListener("mouseover", (e) => {
 // It stands down by itself on data-saver / slower-than-3g connections.
 //
 // Loaded as its own chunk AFTER the shell boots, so it never delays first
-// paint. Every app link is registered automatically — pages keep writing
+// paint. Every app link is picked up automatically — pages keep writing
 // plain <a href>. `data-no-soft` opts a link out, as it does for soft nav.
 type NxForesight = {
   register(o: {
@@ -88,12 +149,17 @@ type NxForesight = {
   getElementBounds(el: Element): { expandedRect: { top: number; left: number; right: number; bottom: number } } | undefined;
 };
 let nxForesight: NxForesight | null = null;
-let nxSignal = "foresight";
+let nxSignal = "predicted";
+const nxObserved = new WeakSet<Element>();
 const nxRegistered = new WeakSet<Element>();
-function nxRegisterLinks() {
-  if (!nxForesight) return;
+function nxScanLinks() {
   for (const a of document.querySelectorAll<HTMLAnchorElement>("a[href]")) {
-    if (nxRegistered.has(a) || !nxAnchorUrl(a)) continue;
+    if (!nxAnchorUrl(a)) continue;
+    if (!nxFrugal && !nxObserved.has(a)) {
+      nxObserved.add(a);
+      nxOnScreen.observe(a);
+    }
+    if (!nxForesight || nxRegistered.has(a)) continue;
     nxRegistered.add(a);
     nxForesight.register({
       element: a,
@@ -108,38 +174,161 @@ function nxRegisterLinks() {
     });
   }
 }
+// Pick up links rendered later (first render, soft navigation, late data).
+let nxScanQueued = false;
+new MutationObserver(() => {
+  if (nxScanQueued) return;
+  nxScanQueued = true;
+  requestAnimationFrame(() => {
+    nxScanQueued = false;
+    nxScanLinks();
+  });
+}).observe(document.documentElement, {
+  childList: true,
+  subtree: true,
+  attributes: true,
+  attributeFilter: ["href"],
+});
 import("./__nx_foresight__.mjs")
   .then(({ ForesightManager }) => {
     // Defaults throughout, except: leave the app's DOM alone (ForesightJS
     // would otherwise stamp data-predicted/data-status onto every link).
-    nxForesight = ForesightManager.initialize({ setDataAttributes: false }) as NxForesight;
-    nxRegisterLinks();
-    // Pick up links rendered later (soft navigation, lists, late data).
-    let queued = false;
-    new MutationObserver(() => {
-      if (queued) return;
-      queued = true;
-      requestAnimationFrame(() => {
-        queued = false;
-        nxRegisterLinks();
-      });
-    }).observe(document.documentElement, {
-      childList: true,
-      subtree: true,
-      attributes: true,
-      attributeFilter: ["href"],
+    const fs = ForesightManager.initialize({ setDataAttributes: false }) as NxForesight;
+    // Fires just before a link's callback: says WHICH predictor it was.
+    fs.addEventListener("callbackInvoked", (e) => {
+      nxSignal = e.hitType.subType ? e.hitType.kind + "/" + e.hitType.subType : e.hitType.kind;
+      if (nxDebug) nxFlashBox(e.element);
     });
+    nxForesight = fs;
+    nxScanLinks();
     if (nxDebug) nxDebugAttach();
   })
   .catch(() => {}); // predictor unavailable — hover preload still works
 
+// ---- Measurement -----------------------------------------------------------
+// Is prediction earning its keep in THIS app? For every soft navigation,
+// record how long the destination took to load and how much head start each
+// strategy had, then work out the wait the user would have felt under each:
+//
+//   none        no preload at all            wait = load
+//   hover       preload when the pointer     wait = load − hover lead
+//               lands on the link
+//   predictive  hover + the predictors       wait = load − earliest lead
+//
+// alongside what each strategy COST: preloads fired vs. preloads followed by
+// a click. Always collected in memory (it is a few numbers per navigation);
+// `__nx_preload_stats__()` in the console prints the comparison.
+//
+// Shipped to the server only when it asked for it: with
+// NEXTRS_PRELOAD_STATS=1 the document carries a <meta name="nx-preload-stats">
+// naming the endpoint. Only route TEMPLATES and timings leave the browser —
+// never a URL, a param value, or anything about the user.
+type NxNav = {
+  route: string;
+  data: boolean; // the route has a prefetch.rs
+  trigger: string; // what started the preload ("none": nothing did)
+  load_ms: number; // preload start → ready (or click → ready when none)
+  lead_hover_ms: number | null; // head start hover had before the click
+  lead_predicted_ms: number | null; // head start the first predictor had
+  predictor: string | null;
+};
+const nxEmptyCounts = () => ({ hover: 0, predicted: 0 });
+const nxStats = { navs: [] as NxNav[], fired: nxEmptyCounts(), used: nxEmptyCounts() };
+let nxUnsent = { navs: [] as NxNav[], fired: nxEmptyCounts(), used: nxEmptyCounts() };
+function nxCount(counts: { hover: number; predicted: number }, signal: string) {
+  counts[nxIsHover(signal) ? "hover" : "predicted"]++;
+}
+const nxRound = (ms: number) => Math.round(ms * 10) / 10;
+function nxMeasure(url: URL, clicked: number, nav: Promise<unknown>) {
+  const i = nxRouteIndex(url);
+  if (i < 0) return;
+  const rec = nxLive(url.pathname + url.search);
+  if (rec && !rec.used) {
+    rec.used = true;
+    nxCount(nxStats.used, rec.trigger);
+    nxCount(nxUnsent.used, rec.trigger);
+  }
+  (rec ? rec.promise : nav)
+    .catch(() => {})
+    .then(() => {
+      const entry: NxNav = {
+        route: NX_ROUTE_INFO[i].path,
+        data: NX_ROUTE_INFO[i].data,
+        trigger: rec ? rec.trigger : "none",
+        load_ms: nxRound(rec ? (rec.done ?? performance.now()) - rec.started : performance.now() - clicked),
+        lead_hover_ms: rec?.hover !== undefined ? nxRound(clicked - rec.hover) : null,
+        lead_predicted_ms: rec?.predicted !== undefined ? nxRound(clicked - rec.predicted) : null,
+        predictor: rec?.predictor ?? null,
+      };
+      nxStats.navs.push(entry);
+      if (nxStats.navs.length > 500) nxStats.navs.shift();
+      if (nxStatsUrl) {
+        nxUnsent.navs.push(entry);
+        if (nxUnsent.navs.length >= 25) nxShip();
+      }
+    });
+}
+// The wait a navigation would have cost under each strategy.
+function nxWaits(n: NxNav) {
+  const hover = Math.max(0, n.load_ms - (n.lead_hover_ms ?? 0));
+  const best = Math.max(n.lead_hover_ms ?? 0, n.lead_predicted_ms ?? 0);
+  return { none: n.load_ms, hover, predictive: Math.max(0, n.load_ms - best) };
+}
+function nxSummary() {
+  const navs = nxStats.navs;
+  const row = (pick: (n: NxNav) => number) => {
+    const waits = navs.map(pick).sort((a, b) => a - b);
+    if (!waits.length) return { "median wait (ms)": null, "p90 wait (ms)": null, "instant (%)": null };
+    const at = (q: number) => waits[Math.min(waits.length - 1, Math.floor(q * waits.length))];
+    return {
+      "median wait (ms)": at(0.5),
+      "p90 wait (ms)": at(0.9),
+      "instant (%)": Math.round((waits.filter((w) => w === 0).length / waits.length) * 100),
+    };
+  };
+  const cost = (k: "hover" | "predicted") => ({
+    "preloads fired": nxStats.fired[k],
+    "followed by a click": nxStats.used[k],
+    "wasted (%)": nxStats.fired[k] ? Math.round((1 - nxStats.used[k] / nxStats.fired[k]) * 100) : null,
+  });
+  return {
+    navigations: navs.length,
+    wait: {
+      "no preload": row((n) => nxWaits(n).none),
+      "hover only": row((n) => nxWaits(n).hover),
+      predictive: row((n) => nxWaits(n).predictive),
+    },
+    // Attributed to whichever signal STARTED each preload.
+    cost: { hover: cost("hover"), predicted: cost("predicted") },
+    raw: navs,
+  };
+}
+const nxStatsUrl = document.querySelector('meta[name="nx-preload-stats"]')?.getAttribute("content") || null;
+function nxShip() {
+  if (!nxStatsUrl) return;
+  const { navs, fired, used } = nxUnsent;
+  if (!navs.length && !fired.hover && !fired.predicted) return;
+  nxUnsent = { navs: [], fired: nxEmptyCounts(), used: nxEmptyCounts() };
+  try {
+    navigator.sendBeacon(nxStatsUrl, JSON.stringify({ navs, fired, used }));
+  } catch {}
+}
+if (nxStatsUrl) {
+  // The last moment a page reliably gets to say anything.
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "hidden") nxShip();
+  });
+  window.addEventListener("pagehide", nxShip);
+}
+
 // ---- Debug overlay ---------------------------------------------------------
 // Draws the prediction vector (pink = mouse trajectory, blue = scroll),
-// flashes a green box around a link the moment its preload is predicted, and
-// logs every preload with the signal that fired it. Off by default. From the
-// browser console:
+// flashes a green box around a link the moment a predictor fires for it, and
+// logs every preload with the signal that started it. Off by default. From
+// the browser console:
 //   __nx_preload_debug__()        turn on  (persists in localStorage)
 //   __nx_preload_debug__(false)   turn off
+//   __nx_preload_stats__()        the measured comparison (see above)
 const NX_DEBUG_KEY = "nx:preload-debug";
 let nxDebug = false;
 try {
@@ -211,12 +400,15 @@ function nxDebugAttach() {
   nxForesight.addEventListener("scrollTrajectoryUpdate", (e) => {
     if (nxDebug) nxDrawVector(e.currentPoint, e.predictedPoint, "#2563eb");
   });
-  nxForesight.addEventListener("callbackInvoked", (e) => {
-    nxSignal = e.hitType.subType ? e.hitType.kind + "/" + e.hitType.subType : e.hitType.kind;
-    if (nxDebug) nxFlashBox(e.element);
-  });
 }
 Object.assign(window, {
+  __nx_preload_stats__: () => {
+    const summary = nxSummary();
+    console.log("[nx preload] " + summary.navigations + " soft navigation(s) this page session");
+    console.table(summary.wait);
+    console.table(summary.cost);
+    return summary;
+  },
   __nx_preload_debug__: (on = true) => {
     nxDebug = on;
     try {
