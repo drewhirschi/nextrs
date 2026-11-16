@@ -6,7 +6,8 @@
 //! - **prefetch** (data seeding): a route's `prefetch.rs` and the
 //!   `/__nx/prefetch` endpoint warm a React page's query cache.
 //! - **preload** (route chunk warming): the app shell's TanStack router
-//!   preloads a React route's JS chunk on hover (`router.preloadRoute`).
+//!   preloads a React route's JS chunk on link intent — hover, or a
+//!   predicted hover/focus/tap (`router.preloadRoute`).
 //!
 //! *Speculation* is a third thing: a declarative
 //! `<script type="speculationrules">` injected into the `<head>` of
@@ -23,7 +24,7 @@
 //!
 //! React (`page.tsx`) routes don't need it: the app shell intercepts
 //! same-origin clicks to them (soft navigation) and already warms both the
-//! route chunk (preload) and the data (prefetch) on hover. A speculatively
+//! route chunk (preload) and the data (prefetch) on link intent. A speculatively
 //! fetched document for those URLs would never be used — which is why, when
 //! speculation is enabled, the injected rules **exclude React app-shell
 //! routes** (see [`SpeculationConfig::script_excluding`]).

@@ -47,3 +47,43 @@ mount. Prefetch is an optimization, not a second frontend data model.
 
 See [React Pages & Server Prefetch](/docs/react-server-props) for the complete
 server-seeding flow.
+
+## Preload on intent
+
+You write plain `<a href>` links. The app shell works out which one you are
+about to use and preloads it — the route's JS chunk, plus its `prefetch.rs`
+data when it has one — before you click. There is nothing to configure and no
+`<Link>` component to adopt.
+
+It reads the same signals [ForesightJS](https://foresightjs.com/) does, because
+that library is vendored into nextrs:
+
+| Signal | Fires when |
+| --- | --- |
+| Mouse trajectory | the pointer's projected path crosses the link |
+| Hover | the pointer is on the link |
+| Tab | keyboard focus is a couple of tab stops away |
+| Scroll | the link is about to scroll under the pointer |
+| Touch | a finger goes down on the link |
+
+Each URL preloads at most once every 30 seconds, whichever signal gets there
+first. Prediction switches itself off on data-saver and slower-than-3G
+connections; plain hover preload still works there. The predictor loads as its
+own chunk after the page is interactive, so it never delays first paint.
+
+A link marked `data-no-soft` is left alone entirely — no soft navigation, no
+preload.
+
+### See the prediction
+
+Open the browser console on any nextrs app and run:
+
+```js
+__nx_preload_debug__()
+```
+
+A pink line now runs from the pointer to where it is predicted to be (blue
+while scrolling), a green box flashes around a link the moment it is
+preloaded, and the console logs each preload with the signal that caused it —
+`[nx preload] mouse/trajectory /about`. The setting is remembered across
+reloads; `__nx_preload_debug__(false)` turns it off.
