@@ -180,3 +180,148 @@ Questions to resolve:
   slot per route.
 - Upstream Vercel adapter support for streaming `text/html`, so
   `StreamingVercelLayer` can eventually become unnecessary.
+
+## Deploy & Runtime
+
+### AWS Lambda deploy target
+
+Status: proposed 2026-09-23; not started.
+
+Vercel's free-tier logs are too thin to operate real apps on (short retention,
+no querying, and log drains require Pro). The goal is a second first-class
+target: native Rust on AWS Lambda, with CloudWatch as the baseline for logs
+and observability. Coolify and Dokploy don't fit here. They run long-lived
+containers on a VPS. Cloudflare Workers run Rust only as WASM, and the free
+plan caps CPU at 10ms per request.
+
+Shape:
+
+- **Adapter:** `lambda_http::run(app)` takes the Axum `Router` from
+  `src/app.rs` directly, so this is one more process adapter beside
+  `api/index.rs`, not a new architecture. Build with `cargo lambda build
+  --arm64` (`provided.al2023`).
+- **Ingress:** a Lambda Function URL (streaming responses, no API Gateway
+  cost), fronted by CloudFront for the custom domain and caching. Bundled
+  static assets go to S3 behind the same distribution.
+- **Logs:** set `tracing-subscriber` to JSON output and enable Lambda's
+  native JSON log format and levels, with route and request ID on every span,
+  so CloudWatch Logs Insights can answer "p99 by route" and "errors in the
+  last hour". Set explicit retention (7–14 days). An optional subscription
+  filter or OTel layer can forward to Axiom or Grafana Cloud.
+- **Deploy:** `nextrs deploy --target aws` generates the infrastructure (CDK
+  or Terraform, TBD) from `nextrs.toml`, the same way `vercel.json` is
+  generated today. Crons become EventBridge Scheduler rules.
+- **Dogfood:** hhh first, since cold-start telemetry already exists to
+  compare against.
+
+Semantics that differ from Vercel, which must be designed rather than
+papered over:
+
+- **`WaitUntil`:** Lambda freezes the instance once the response returns.
+  Options: keep a streamed response open until the tasks finish, use an
+  internal Lambda extension, or hand the work to SQS or to durable execution
+  (below).
+- **Concurrency:** Lambda runs one request per instance, unlike Fluid's
+  in-instance concurrency. Expect more (cheap) cold starts. Re-run the
+  arrival-shape analysis from `docs/coldstart-arrival-shapes.md`.
+- **Previews:** there is no built-in per-branch preview. Use a stage or alias
+  per branch, or adopt SST if that becomes the main pain.
+
+Questions to resolve:
+
+- CDK vs Terraform vs SST for generated infrastructure, and whether nextrs
+  owns the stack or emits it for the app to own.
+- Whether the Vercel and Lambda adapters can share one entry point with a
+  cfg/feature switch.
+- How `/__nx/health` and the pinger workflow map onto Lambda.
+
+### Durable execution on object storage (S3 / R2)
+
+Status: proposed 2026-09-23; not started. Supersedes the "background jobs
+behind WaitUntil" idea. `WaitUntil` becomes one way to *drive* a run, not
+the durability layer.
+
+S3 added conditional writes in 2024: `If-None-Match: *` (create only if
+absent) and `If-Match: <etag>` (compare-and-swap). Together with S3's
+strong read-after-write and LIST consistency, this makes a bucket enough to
+build a correct durable-execution journal on. No database, queue service, or
+Temporal cluster is needed. **R2 supports the same primitives**: its S3 API
+implements `If-Match`, `If-None-Match`, `If-Modified-Since`, and
+`If-Unmodified-Since` on PutObject, plus the copy-source equivalents on
+CopyObject. So the same design runs on AWS, on Cloudflare, or next to a
+Vercel app with a free-tier R2 bucket.
+
+Developer surface (sketch):
+
+```rust
+#[nextrs::workflow]
+pub async fn onboard(ctx: Ctx, user: UserId) -> Result<()> {
+    let acct = ctx.step("create-account", || create_account(user)).await?;
+    ctx.sleep("wait-a-day", Duration::from_secs(86_400)).await?;
+    ctx.step("send-welcome", || send_email(acct.email)).await?;
+    Ok(())
+}
+
+// Typed, idempotent start. Returns a RunId.
+onboard::start(user).await?;
+```
+
+Storage layout and protocol:
+
+- `runs/{id}/input.json` is written once (`If-None-Match: *`). The run ID
+  doubles as the idempotency key.
+- `runs/{id}/steps/{n}-{name}.json` is written once per completed step. On
+  replay, completed steps return their recorded output instead of
+  re-executing. Write-once makes a duplicate executor harmless.
+- `runs/{id}/state.json` holds status, cursor, lease owner and expiry, and
+  wake-at time. Every transition is a CAS on its ETag (`If-Match`). Taking
+  over an expired lease is a CAS too, so two executors can't both own a run.
+- Wake-ups go in an index such as `due/{wake_at}-{id}` that a sweeper LISTs.
+  Deletion must not depend on conditional deletes, since R2 doesn't list
+  conditional DeleteObject. Stale index entries are cleaned up only after the
+  CAS on `state.json` confirms them.
+
+Execution drivers (pluggable; the journal is the same everywhere):
+
+- Inline after the response via `WaitUntil` (Vercel), bounded by
+  `maxDuration`. A step that exceeds its budget yields and resumes on the
+  next wake.
+- A cron sweeper (`nextrs.toml` crons / EventBridge / the Cloudflare cron
+  shim) that picks up due and orphaned runs.
+- Optionally SQS or Cloudflare Queues for low-latency wake-ups.
+
+Implementation notes:
+
+- Build on the `object_store` crate: `PutMode::Create` and
+  `PutMode::Update(etag)` map onto the conditional headers, and its
+  `LocalFileSystem` backend gives `nextrs dev` a zero-setup store.
+- Prior art: turbopuffer's queue-in-a-JSON-file-on-object-storage, SlateDB,
+  and Vercel Workflow / Inngest / Restate for the programming model.
+- Cost is dominated by Class A ops (writes plus LIST). Measure per-step op
+  counts and batch where possible. R2's free tier (1M Class A/month) should
+  cover small apps.
+
+Questions to resolve:
+
+- Determinism rules for workflow bodies (everything non-deterministic goes
+  through `ctx.step`), and how to catch violations. Replay can be checked by
+  step name and sequence.
+- Versioning in-flight runs across deploys.
+- Visibility: a `/__nx/runs` dashboard or CLI (`nextrs runs ls/show/retry`)
+  that reads the bucket directly.
+- Retry, back-off, and dead-letter policy per step.
+- Whether `ctx.sleep` below the sweeper interval needs the queue driver.
+
+### Build artifact cache (push builds, not just code)
+
+Status: proposed 2026-09-24; not started. Design in
+[docs/build-artifact-cache.md](docs/build-artifact-cache.md).
+
+There are two layers. **sccache on R2** shares compiled crates between
+laptops and CI (off the shelf, so start there). An **output cache** stores the
+verified `.vercel/output` (or a Lambda zip) under a key built from the git
+tree hash, toolchain, target, and build config. `nextrs deploy` and CI pull on
+a hit and skip cargo entirely. Uploads are write-once (`If-None-Match: *`),
+using the same object-storage primitive as durable execution. The open
+decision is trust: a cache hit ships a binary CI didn't compile, so write
+access to production-consumed keys starts out limited to `main` CI.

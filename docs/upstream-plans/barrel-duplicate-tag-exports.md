@@ -2,7 +2,12 @@
 
 - **Reported-in:** linkedin-challenge (migrating to the `.nextrs/` client layout)
 - **Date:** 2026-08-15
-- **Status:** fixed in 3ca0527
+- **Status:** fixed in 3ca0527; follow-up fixed in 78a42d3. The scan in
+  3ca0527 skipped indented `export`s, but Orval indents its mutation hooks,
+  so an explicit re-export list dropped `usePost…`/`usePatch…` and the page
+  bundle failed with MISSING_EXPORT. It surfaced when react-todos'
+  `react-query.ts` gained its own exports (useLiveTopic). The fix sat unpushed
+  on `fix/barrel-duplicate-exports` (25ba95d) from 2026-08-15.
 
 ## Problem
 

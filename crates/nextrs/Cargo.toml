@@ -21,6 +21,28 @@ vercel = [
     "dep:http-body-util",
     "dep:hyper",
 ]
+# Enables `nextrs::jobs`: first-party background jobs (app/jobs/<name>/job.rs
+# + #[nextrs::job]) — typed enqueue wrappers, the /__nx/jobs/* routes, retries
+# with back-off, and the in-memory dev store. Pulls in reqwest for the
+# self-delivery POSTs.
+jobs = ["dep:reqwest"]
+# Turso/libsql backends for the framework's own tables (jobs, request logs),
+# selected automatically when NEXTRS_DB_URL / TURSO_DATABASE_URL (or a
+# store-specific NEXTRS_JOBS_DB_URL / NEXTRS_LOGS_DB_URL) is set.
+libsql = ["dep:libsql"]
+jobs-libsql = ["jobs", "libsql"]
+# Enables `nextrs::logs`: the tracing layer that captures each request's (and
+# job attempt's) lines and saves them, with route telemetry, as one record per
+# request — so logs outlive the platform's own retention.
+logs = ["dep:tracing-subscriber"]
+# Enables the admin portal at /__nx/admin: the logs and jobs dashboards behind
+# a root login from the deploy env (NEXTRS_ADMIN_USER +
+# NEXTRS_ADMIN_PASSWORD_HASH; fail-closed — every admin route 404s when unset).
+admin = ["jobs", "logs", "dep:argon2", "dep:password-hash", "dep:hmac", "dep:sha2"]
+# Enables `nextrs::realtime`: ordered change frames to browsers over
+# WebSockets — an in-process hub locally, or the generated Cloudflare Durable
+# Object relay (`nextrs realtime generate`) when NEXTRS_REALTIME_URL is set.
+realtime = ["axum/ws", "dep:reqwest", "dep:hmac", "dep:sha2"]
 # Enables the `nextrs::build` and `nextrs::docs` modules: codegen invoked from
 # a consumer crate's `build.rs` to emit a `generated_registry()` function from
 # a scan of `app/`, and pre-rendered docs content + llms.txt from a scan of a
@@ -76,6 +98,8 @@ serde_urlencoded = "0.7"
 # into an internal router to reuse axum's path matching.
 tower = { version = "0.5", features = ["util"] }
 tracing = "0.1"
+# OS randomness for per-process secrets (jobs/realtime dev fallbacks).
+getrandom = "0.2"
 http = "1"
 async-stream = "0.3.6"
 bytes = "1.11.1"
@@ -120,6 +144,16 @@ rolldown_std_utils = { version = "=1.1.4", optional = true }
 rolldown_tracing = { version = "=1.1.4", optional = true }
 rolldown_utils = { version = "=1.1.4", optional = true }
 string_wizard = { version = "=1.1.4", optional = true }
+
+# Optional — only pulled in when the `jobs` / `libsql` / `logs` features are on.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"], optional = true }
+libsql = { version = "0.10.0-pre.4", default-features = false, features = ["remote", "tls"], optional = true }
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "registry"], optional = true }
+argon2 = { version = "0.5", optional = true }
+# Only for its `getrandom` feature: argon2 salts come from the OS RNG.
+password-hash = { version = "0.5", features = ["getrandom"], optional = true }
+hmac = { version = "0.12", optional = true }
+sha2 = { version = "0.10", optional = true }
 
 # Optional — only pulled in when the `vercel` feature is on.
 vercel_runtime = { version = "2", features = ["axum"], optional = true }

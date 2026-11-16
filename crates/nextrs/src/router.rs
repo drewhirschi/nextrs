@@ -162,7 +162,8 @@ fn build_router_with_public_inner(
     let speculation = Arc::new(speculation.resolve(&registry.react_pages));
     let entries = Arc::new(registry.entries);
     let not_found = Arc::new(registry.not_found);
-    let router = build_route_table(Arc::clone(&entries), Arc::clone(&speculation));
+    let jobs = Arc::new(registry.jobs);
+    let router = build_route_table(Arc::clone(&entries), Arc::clone(&speculation), jobs);
     let path = public_dir.as_ref();
 
     let router = if path.is_dir() {
@@ -261,7 +262,8 @@ pub fn build_router_with_speculation(
     let speculation = Arc::new(speculation.resolve(&registry.react_pages));
     let entries = Arc::new(registry.entries);
     let not_found = Arc::new(registry.not_found);
-    let router = build_route_table(Arc::clone(&entries), Arc::clone(&speculation));
+    let jobs = Arc::new(registry.jobs);
+    let router = build_route_table(Arc::clone(&entries), Arc::clone(&speculation), jobs);
     with_not_found_fallback(router, entries, not_found, speculation)
         .layer(axum::middleware::map_response(crate::health::stamp))
         // Outermost so it sees the cold flag `stamp` just wrote.
@@ -372,9 +374,53 @@ fn build_prefetch_endpoint(entries: Arc<Vec<RouteEntry>>) -> Router {
     )
 }
 
+/// Reserved path prefix of the background-job routes (`POST
+/// /__nx/jobs/<name>` per job, plus `/sweep` and the status root). Mounted
+/// only when the registry has jobs and the `jobs` feature is enabled.
+pub const NX_JOBS_PREFIX: &str = "/__nx/jobs";
+
+/// Mount the per-job run routes plus the sweep and status endpoints. All of
+/// them are authed (shared secret; sweep also takes `Bearer $CRON_SECRET`).
+/// One route per job keeps every execution its own invocation with a distinct
+/// `request_path` — legible in platform logs without any custom plumbing.
+#[cfg(feature = "jobs")]
+fn build_jobs_endpoints(jobs: Arc<Vec<crate::conventions::JobEntry>>) -> Router {
+    use axum::routing::post;
+
+    let mut router = Router::new();
+    for idx in 0..jobs.len() {
+        let path = format!("{}/{}", NX_JOBS_PREFIX, jobs[idx].name);
+        let jobs_for_route = Arc::clone(&jobs);
+        router = router.route(
+            &path,
+            post(move |req: Request| {
+                let jobs = Arc::clone(&jobs_for_route);
+                async move { crate::jobs::handle_run(jobs, idx, req).await }
+            }),
+        );
+    }
+
+    // The stale-reclaim cutoff must clear the slowest registered job.
+    let max_timeout_ms = jobs.iter().map(|j| j.timeout_ms).max().unwrap_or(60_000);
+    crate::jobs::set_max_timeout_ms(max_timeout_ms);
+    let sweep = move |req: Request| async move { crate::jobs::handle_sweep(max_timeout_ms, req).await };
+    router = router.route(
+        &format!("{NX_JOBS_PREFIX}/sweep"),
+        get(sweep).post(sweep),
+    );
+    router.route(
+        NX_JOBS_PREFIX,
+        get(|req: Request| async move { crate::jobs::handle_status(req).await }),
+    )
+}
+
 /// Build just the route table (matched routes, no fallback) from the registry's
 /// entries, with the resolved speculation script threaded into page rendering.
-fn build_route_table(entries: Arc<Vec<RouteEntry>>, speculation: Arc<ResolvedSpeculation>) -> Router {
+fn build_route_table(
+    entries: Arc<Vec<RouteEntry>>,
+    speculation: Arc<ResolvedSpeculation>,
+    jobs: Arc<Vec<crate::conventions::JobEntry>>,
+) -> Router {
     let mut router = Router::new();
 
     for i in 0..entries.len() {
@@ -427,6 +473,27 @@ fn build_route_table(entries: Arc<Vec<RouteEntry>>, speculation: Arc<ResolvedSpe
     // apps without prefetch-backed React pages don't reserve the path.
     if entries.iter().any(|e| e.prefetch.is_some()) {
         router = router.merge(build_prefetch_endpoint(Arc::clone(&entries)));
+    }
+
+    // Background jobs: one authed POST route per registered job, plus sweep
+    // and status. Apps without jobs don't reserve the prefix.
+    #[cfg(feature = "jobs")]
+    if !jobs.is_empty() {
+        router = router.merge(build_jobs_endpoints(Arc::clone(&jobs)));
+    }
+    #[cfg(not(feature = "jobs"))]
+    let _ = &jobs;
+    // The admin portal (logs + jobs dashboards); every route 404s until the
+    // root credentials are set in the env.
+    #[cfg(feature = "admin")]
+    {
+        router = router.merge(crate::admin::router());
+    }
+    // The in-process realtime hub's WebSocket endpoint (404s when a relay
+    // is configured).
+    #[cfg(feature = "realtime")]
+    {
+        router = router.merge(crate::realtime::router());
     }
 
     // Fleet-uniform start-temperature telemetry; also anchors uptime_ms to
@@ -513,10 +580,13 @@ async fn render_route(
         http.request.method = %req.method(),
     );
 
+    let capture = telemetry.capture();
     let mw_start = std::time::Instant::now();
-    let mw_result = run_middlewares(&entries, &path, req)
-        .instrument(span.clone())
-        .await;
+    let mw_result = crate::logs::scope(
+        Arc::clone(&capture),
+        run_middlewares(&entries, &path, req).instrument(span.clone()),
+    )
+    .await;
     telemetry.record_mw(mw_start.elapsed());
     let req = match mw_result {
         Ok(req) => req,
@@ -549,7 +619,11 @@ async fn render_route(
             yield Ok(Bytes::from(slot_div));
 
             let handler_start = std::time::Instant::now();
-            let page_html = entries[idx].page.as_ref().unwrap()(req).instrument(span).await;
+            let page_html = crate::logs::scope(
+                capture,
+                entries[idx].page.as_ref().unwrap()(req).instrument(span),
+            )
+            .await;
             stream_telemetry.record_handler(handler_start.elapsed());
             let swap_chunk = format!(
                 r#"<template id="{}">{}</template>{}"#,
@@ -568,7 +642,11 @@ async fn render_route(
             .unwrap()
     } else {
         let handler_start = std::time::Instant::now();
-        let page_html = entries[idx].page.as_ref().unwrap()(req).instrument(span).await;
+        let page_html = crate::logs::scope(
+            capture,
+            entries[idx].page.as_ref().unwrap()(req).instrument(span),
+        )
+        .await;
         telemetry.record_handler(handler_start.elapsed());
         let full = format!("{}{}{}", before, page_html, after);
         let mut response = Html(full).into_response();
@@ -594,10 +672,13 @@ async fn handle_method_route(
         http.request.method = %req.method(),
     );
 
+    let capture = telemetry.capture();
     let mw_start = std::time::Instant::now();
-    let mw_result = run_middlewares(&entries, &path, req)
-        .instrument(span.clone())
-        .await;
+    let mw_result = crate::logs::scope(
+        Arc::clone(&capture),
+        run_middlewares(&entries, &path, req).instrument(span.clone()),
+    )
+    .await;
     telemetry.record_mw(mw_start.elapsed());
     let req = match mw_result {
         Ok(req) => req,
@@ -609,7 +690,7 @@ async fn handle_method_route(
 
     let route_fn = &entries[idx].methods[method_idx].1;
     let handler_start = std::time::Instant::now();
-    let mut response = route_fn(req).instrument(span).await;
+    let mut response = crate::logs::scope(capture, route_fn(req).instrument(span)).await;
     telemetry.record_handler(handler_start.elapsed());
     response.extensions_mut().insert(telemetry);
     response
@@ -2434,5 +2515,311 @@ mod tests {
         let st = server_timing(&resp);
         assert!(st.contains("route;desc=\"/__nx/prefetch/todos\""), "{st}");
         assert!(st.contains("handler;dur="), "{st}");
+    }
+}
+
+#[cfg(all(test, feature = "jobs"))]
+mod jobs_endpoint_tests {
+    use super::*;
+    use crate::conventions::{JobEntry, RouteRegistry, job_run_fn};
+    use crate::jobs::{JobId, JobRow, JobStatus};
+    use axum::body::Body;
+    use tower::util::ServiceExt;
+
+    fn jobs_router() -> Router {
+        let mut registry = RouteRegistry::new();
+        registry.add_job(JobEntry {
+            name: "test-job",
+            run: job_run_fn(|payload, _ext| async move {
+                tracing::info!(attempt = crate::jobs::current().map(|c| c.attempt), "test job running");
+                match payload.get("fail").and_then(|v| v.as_bool()) {
+                    Some(true) => Err("intentional failure".to_string()),
+                    _ => Ok(serde_json::json!({ "ok": true })),
+                }
+            }),
+            timeout_ms: 5_000,
+            max_attempts: 2,
+            backoff_ms: 30_000,
+            max_backoff_ms: 3_600_000,
+        });
+        build_router(registry)
+    }
+
+    async fn insert_row(id: &str, payload: serde_json::Value) {
+        let now = crate::jobs::now_ms();
+        crate::jobs::store()
+            .unwrap()
+            .insert(JobRow {
+                id: JobId(id.into()),
+                name: "test-job".into(),
+                payload,
+                status: JobStatus::Queued,
+                attempts: 0,
+                max_attempts: 2,
+                next_run_at: Some(now),
+                last_error: None,
+                created_at: now,
+                updated_at: now,
+                result: None,
+                history: Vec::new(),
+            })
+            .await
+            .unwrap();
+    }
+
+    fn run_request(id: &str, secret: Option<&str>) -> http::Request<Body> {
+        let mut builder = http::Request::builder()
+            .method("POST")
+            .uri("/__nx/jobs/test-job")
+            .header("content-type", "application/json");
+        if let Some(secret) = secret {
+            builder = builder.header(crate::jobs::JOBS_SECRET_HEADER, secret);
+        }
+        builder
+            .body(Body::from(format!("{{\"id\":{id:?}}}")))
+            .unwrap()
+    }
+
+    async fn wait_for_status(id: &str, want: JobStatus) -> JobRow {
+        for _ in 0..200 {
+            let row = crate::jobs::store()
+                .unwrap()
+                .get(&JobId(id.into()))
+                .await
+                .unwrap()
+                .expect("row exists");
+            if row.status == want {
+                return row;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("job {id} never reached {want:?}");
+    }
+
+    #[tokio::test]
+    async fn job_route_is_fail_closed_without_secret() {
+        let resp = jobs_router()
+            .oneshot(run_request("missing", None))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn job_route_runs_job_in_background_and_records_success() {
+        insert_row("rt-happy", serde_json::json!({})).await;
+        let secret = crate::jobs::jobs_secret().unwrap();
+        let resp = jobs_router()
+            .oneshot(run_request("rt-happy", Some(&secret)))
+            .await
+            .unwrap();
+        // 202 comes back before the job body has necessarily run…
+        assert_eq!(resp.status(), http::StatusCode::ACCEPTED);
+        // …and the row reaches `succeeded` shortly after (spawn-backed locally).
+        let row = wait_for_status("rt-happy", JobStatus::Succeeded).await;
+        assert_eq!(row.attempts, 1);
+        assert_eq!(row.result, Some(serde_json::json!({ "ok": true })));
+        assert_eq!(row.history.len(), 1);
+        assert_eq!(row.history[0].n, 1);
+        assert_eq!(row.history[0].error, None);
+    }
+
+    #[cfg(feature = "logs")]
+    #[tokio::test]
+    async fn job_attempt_history_captures_its_log_lines() {
+        use tracing_subscriber::prelude::*;
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(crate::logs::layer()),
+        );
+        // Parallel tests without a subscriber can cache these callsites as
+        // "never interested"; re-evaluate now that this thread has one.
+        tracing::callsite::rebuild_interest_cache();
+        insert_row("rt-lines", serde_json::json!({})).await;
+        let secret = crate::jobs::jobs_secret().unwrap();
+        let resp = jobs_router()
+            .oneshot(run_request("rt-lines", Some(&secret)))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::ACCEPTED);
+        let row = wait_for_status("rt-lines", JobStatus::Succeeded).await;
+        let lines = &row.history[0].lines;
+        assert_eq!(lines.len(), 1, "{lines:?}");
+        assert_eq!(lines[0].msg, "test job running");
+        assert_eq!(lines[0].fields["attempt"], 1);
+    }
+
+    #[tokio::test]
+    async fn job_route_conflicts_on_double_delivery() {
+        insert_row("rt-conflict", serde_json::json!({})).await;
+        let secret = crate::jobs::jobs_secret().unwrap();
+        let router = jobs_router();
+        let first = router
+            .clone()
+            .oneshot(run_request("rt-conflict", Some(&secret)))
+            .await
+            .unwrap();
+        assert_eq!(first.status(), http::StatusCode::ACCEPTED);
+        wait_for_status("rt-conflict", JobStatus::Succeeded).await;
+        // Terminal row: redelivery loses the claim race → 409, no re-run.
+        let second = router
+            .oneshot(run_request("rt-conflict", Some(&secret)))
+            .await
+            .unwrap();
+        assert_eq!(second.status(), http::StatusCode::CONFLICT);
+    }
+
+    #[tokio::test]
+    async fn failed_job_gets_backoff_then_dead() {
+        insert_row("rt-fail", serde_json::json!({"fail": true})).await;
+        let secret = crate::jobs::jobs_secret().unwrap();
+        let router = jobs_router();
+        let resp = router
+            .clone()
+            .oneshot(run_request("rt-fail", Some(&secret)))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::ACCEPTED);
+        // Attempt 1 of 2 → retryable failure with a future next_run_at.
+        let row = wait_for_status("rt-fail", JobStatus::Failed).await;
+        assert_eq!(row.attempts, 1);
+        assert!(row.next_run_at.unwrap() > crate::jobs::now_ms());
+        assert_eq!(row.last_error.as_deref(), Some("intentional failure"));
+        // Attempt 2 of 2 → dead.
+        let resp = router
+            .oneshot(run_request("rt-fail", Some(&secret)))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::ACCEPTED);
+        let row = wait_for_status("rt-fail", JobStatus::Dead).await;
+        assert_eq!(row.attempts, 2);
+        assert_eq!(row.next_run_at, None);
+    }
+
+    #[tokio::test]
+    async fn status_endpoint_is_authed_and_reports() {
+        use http_body_util::BodyExt;
+        let router = jobs_router();
+        let unauthed = http::Request::builder()
+            .method("GET")
+            .uri("/__nx/jobs")
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.clone().oneshot(unauthed).await.unwrap();
+        assert_eq!(resp.status(), http::StatusCode::UNAUTHORIZED);
+
+        insert_row("rt-status", serde_json::json!({})).await;
+        let secret = crate::jobs::jobs_secret().unwrap();
+        let authed = http::Request::builder()
+            .method("GET")
+            .uri("/__nx/jobs")
+            .header(crate::jobs::JOBS_SECRET_HEADER, &secret)
+            .body(Body::empty())
+            .unwrap();
+        let resp = router.oneshot(authed).await.unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert!(json.get("counts").is_some(), "{json}");
+        assert!(json.get("recent").is_some(), "{json}");
+    }
+
+    #[tokio::test]
+    async fn sweep_reports_due_rows() {
+        use http_body_util::BodyExt;
+        insert_row("rt-sweep", serde_json::json!({})).await;
+        let secret = crate::jobs::jobs_secret().unwrap();
+        let req = http::Request::builder()
+            .method("POST")
+            .uri("/__nx/jobs/sweep")
+            .header(crate::jobs::JOBS_SECRET_HEADER, &secret)
+            .body(Body::empty())
+            .unwrap();
+        let resp = jobs_router().oneshot(req).await.unwrap();
+        assert_eq!(resp.status(), http::StatusCode::OK);
+        let body = resp.into_body().collect().await.unwrap().to_bytes();
+        let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        // At least our row is due; delivery itself may fail in-test (no
+        // server listening at the local base URL) — that's the sweep's
+        // durability contract, not an error.
+        assert!(json["due"].as_u64().unwrap() >= 1, "{json}");
+    }
+}
+
+#[cfg(all(test, feature = "logs"))]
+mod logs_capture_tests {
+    use super::*;
+    use crate::conventions::{RouteEntry, RouteRegistry};
+    use tower::ServiceExt;
+    use tracing_subscriber::prelude::*;
+
+    #[tokio::test]
+    async fn request_record_holds_handler_and_wait_until_lines() {
+        let _guard = tracing::subscriber::set_default(
+            tracing_subscriber::registry().with(crate::logs::layer()),
+        );
+        // Parallel tests without a subscriber can cache these callsites as
+        // "never interested"; re-evaluate now that this thread has one.
+        tracing::callsite::rebuild_interest_cache();
+        let mut registry = RouteRegistry::new();
+        registry.add(RouteEntry {
+            path: "/api/logs-capture-test".into(),
+            page: None,
+            layout: None,
+            loading: None,
+            middleware: None,
+            methods: vec![(
+                http::Method::POST,
+                Box::new(|req: Request| {
+                    Box::pin(async move {
+                        let wait = req
+                            .extensions()
+                            .get::<crate::WaitUntil>()
+                            .cloned()
+                            .unwrap_or_default();
+                        tracing::info!(title = "milk", "adding todo");
+                        wait.wait_until(async {
+                            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                            tracing::warn!("audit ran late");
+                        });
+                        (http::StatusCode::CREATED, "ok").into_response()
+                    })
+                }),
+            )],
+            prefetch: None,
+        });
+        let resp = build_router(registry)
+            .oneshot(
+                Request::post("/api/logs-capture-test")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), http::StatusCode::CREATED);
+
+        let query = crate::logs::LogQuery {
+            route: Some("/api/logs-capture-test".into()),
+            ..Default::default()
+        };
+        let mut found = None;
+        for _ in 0..100 {
+            if let Some(r) = crate::logs::store().query(query.clone()).await.unwrap().pop() {
+                found = Some(r);
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        let record = found.expect("request record was never saved");
+        assert_eq!(record.method, "POST");
+        assert_eq!(record.status, 201);
+        assert_eq!(record.level.as_deref(), Some("warn"));
+        let msgs: Vec<(&str, bool)> = record
+            .lines
+            .iter()
+            .map(|l| (l.msg.as_str(), l.after_response))
+            .collect();
+        assert_eq!(msgs, [("adding todo", false), ("audit ran late", true)]);
+        assert_eq!(record.lines[0].fields["title"], "milk");
+        assert!(record.segments.iter().any(|(n, _)| n == "handler"));
     }
 }
