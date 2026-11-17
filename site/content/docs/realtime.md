@@ -5,8 +5,7 @@ section = "Guides"
 order = 18
 +++
 
-This feature currently requires the framework and CLI from this repository's
-source; it is not part of the published 0.6.1 framework / 0.3.0 CLI.
+Available since nextrs 0.7.0 and the 0.3.1 CLI.
 
 Open your app in two tabs, change something in one, and the other updates
 within a moment. Your Rust app makes every decision: who may listen, what a

@@ -5,8 +5,7 @@ section = "Guides"
 order = 17
 +++
 
-This feature currently requires the framework and CLI from this repository's
-source; it is not part of the published 0.6.1 framework / 0.3.0 CLI.
+Available since nextrs 0.7.0 and the 0.3.1 CLI.
 
 Vercel Hobby keeps runtime logs for **one hour**. nextrs can save each
 request's logs to a database you own, and serve them, with your

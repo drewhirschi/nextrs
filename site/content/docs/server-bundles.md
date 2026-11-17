@@ -9,15 +9,7 @@ Server bundles keep expensive dependencies and runtime files out of ordinary
 functions. Each bundle is compiled independently and deployed as one function.
 Public URLs and generated browser clients stay the same.
 
-This feature currently requires the framework and CLI from this repository's
-source; it is not part of the published 0.6.1 framework / 0.3.0 CLI. Until the
-next coordinated release, run the checkout's CLI, for example:
-
-```bash
-cargo run -p cargo-nextrs --bin nextrs -- bundles plan --root examples/react-todos
-```
-
-The shorter `nextrs` commands below assume that source-built CLI is on your PATH.
+Available since nextrs 0.7.0 and the 0.3.1 CLI.
 
 ## Assign a route or subtree
 

@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-const VERSION: &str = "0.6.1";
+const VERSION: &str = "0.7.0";
 
 /// The committed root `vercel.json` of a prebuilt-deploy app: nothing but
 /// "do not build on push". Vercel's Git integration reads only this file — it
@@ -2336,7 +2336,7 @@ mod tests {
             .unwrap()
             .1
             .as_str();
-        assert!(cargo_toml.contains(r#"nextrs = { version = "0.6.1", features"#));
+        assert!(cargo_toml.contains(r#"nextrs = { version = "0.7.0", features"#));
         assert!(cargo_toml.contains("tower-livereload"));
         assert!(cargo_toml.contains(r#"features = ["vercel"]"#));
         assert!(cargo_toml.contains("vercel_runtime"));
