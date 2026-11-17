@@ -2,7 +2,7 @@
 
 - **Reported-in:** site (nextrs-docs)
 - **Date:** 2026-11-16
-- **Status:** open   <!-- open | fixed in <commit> | wontfix -->
+- **Status:** fixed in 5fd983c
 
 ## Problem
 
