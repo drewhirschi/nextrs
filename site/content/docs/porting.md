@@ -106,7 +106,7 @@ Scaffolded apps deploy with `nextrs deploy` (their `vercel.json`, generated from
 
 ## Gotchas
 
-- **You never call `/__nx/prefetch` yourself.** Route chunk preloading and data prefetch on hover are automatic: the generated app shell preloads the target route's seeds through that endpoint on link intent. If you find yourself fetching `/__nx/prefetch` from app code, you're rebuilding a feature that's already on.
+- **You never call `/__nx/prefetch` yourself.** Route chunk preloading and data prefetch are automatic: the generated app shell predicts which link you are heading for (pointer trajectory, Tab, scroll, touch — see [Preload](/docs/streaming#preload)) and preloads the target route's seeds through that endpoint before you get there. If you find yourself fetching `/__nx/prefetch` from app code, you're rebuilding a feature that's already on.
 - **`prefetch.rs` needs a `page.tsx` sibling.** It exists to warm that React page's query cache.
 - **Don't hand-edit generated output.** `.nextrs/openapi.json`, the complete `.nextrs/client/**` package, and `public/dist/` are regenerated and ignored. The tracked `.nextrs/template/client` wiring recreates the workspace target automatically. Application seams are `app/**`, `components/**`, `src/**`, and the root `package.json`.
 

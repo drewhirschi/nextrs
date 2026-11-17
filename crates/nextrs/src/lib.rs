@@ -6,6 +6,7 @@ pub mod health;
 pub mod logs;
 pub mod openapi;
 pub mod params;
+pub mod preload_stats;
 pub mod router;
 pub mod rsx;
 pub mod seed;

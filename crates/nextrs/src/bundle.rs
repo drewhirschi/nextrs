@@ -218,6 +218,12 @@ pub fn bundle_pages(cfg: &BundleConfig) -> std::io::Result<BundleManifest> {
     // exists to keep layout.tsx chrome mounted across soft navigation, and
     // would drag @tanstack/react-router into apps that never use it.
     if !tsx_pages.is_empty() {
+        // The vendored predictor the shell lazy-imports by relative path
+        // (see app_shell_nav.ts) — written beside the entry.
+        write_if_changed(
+            &entries_dir.join("__nx_foresight__.mjs"),
+            FORESIGHT_VENDOR.as_bytes(),
+        )?;
         let shell_path = entries_dir.join("__app_shell__.tsx");
         write_if_changed(
             &shell_path,
@@ -1348,6 +1354,15 @@ createRoot(document.getElementById("__nx_root__")!).render(
 /// the server's `__nx_params__` tag is only the boot-time hand-off and goes
 /// stale across soft navigation. Replaces the per-page `entry_wrapper` for
 /// pages (not-found keeps it).
+/// Soft navigation, intent preload and the preload debug overlay — spliced
+/// verbatim into the shell entry once `router` and `NX_APP_ROUTES` exist.
+const APP_SHELL_NAV: &str = include_str!("app_shell_nav.ts");
+
+/// ForesightJS (MIT), bundled into one ESM file by
+/// `scripts/vendor-foresight.sh`. Vendored rather than an npm dependency so
+/// existing apps get predictive preload on rebuild with no package.json change.
+const FORESIGHT_VENDOR: &str = include_str!("../vendor/foresight/foresight.mjs");
+
 fn app_shell_entry(routes: &[DiscoveredRoute], client_helper: &Path) -> String {
     use std::collections::HashMap;
     use std::fmt::Write as _;
@@ -1399,17 +1414,17 @@ fn app_shell_entry(routes: &[DiscoveredRoute], client_helper: &Path) -> String {
              const params = useParams({ strict: false });\n\
              return <Lazy params={params} />;\n\
            }\n\
-           // Chunk preload: router.preloadRoute (the hover handler) warms\n\
+           // Chunk preload: router.preloadRoute (the intent handler) warms\n\
            // route.options.component.preload() — forward the lazy loader so\n\
-           // the page's JS chunk downloads on hover, not at click time.\n\
+           // a preload also covers the page's JS chunk, not just its data.\n\
            (NxPage as any).preload = Lazy.preload;\n\
            return NxPage;\n\
          }\n\n",
     );
     // Soft-nav data prefetch: routes with a prefetch.rs get a loader that
     // asks the server for the same entries a hard load would stream
-    // (GET /__nx/prefetch?path=...), hydrating the query cache. The hover
-    // handler below runs this loader via router.preloadRoute, so by click
+    // (GET /__nx/prefetch?path=...), hydrating the query cache. The intent
+    // handlers (app_shell_nav.ts) run this loader via router.preloadRoute, so by click
     // time the leaf paints seeded. Bounded: a slow prefetch aborts at 1s and
     // the page falls back to fetch-on-mount. The very first loader run is the
     // document we just hard-loaded — its seeds are already in the cache, skip
@@ -1518,62 +1533,42 @@ fn app_shell_entry(routes: &[DiscoveredRoute], client_helper: &Path) -> String {
     );
     out.push_str("Object.assign(window, { __nx_router__: router });\n\n");
 
-    // Transparent soft navigation: pages and layouts use plain <a> tags (zero
-    // app-page changes), so intercept same-origin clicks on URLs this router
-    // can render and turn them into router navigations. Anything else — other
-    // origins, downloads, modified clicks, new tabs, non-app paths (static
-    // files, API links, strangler routes) — falls through to a normal
-    // document load. `data-no-soft` opts an anchor out explicitly.
+    // Soft navigation + preload. NX_APP_ROUTES is the list of URLs this
+    // router can render; app_shell_nav.ts (spliced in verbatim) intercepts
+    // clicks on plain <a> tags for them, warms route chunks for links on
+    // screen, preloads data on intent (hover, plus ForesightJS's
+    // mouse-trajectory / tab / scroll / touch prediction), and measures how
+    // much each strategy helped.
     let route_patterns = pages
         .iter()
         .map(|pg| route_regex(&pg.url_path))
         .collect::<Vec<_>>()
         .join(", ");
     let _ = writeln!(out, "const NX_APP_ROUTES = [{route_patterns}];");
-    out.push_str(
-        "function nxAppUrl(e: Event): URL | null {\n\
-           const a = e.target instanceof Element ? e.target.closest(\"a\") : null;\n\
-           if (!a || (a.target && a.target !== \"_self\")) return null;\n\
-           if (a.hasAttribute(\"download\") || a.hasAttribute(\"data-no-soft\")) return null;\n\
-           const href = a.getAttribute(\"href\");\n\
-           if (!href || href.startsWith(\"#\")) return null;\n\
-           const url = new URL(a.href, window.location.href);\n\
-           if (url.origin !== window.location.origin) return null;\n\
-           if (!NX_APP_ROUTES.some((r) => r.test(url.pathname))) return null;\n\
-           return url;\n\
-         }\n\
-         document.addEventListener(\"click\", (e) => {\n\
-           if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;\n\
-           const url = nxAppUrl(e);\n\
-           if (!url) return;\n\
-           e.preventDefault();\n\
-           router.navigate({ href: url.pathname + url.search + url.hash });\n\
-         });\n\
-         // Hover = intent: plain anchors have no TanStack <Link> machinery, so\n\
-         // defaultPreload:\"intent\" never sees them — drive the preload here.\n\
-         // preloadRoute warms the destination route's lazy CHUNK and runs its\n\
-         // loader, and loaders exist only on prefetch-backed routes — so\n\
-         // /__nx/prefetch is only hit where the server actually mounts it.\n\
-         // NOTE: preloadRoute takes NavigateOptions (to/search), NOT { href } —\n\
-         // buildLocation ignores href and would preload the current route.\n\
-         document.addEventListener(\"mouseover\", (e) => {\n\
-           const url = nxAppUrl(e);\n\
-           if (!url) return;\n\
-           router\n\
-             .preloadRoute({ to: url.pathname, search: Object.fromEntries(url.searchParams) })\n\
-             .catch(() => {});\n\
-         });\n\n",
-    );
+    // Per route, same order as NX_APP_ROUTES: its template (what preload
+    // stats report — never a concrete URL), whether it has prefetch.rs data,
+    // and its page chunk. The import() names the same module as the route's
+    // lazy component, so it resolves to that chunk.
+    out.push_str("const NX_ROUTE_INFO = [\n");
+    for pg in &pages {
+        let _ = writeln!(
+            out,
+            "  {{ path: {:?}, data: {}, chunk: () => import({:?}) }},",
+            pg.url_path,
+            pg.prefetch.is_some(),
+            pg.page.tsx.as_ref().unwrap().display().to_string()
+        );
+    }
+    out.push_str("];\n");
+    out.push_str(APP_SHELL_NAV);
 
     out.push_str(
         "createRoot(document.getElementById(\"__nx_root__\")!).render(<RouterProvider router={router} />);\n",
     );
-    // Note: the "load the next page's React ahead of time" is the mouseover
-    // handler's router.preloadRoute above — defaultPreload:"intent" alone
-    // never fires here because plain <a> tags bypass TanStack's <Link>
-    // machinery (it's kept for any app code that does use <Link>).
-    // The server's document-level speculation rules (now Prefetch, not
-    // Prerender) are a light bonus for hard loads and are left in place.
+    // Note: the "load the next page's React ahead of time" is nxPreload in
+    // app_shell_nav.ts — defaultPreload:"intent" alone never fires here
+    // because plain <a> tags bypass TanStack's <Link> machinery (it's kept
+    // for any app code that does use <Link>).
     out
 }
 
@@ -2664,6 +2659,61 @@ console.log(Logo(), generated, dependency);
             "qc.setQueryData(e.key, { data: e.data, status: 200, headers: new Headers() })"
         ));
         assert!(s.contains("AbortSignal.timeout(1000)"));
+    }
+
+    #[test]
+    fn app_shell_preloads_on_hover_and_foresight_prediction() {
+        let tmp = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(tmp.path().join("about")).unwrap();
+        std::fs::write(tmp.path().join("page.tsx"), "").unwrap();
+        std::fs::write(tmp.path().join("about/page.tsx"), "").unwrap();
+        let routes = discover_routes(tmp.path());
+        let s = app_shell_entry(&routes, Path::new("/abs/helper.ts"));
+
+        // Hover and every ForesightJS prediction go through nxPreload, so the
+        // per-URL TTL dedups across them and preloadRoute has one call site.
+        assert_eq!(s.matches(".preloadRoute(").count(), 1, "{s}");
+        assert!(s.contains("nxPreload(url, \"hover\")"), "{s}");
+        assert!(s.contains("nxPreload(url, nxSignal)"), "{s}");
+        // Per-route info, index-aligned with NX_APP_ROUTES: the template the
+        // stats report, the has-data flag, and the chunk the on-screen
+        // preload warms without running a loader.
+        assert!(s.contains(r"const NX_APP_ROUTES = [/^\/$/, /^\/about$/];"), "{s}");
+        let root_page = tmp.path().join("page.tsx").display().to_string();
+        assert!(
+            s.contains(&format!(
+                "  {{ path: \"/\", data: false, chunk: () => import({root_page:?}) }},\n  {{ path: \"/about\","
+            )),
+            "{s}"
+        );
+        assert!(s.contains("NX_ROUTE_INFO[i].chunk()"), "{s}");
+        // Stats are collected locally and shipped only when the server's
+        // meta tag asks for them.
+        assert!(s.contains("meta[name=\"nx-preload-stats\"]"), "{s}");
+        assert!(s.contains("__nx_preload_stats__"), "{s}");
+        // The predictor is a lazy chunk (never on the boot path), imported
+        // from the file bundle_pages writes beside the shell entry.
+        assert!(s.contains("import(\"./__nx_foresight__.mjs\")"), "{s}");
+        assert!(!s.contains("from \"./__nx_foresight__.mjs\""), "{s}");
+        // The nav script needs these from the generated part of the shell,
+        // declared BEFORE it is spliced in.
+        let nav = s.find("function nxAnchorUrl").unwrap();
+        assert!(s.find("const router = createRouter(").unwrap() < nav);
+        assert!(s.find("const NX_APP_ROUTES = [").unwrap() < nav);
+        assert!(s.find("const NX_ROUTE_INFO = [").unwrap() < nav);
+        assert!(nav < s.find("createRoot(document.getElementById").unwrap());
+        // Prediction-vector overlay: shipped, off unless asked for.
+        assert!(s.contains("__nx_preload_debug__"));
+        assert!(s.contains("nx:preload-debug"));
+    }
+
+    #[test]
+    fn vendored_foresight_exports_the_manager_and_keeps_its_license_notice() {
+        assert!(FORESIGHT_VENDOR.contains("as ForesightManager"));
+        assert!(FORESIGHT_VENDOR.starts_with("/*! Vendored by nextrs"));
+        // Single file: nothing left for the app's node_modules to resolve.
+        assert!(!FORESIGHT_VENDOR.contains("from \"position-observer\""));
+        assert!(!FORESIGHT_VENDOR.contains("from \"tabbable\""));
     }
 
     #[test]

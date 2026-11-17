@@ -85,8 +85,10 @@ export default function Loading() {
 ```
 
 A `prefetch.rs` beside `page.tsx` returns a `nextrs::QuerySeed`. On a hard
-load, nextrs includes those cache entries in the page shell. On link intent
-and soft navigation, the app shell warms the route chunk and data. See
+load, nextrs includes those cache entries in the page shell. For soft
+navigation the app shell warms the route's chunk as soon as a link to it is on
+screen, and its data when you show intent to go there — see
+[Preload](/docs/streaming#preload) and
 [React Pages & Server Prefetch](/docs/react-server-props).
 
 ## Middleware
