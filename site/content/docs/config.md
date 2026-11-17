@@ -19,7 +19,7 @@ regions = ["pdx1"]
 # runtime = "vercel-rust@4.0.11"      # defaults, shown for reference
 # install_command = "npm ci"
 # build_command = "npm run client:prepare && cargo build --release --bin index && npm run client:build"
-# git_deploys = false                 # emitted into generated local config
+# git_deploys = false                 # false: root vercel.json turns off builds on push
 
 # [vercel.extra]                      # non-framework Vercel keys only
 # trailingSlash = false
@@ -60,10 +60,20 @@ Cron schedules are colocated with their protected handlers as
 - **`.nextrs/cloudflare/`** — the Worker shim for cloudflare-provider crons
   (gitignored, regenerated on demand).
 
-The `[vercel]` table is optional; omitting it uses framework defaults. A root
-`vercel.json` is never read or mutated, so it cannot become a second source
-of deployment or cron configuration. If one exists, generation warns that it
-is ignored and explains how to copy its settings into `nextrs.toml`.
+- **`vercel.json`** (app root, **committed**) — a stub holding one setting,
+  `"git": { "deploymentEnabled": false }`. Vercel's Git integration reads
+  only this file; it never sees the gitignored `.nextrs/vercel.json`. Without
+  the stub every push starts a cloud build that cannot succeed, because the
+  generated client is not in git. `nextrs generate` writes it when it is
+  missing and removes it if you set `git_deploys = true`. It has no effect on
+  `nextrs deploy`, which passes the generated file explicitly.
+
+The `[vercel]` table is optional; omitting it uses framework defaults. The
+root `vercel.json` is not a second source of deployment or cron
+configuration: `nextrs deploy` never reads it, and generation only ever
+writes or removes the stub. If the file holds anything else, generation
+leaves it alone, warns, and explains how to move its settings into
+`nextrs.toml`.
 
 ## Moving settings from `vercel.json`
 

@@ -399,6 +399,9 @@ pub fn generate(root: &Path) -> Result<String, String> {
         "{VERCEL_CONFIG_FILE}: generated with {} cron(s)",
         vercel.len()
     ));
+    if let Some(line) = sync_git_stub(root, settings.git_deploys.unwrap_or(false))? {
+        summary.push(line);
+    }
 
     let out_dir = root.join(OUTPUT_DIR);
     if cloudflare.is_empty() {
@@ -424,11 +427,58 @@ pub fn generate(root: &Path) -> Result<String, String> {
     Ok(summary.join(", "))
 }
 
+/// The root `vercel.json`, relative to the app root. Committed; holds only
+/// the "do not build on push" stub (see `VERCEL_GIT_STUB`).
+pub const VERCEL_GIT_STUB_FILE: &str = "vercel.json";
+
+/// Whether `content` is the stub and nothing else: `git.deploymentEnabled:
+/// false`, optionally with `$schema`. Anything more is a hand-written file.
+fn is_git_stub(content: &str) -> bool {
+    let Ok(Value::Object(map)) = serde_json::from_str::<Value>(content) else {
+        return false;
+    };
+    map.get("git") == Some(&json!({ "deploymentEnabled": false }))
+        && map.keys().all(|key| key == "git" || key == "$schema")
+}
+
+/// Keep the committed root `vercel.json` in step with `git_deploys`.
+///
+/// Vercel's Git integration reads only that file; it never sees the
+/// generated `.nextrs/vercel.json`. So "git auto-builds off" has to live
+/// there too, or every push starts a cloud build that cannot succeed.
+///
+/// - off (the default): write the stub if the file is missing.
+/// - on: remove the stub if it is ours.
+/// - a hand-written root file is never touched (the caller warns about it).
+fn sync_git_stub(root: &Path, git_deploys: bool) -> Result<Option<String>, String> {
+    let path = root.join(VERCEL_GIT_STUB_FILE);
+    let existing = fs::read_to_string(&path).ok();
+    match (git_deploys, existing.as_deref()) {
+        (false, None) => {
+            write(&path, create_nextrs_app::VERCEL_GIT_STUB)?;
+            Ok(Some(format!(
+                "{VERCEL_GIT_STUB_FILE}: written (turns off Vercel builds on push) — commit it"
+            )))
+        }
+        (true, Some(content)) if is_git_stub(content) => {
+            fs::remove_file(&path)
+                .map_err(|error| format!("failed to remove {}: {error}", path.display()))?;
+            Ok(Some(format!(
+                "{VERCEL_GIT_STUB_FILE}: removed (git_deploys = true) — commit the deletion"
+            )))
+        }
+        _ => Ok(None),
+    }
+}
+
 fn legacy_vercel_warning(root: &Path) -> Option<String> {
-    let legacy = root.join("vercel.json");
+    let legacy = root.join(VERCEL_GIT_STUB_FILE);
+    if fs::read_to_string(&legacy).is_ok_and(|content| is_git_stub(&content)) {
+        return None;
+    }
     legacy.is_file().then(|| {
         format!(
-            "nextrs: warning: {} is ignored because NextRS generates {}. Copy supported deployment settings into the [vercel] table in {}; put other non-framework Vercel settings under [vercel.extra]. See https://nextrs.hirschi.dev/docs/config",
+            "nextrs: warning: {} is ignored by `nextrs deploy` because NextRS generates {}. Copy supported deployment settings into the [vercel] table in {}; put other non-framework Vercel settings under [vercel.extra]. Vercel's Git integration DOES read it: unless it sets \"git\": {{\"deploymentEnabled\": false}}, every push starts a cloud build. Once its settings are moved, reduce it to just that block. See https://nextrs.hirschi.dev/docs/config",
             legacy.display(),
             root.join(VERCEL_CONFIG_FILE).display(),
             root.join(CONFIG_FILE).display(),
@@ -1063,6 +1113,53 @@ trailingSlash = false
     }
 
     #[test]
+    fn generate_keeps_the_git_stub_in_step_with_git_deploys() {
+        let dir = tempdir("git-stub");
+        fs::create_dir_all(&dir).unwrap();
+        fs::write(dir.join(CONFIG_FILE), "[app]\nname = \"demo\"\nurl = \"https://demo.example\"\n").unwrap();
+        let stub = dir.join(VERCEL_GIT_STUB_FILE);
+
+        // Default (git deploys off): the stub appears, and it is exactly the
+        // one thing Vercel's Git integration needs to read.
+        let summary = generate(&dir).unwrap();
+        assert!(summary.contains("vercel.json: written"), "{summary}");
+        let written: Value = serde_json::from_str(&fs::read_to_string(&stub).unwrap()).unwrap();
+        assert_eq!(written["git"], json!({ "deploymentEnabled": false }));
+        assert!(is_git_stub(&fs::read_to_string(&stub).unwrap()));
+        assert!(legacy_vercel_warning(&dir).is_none());
+
+        // Idempotent: a second run leaves it alone and says nothing.
+        let summary = generate(&dir).unwrap();
+        assert!(!summary.contains("vercel.json: written"), "{summary}");
+
+        // Opting into git deploys removes OUR stub...
+        fs::write(
+            dir.join(CONFIG_FILE),
+            "[app]\nname = \"demo\"\nurl = \"https://demo.example\"\n[vercel]\ngit_deploys = true\n",
+        )
+        .unwrap();
+        let summary = generate(&dir).unwrap();
+        assert!(summary.contains("vercel.json: removed"), "{summary}");
+        assert!(!stub.exists());
+
+        // ...but never a hand-written file, in either mode.
+        fs::write(&stub, r#"{ "git": { "deploymentEnabled": false }, "regions": ["iad1"] }"#).unwrap();
+        generate(&dir).unwrap();
+        assert!(stub.exists());
+        assert!(legacy_vercel_warning(&dir).unwrap().contains("Git integration DOES read it"));
+    }
+
+    #[test]
+    fn git_stub_is_recognised_strictly() {
+        assert!(is_git_stub(create_nextrs_app::VERCEL_GIT_STUB));
+        assert!(is_git_stub(r#"{"git":{"deploymentEnabled":false}}"#));
+        assert!(!is_git_stub(r#"{"git":{"deploymentEnabled":true}}"#));
+        assert!(!is_git_stub(r#"{"git":{"deploymentEnabled":false},"crons":[]}"#));
+        assert!(!is_git_stub("{}"));
+        assert!(!is_git_stub("not json"));
+    }
+
+    #[test]
     fn legacy_root_vercel_json_warns_with_migration_action() {
         let dir = tempdir("legacy-vercel-warning");
         fs::create_dir_all(&dir).unwrap();
@@ -1070,7 +1167,7 @@ trailingSlash = false
 
         fs::write(dir.join("vercel.json"), "{}").unwrap();
         let warning = legacy_vercel_warning(&dir).unwrap();
-        assert!(warning.contains("vercel.json is ignored"));
+        assert!(warning.contains("vercel.json is ignored by `nextrs deploy`"));
         assert!(warning.contains("Copy supported deployment settings"));
         assert!(warning.contains(CONFIG_FILE));
         assert!(warning.contains("[vercel] table"));

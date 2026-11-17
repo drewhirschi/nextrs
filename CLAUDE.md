@@ -127,13 +127,17 @@ can adopt it with a one-line change.
 ## Deploy / conventions quick refs
 
 - Docs site: project `nextrs-docs` (Vercel `ashirsc` team). **Git auto-builds are OFF
-  fleet-wide** (2026-07-14, `git.deploymentEnabled: false` in every app's vercel.json —
-  cloud builds cost 6-10 min + shared queue). Deploys are prebuilt-only:
+  fleet-wide** (2026-07-14, `git.deploymentEnabled: false` in every app's committed root
+  `vercel.json` stub — the Git integration reads ONLY that file, never the gitignored
+  `.nextrs/vercel.json`; `nextrs generate` writes the stub. Cloud builds cost 6-10 min +
+  shared queue). Deploys are prebuilt-only:
   `scripts/deploy-prebuilt.sh site` (local cargo-zigbuild → `vercel deploy --prebuilt`,
   ~seconds; guide at /docs/deploy-prebuilt). App-root projects use `nextrs deploy`
   (same steps + `nextrs generate` + cron triggers); `site/` keeps the script because
   its Vercel Root Directory is `site`. Both apps' `vercel.json` are generated from
-  their `nextrs.toml` — edit the TOML. **A push to main no longer ships anything —
-  run the deploy script after docs/site changes.** The Vercel project's Root Directory
+  their `nextrs.toml` — edit the TOML. **A push to main ships the docs site only
+  through CI's `deploy-docs` job, which needs the `docs-production` environment secrets
+  (`VERCEL_TOKEN`, `VERCEL_ORG_ID`, `VERCEL_DOCS_PROJECT_ID`); when that job is red, run
+  the deploy script after docs/site changes.** The Vercel project's Root Directory
   must stay `site` with "Include source files outside the Root Directory" enabled.
 - Full deploy topology and other cross-repo facts live in agent memory, not the repo.

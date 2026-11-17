@@ -73,10 +73,13 @@ vercel_runtime = { version = "2", features = ["axum"] }
 
 ## Vercel configuration
 
-`vercel.json` is generated from the `[vercel]` table in
+`.nextrs/vercel.json` is generated from the `[vercel]` table in
 [`nextrs.toml`](/docs/config) by `nextrs generate` (which `nextrs deploy`
-runs first) — edit the TOML, not the JSON. What it renders installs and
-builds from the application root:
+runs first) — edit the TOML, not the JSON. It is gitignored. The only Vercel
+file you commit is the root `vercel.json`, a generated stub that turns off
+builds on push (see [config](/docs/config#what-nextrs-generate-writes)).
+What the generated config renders installs and builds from the application
+root:
 
 ```json
 {
@@ -165,8 +168,9 @@ with older system libraries than your workstation. Set a
 [custom build command](/docs/custom-build); `nextrs deploy` runs it and
 verifies the result.
 
-If you prefer Vercel cloud builds, delete the `git.deploymentEnabled: false`
-setting (or enable it in project settings) and push normally. The same root
+If you prefer Vercel cloud builds, set `git_deploys = true` under `[vercel]`
+and commit your own root `vercel.json` with the install and build commands
+shown above — the Git integration reads only that file — then push normally. The same root
 install/build commands regenerate everything in the cloud; no prebuilt bundle
 needs to be checked into git.
 

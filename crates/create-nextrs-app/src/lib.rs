@@ -5,6 +5,21 @@ use std::process::Command;
 
 const VERSION: &str = "0.6.1";
 
+/// The committed root `vercel.json` of a prebuilt-deploy app: nothing but
+/// "do not build on push". Vercel's Git integration reads only this file — it
+/// never sees the generated, gitignored `.nextrs/vercel.json` — so without it
+/// every push starts a cloud build that cannot succeed (the generated client
+/// is not in git). `nextrs deploy` passes `.nextrs/vercel.json` with
+/// `--local-config`, so this file has no effect on real deploys.
+/// `nextrs generate` keeps it in sync with `[vercel] git_deploys`.
+pub const VERCEL_GIT_STUB: &str = r#"{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "git": {
+    "deploymentEnabled": false
+  }
+}
+"#;
+
 /// Run the scaffolder with an explicit argument list.
 ///
 /// This is the shared implementation behind both the legacy
@@ -493,6 +508,7 @@ fn adopt_template_files(
         .chain([
             ("app/page.tsx", adopt_page_tsx()),
             ("nextrs.toml", nextrs_toml(crate_name, false)),
+            ("vercel.json", VERCEL_GIT_STUB.to_string()),
         ])
         .collect()
 }
@@ -643,6 +659,7 @@ fn template_files(
         (".nextrs/dump-openapi.rs", dump_openapi_rs(crate_name)),
         ("api/index.rs", api_index_rs(crate_name)),
         ("nextrs.toml", nextrs_toml(crate_name, true)),
+        ("vercel.json", VERCEL_GIT_STUB.to_string()),
         ("scripts/deploy-prebuilt.sh", deploy_prebuilt_sh()),
         ("package.json", root_package_json(crate_name)),
         ("tsconfig.json", root_tsconfig_json()),
@@ -772,8 +789,13 @@ shim, relative generated path, or `tsconfig.paths` entry is required.
 The default scaffold includes Vercel support because Vercel currently requires
 `api/index.rs` as its Rust function entry. Both that adapter and local
 `src/main.rs` call `src/app.rs`. If Vercel is not a target, remove
-`api/index.rs`, its `index` Cargo target and Vercel-only dependencies, and
-the generated `.nextrs/vercel.json` together.
+`api/index.rs`, its `index` Cargo target and Vercel-only dependencies, the
+generated `.nextrs/vercel.json`, and the root `vercel.json` together.
+
+The root `vercel.json` is committed and says one thing: do not build on push.
+Deploys are prebuilt (`nextrs deploy`); the real Vercel config is generated
+into `.nextrs/vercel.json` from `nextrs.toml`. Do not add settings to the root
+file — `nextrs generate` owns it.
 "#
     )
 }
@@ -2262,7 +2284,11 @@ mod tests {
         assert!(names.contains(&"src/app.rs"));
         assert!(names.contains(&".nextrs/dump-openapi.rs"));
         assert!(names.contains(&"api/index.rs"));
-        assert!(!names.contains(&"vercel.json"));
+        // Only the "no builds on push" stub — the real config is generated.
+        assert_eq!(
+            files.iter().find(|(n, _)| *n == "vercel.json").unwrap().1,
+            VERCEL_GIT_STUB
+        );
         assert!(names.contains(&"app/layout.tsx"));
         assert!(names.contains(&"app/page.tsx"));
         assert!(names.contains(&"app/PingDemo.tsx"));
@@ -2500,7 +2526,10 @@ mod tests {
         assert!(names.contains(&"app/page.tsx"));
         assert!(names.contains(&"AGENTS.md"));
         assert!(names.contains(&"scripts/deploy-prebuilt.sh"));
-        assert!(!names.contains(&"vercel.json"));
+        assert_eq!(
+            adopt.iter().find(|(n, _)| *n == "vercel.json").unwrap().1,
+            VERCEL_GIT_STUB
+        );
         // No demo cron route, so the config must not schedule one.
         assert!(!names.contains(&"app/api/cron/heartbeat/route.rs"));
         let toml = &adopt.iter().find(|(n, _)| *n == "nextrs.toml").unwrap().1;
