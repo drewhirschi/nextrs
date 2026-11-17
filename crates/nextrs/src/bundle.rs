@@ -1414,17 +1414,17 @@ fn app_shell_entry(routes: &[DiscoveredRoute], client_helper: &Path) -> String {
              const params = useParams({ strict: false });\n\
              return <Lazy params={params} />;\n\
            }\n\
-           // Chunk preload: router.preloadRoute (the hover handler) warms\n\
+           // Chunk preload: router.preloadRoute (the intent handler) warms\n\
            // route.options.component.preload() — forward the lazy loader so\n\
-           // the page's JS chunk downloads on hover, not at click time.\n\
+           // a preload also covers the page's JS chunk, not just its data.\n\
            (NxPage as any).preload = Lazy.preload;\n\
            return NxPage;\n\
          }\n\n",
     );
     // Soft-nav data prefetch: routes with a prefetch.rs get a loader that
     // asks the server for the same entries a hard load would stream
-    // (GET /__nx/prefetch?path=...), hydrating the query cache. The hover
-    // handler below runs this loader via router.preloadRoute, so by click
+    // (GET /__nx/prefetch?path=...), hydrating the query cache. The intent
+    // handlers (app_shell_nav.ts) run this loader via router.preloadRoute, so by click
     // time the leaf paints seeded. Bounded: a slow prefetch aborts at 1s and
     // the page falls back to fetch-on-mount. The very first loader run is the
     // document we just hard-loaded — its seeds are already in the cache, skip

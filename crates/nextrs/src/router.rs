@@ -280,7 +280,7 @@ pub fn build_router_with_prefetch(registry: RouteRegistry, prefetch: Speculation
 
 /// Reserved path of the soft-nav data-prefetch endpoint. The generated app
 /// shell calls `GET /__nx/prefetch?path=<url>` from its route loaders (on
-/// hover via preload, and during navigation) and hydrates the React Query
+/// link intent via preload, and during navigation) and hydrates the React Query
 /// cache with the response — the same entries a hard load of `<url>` would
 /// stream as `__nx_seeds__`.
 pub const NX_PREFETCH_PATH: &str = "/__nx/prefetch";

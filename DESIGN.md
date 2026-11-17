@@ -46,7 +46,7 @@
 
 ## Motion
 - **Approach:** minimal-functional + *genuine* speed.
-- The site dogfoods nextrs soft-nav + hover-prefetch — real instant navigation is the motion story. No gratuitous scroll choreography.
+- The site dogfoods nextrs soft-nav + predictive preload — real instant navigation is the motion story. No gratuitous scroll choreography.
 - **Easing:** enter ease-out / exit ease-in / move ease-in-out.
 - **Duration:** micro 80ms / short 160ms / medium 240ms / long 400ms.
 

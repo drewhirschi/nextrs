@@ -888,6 +888,17 @@ The same data fires as `tracing` events (`RUST_LOG=nextrs=info` locally;
 Vercel function logs in production). Full guide, including OpenTelemetry
 export: <https://nextrs-docs.vercel.app/docs/telemetry>
 
+## Link preloading is automatic
+
+Write plain `<a href>` links — do not add a `<Link>` component or call
+`/__nx/prefetch` yourself. The app shell warms a route's JS chunk when a link
+to it is on screen, and its `prefetch.rs` data on intent (hover, or a
+predicted one: pointer trajectory, Tab, scroll, touch). To see whether it is
+helping, click around and run `__nx_preload_stats__()` in the browser console;
+`__nx_preload_debug__()` draws the prediction. `NEXTRS_PRELOAD_STATS=1` logs
+the same numbers from real traffic as `nextrs::preload` tracing events.
+Guide: <https://nextrs-docs.vercel.app/docs/streaming#preload>
+
 ## Deploys are prebuilt
 
 Automatic Git deployments are not supported; disable them in the Vercel

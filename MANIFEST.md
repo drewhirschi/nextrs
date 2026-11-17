@@ -72,10 +72,12 @@ state?". The full loop:
    swaps, and the React Query cache carries across. Data hooks re-key off the
    new URL — hitting cache instantly for any previously-visited URL state
    (back/forward is always warm), and **soft navigations are seeded too**:
-   hovering an app link (or the navigation itself) fetches
-   `GET /__nx/prefetch?path=<url>` — the route's `prefetch.rs`, behind its
-   middleware — and hydrates the same keys a hard load would stream, so new
-   pages also paint without a mount fetch.
+   showing intent to follow an app link — hovering it, or being predicted to
+   (pointer trajectory, Tab, scroll, touch) — or the navigation itself
+   fetches `GET /__nx/prefetch?path=<url>` — the route's `prefetch.rs`,
+   behind its middleware — and hydrates the same keys a hard load would
+   stream, so new pages also paint without a mount fetch. The route's JS
+   chunk is warmed earlier still, as soon as a link to it is on screen.
 3. **Mutations** — go through the generated typed mutation hooks and
    `invalidateQueries` on the canonical key, which refreshes seeded and
    fetched entries alike (they share keys by design).
