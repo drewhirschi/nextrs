@@ -1,7 +1,7 @@
 # Consolidate the published CLI packages after cargo-nextrs 0.3
 
 - **Recorded:** 2026-08-29
-- **Status:** ready for a follow-up implementation PR
+- **Status:** ready for a follow-up implementation PR — NOT built as of 2026-11-16 (see the update below)
 - **Predecessor:** PR 41, squash-merged as `fc8112b`
 
 ## Release state
@@ -29,6 +29,36 @@ prebuilt path rather than the unsupported Vercel Git integration:
 ```bash
 scripts/deploy-prebuilt.sh site
 ```
+
+## Update 2026-11-16: the freeze was broken once, and will be again
+
+The 0.7.0 release (nextrs 0.7.0, nextrs-macros 0.1.9, cargo-nextrs 0.3.1)
+had to publish **create-nextrs-app 0.1.7**, against step 7 below. Nothing was
+wrong with its binary; `cargo-nextrs` simply cannot be published without it:
+
+- the scaffold templates pin the framework version (`VERSION` in
+  `crates/create-nextrs-app/src/lib.rs`), so every `nextrs` release changes
+  the crate; and
+- `cargo-nextrs` now imports one more thing from it,
+  `create_nextrs_app::VERCEL_GIT_STUB` (the committed root `vercel.json`
+  stub, PR #53) — move that constant along with the scaffold in step 1.
+
+`cargo-nextrs-dev` was not republished (still 0.1.1, unchanged since
+2026-08-15).
+
+Until this plan is implemented, **every framework release republishes
+create-nextrs-app**. That is the cost of leaving it undone.
+
+The packages to drop, for the record:
+
+| Package | What it was | Replaced by |
+|---|---|---|
+| `create-nextrs-app` | the original "create an app" command | `nextrs new` |
+| `cargo-nextrs-dev` | the original dev runner | `nextrs dev` |
+
+"Dropped" means: no longer a dependency of `cargo-nextrs`, no longer
+published, removed from the workspace. Their existing crates.io releases stay
+(not yanked) so old install instructions keep resolving.
 
 ## Why five packages exist today
 
