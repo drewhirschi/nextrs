@@ -5,8 +5,7 @@ section = "Guides"
 order = 16
 +++
 
-This feature currently requires the framework and CLI from this repository's
-source; it is not part of the published 0.6.1 framework / 0.3.0 CLI.
+Available since nextrs 0.7.0 and the 0.3.1 CLI.
 
 Some work must not be lost when it fails: sending an email, syncing a
 webhook, writing an audit record. `nextrs::WaitUntil` runs work after the

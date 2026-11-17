@@ -1,15 +1,20 @@
 # Publishing nextrs to crates.io
 
-Status (2026-08-15): the framework, unified CLI, and compatibility tools are
+Status (2026-11-16): the framework, unified CLI, and compatibility tools are
 published on crates.io.
 
 | crate | workspace | crates.io status |
 | --- | --- | --- |
-| `nextrs` | **0.5.1** | **0.5.1** |
-| `nextrs-macros` | **0.1.7** | **0.1.7** |
-| `cargo-nextrs-dev` | **0.1.1** | **0.1.1** |
-| `create-nextrs-app` | **0.1.3** | **0.1.3** |
-| `cargo-nextrs` | **0.1.0** | **0.1.0** |
+| `nextrs` | **0.7.0** | **0.7.0** |
+| `nextrs-macros` | **0.1.9** | **0.1.9** |
+| `cargo-nextrs` | **0.3.1** | **0.3.1** |
+| `create-nextrs-app` | **0.1.7** | **0.1.7** |
+| `cargo-nextrs-dev` | **0.1.1** | **0.1.1** (unchanged since 2026-08-15) |
+
+`create-nextrs-app` still has to be published with every release because
+`cargo-nextrs` depends on it as a library (the scaffold templates pin the
+framework version). Removing that is the plan in
+`docs/upstream-plans/package-consolidation-after-0.3.md` — not yet built.
 
 The intended user install is now exclusively:
 
@@ -40,7 +45,7 @@ When either compatibility library changes, publish it before publishing a new
 - Bump `nextrs`'s pinned `nextrs-macros = { version = ... }` dep together with the
   macros version.
 - Keep `create-nextrs-app/src/lib.rs`'s emitted `nextrs = "0.x"` in lockstep with the
-  released `nextrs` version (currently `0.5.1`) so the scaffold never pins an
+  released `nextrs` version (currently `0.7.0`) so the scaffold never pins an
   unpublished version. The scaffold tests assert this value.
 - Verify the package contents and install surface before publishing:
 
