@@ -310,6 +310,27 @@ impl super::JobStore for LibsqlJobStore {
         })
     }
 
+    fn reclaim_one(&self, id: &JobId, cutoff: i64) -> StoreFuture<'_, bool> {
+        let id = id.clone();
+        Box::pin(async move {
+            let affected = self
+                .conn()
+                .await?
+                .execute(
+                    "UPDATE __nextrs_jobs
+                     SET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'failed' END,
+                         next_run_at = CASE WHEN attempts >= max_attempts THEN NULL ELSE ?2 END,
+                         last_error = COALESCE(last_error, 'reclaimed: instance died mid-run'),
+                         updated_at = ?2
+                     WHERE id = ?3 AND status = 'running' AND updated_at < ?1",
+                    libsql::params![cutoff, now_ms(), id.0.clone()],
+                )
+                .await
+                .map_err(|e| StoreError(format!("reclaim_one: {e}")))?;
+            Ok(affected > 0)
+        })
+    }
+
     fn get(&self, id: &JobId) -> StoreFuture<'_, Option<JobRow>> {
         let id = id.clone();
         Box::pin(async move { self.fetch_one(&id.0).await })

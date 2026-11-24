@@ -529,6 +529,16 @@ fn build_route_table(
     crate::health::init();
     router = router.route(crate::health::NX_HEALTH_PATH, get(crate::health::handler));
 
+    // Queue sends are authorised by the OIDC token Vercel puts on each
+    // request. Whatever enqueues or retries a job (an app handler, the admin
+    // Retry button) needs the newest one, so this wraps every route above.
+    #[cfg(feature = "jobs")]
+    if !jobs.is_empty() {
+        router = router.layer(axum::middleware::from_fn(
+            crate::jobs::vercel_queues::remember_oidc_token,
+        ));
+    }
+
     router
 }
 
@@ -2680,6 +2690,12 @@ mod jobs_endpoint_tests {
         let _guard = tracing::subscriber::set_default(
             tracing_subscriber::registry().with(crate::logs::layer()),
         );
+        // While only one subscriber is alive in the process, tracing decides
+        // a callsite's interest from whichever thread asks, so a parallel
+        // test without a subscriber can switch this test's callsites off
+        // mid-run. A second live subscriber makes every such decision ask all
+        // of them, this one included.
+        let _second = tracing::Dispatch::new(tracing_subscriber::registry());
         // Parallel tests without a subscriber can cache these callsites as
         // "never interested"; re-evaluate now that this thread has one.
         tracing::callsite::rebuild_interest_cache();
