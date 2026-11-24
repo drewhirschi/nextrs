@@ -117,7 +117,7 @@ now (2026-07-03); if it starts to chafe, the fix is a preview-deploy path that
 vendors the workspace source instead.
 
 **The example has two Vercel functions.** `api/index.rs` serves the app;
-`api/jobs.rs` is the Vercel Queues consumer that runs `app/jobs/`. Job
+`api/jobs.rs` is the Vercel Queues consumer that runs the `jobs/` folder. Job
 delivery switches to the queue only when `nextrs deploy` finds `api/jobs.rs`
 (it writes the trigger and sets `NEXTRS_JOBS_CONSUMER` in each function's
 environment), so a jobs change needs a preview deploy to be exercised on

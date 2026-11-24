@@ -16,10 +16,20 @@ retry policy, and a record of every attempt you can read in
 
 ## Write a job
 
-A job lives in `app/jobs/<name>/job.rs`. The directory is its name:
+Jobs live in a `jobs/` folder beside `app/`. Any `.rs` file in it, at any
+depth, can hold jobs: tag a function `#[nextrs::job]`.
+
+```text
+app/                    routes and pages
+jobs/
+  welcome.rs            send_welcome
+  billing/
+    invoices.rs         send_invoice, void_invoice
+src/                    the logic your jobs call
+```
 
 ```rust
-// app/jobs/send-welcome/job.rs
+// jobs/welcome.rs
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize, Deserialize)]
@@ -49,13 +59,39 @@ pub async fn send_welcome(payload: Welcome) -> Result<Sent, String> {
   handlers.
 - `nextrs::jobs::current()` tells the body which attempt is running.
 
+A job is an entry point, like a route handler. Keep the real logic in `src/`
+and call it from the job.
+
+### Files, folders, and names
+
+- **The folders are the module tree.** `jobs/billing/invoices.rs` is
+  `crate::jobs::billing::invoices`. A file can hold any number of jobs, and
+  a file with none is still a module, so shared payload types can sit beside
+  the jobs that use them.
+- **A job is named after its function** (`send_welcome`). The name is what
+  queued work refers to, so moving or renaming a file changes nothing for
+  jobs already queued. Renaming the function does; set the name yourself to
+  keep it: `#[nextrs::job(name = "send-welcome")]`.
+- **Two jobs with one name is a build error** that names both.
+- **Jobs must be in `jobs/`.** Tagging a function anywhere else is a compile
+  error, because the build registers jobs from that folder and a job it
+  didn't register would be enqueued and never run.
+- A hyphen in a file name becomes an underscore in the module
+  (`send-email.rs` is `crate::jobs::send_email`). `mod.rs` isn't used.
+
+`app/jobs/<name>/job.rs`, the layout before this one, still works: one job
+per file, named after its directory, called as `crate::jobs::<function>`.
+
+The first time you add a `jobs/` folder to an existing app, the build only
+notices it when its build script next runs: save `build.rs` once, or
+restart `nextrs dev`.
+
 ## Enqueue it
 
-Calling the function by name enqueues it. The body doesn't run in your
-handler:
+Calling the function enqueues it. The body doesn't run in your handler:
 
 ```rust
-let handle = crate::jobs::send_welcome(Welcome { user_id, email }).await?;
+let handle = crate::jobs::welcome::send_welcome(Welcome { user_id, email }).await?;
 // handle.id — the job's id; the work runs on its own, after this returns
 ```
 
@@ -150,7 +186,7 @@ Vercel Queues is in beta. The trigger type is `queue/v2beta`.
 ### Everywhere else: a POST to your own app
 
 Locally, on other hosts, and on Vercel apps without `api/jobs.rs`, the call
-POSTs `/__nx/jobs/send-welcome` on your own deployment, where the body runs
+POSTs `/__nx/jobs/send_welcome` on your own deployment, where the body runs
 behind `WaitUntil`.
 
 - **Short back-offs (≤ 60s):** the failed run sleeps and re-delivers

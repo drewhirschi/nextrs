@@ -52,3 +52,4 @@ user docs.
 - [Realtime collections and Durable Object coordination](realtime-collections-and-durable-objects.md)
 - [Vercel builds on every push because "git deploys off" lives in a gitignored file](git-deploys-stub.md)
 - [Vercel Queues as the jobs backend on Vercel](vercel-queues-jobs-backend.md)
+- [Jobs live in a `jobs/` folder beside `app/`](jobs-folder-convention.md)

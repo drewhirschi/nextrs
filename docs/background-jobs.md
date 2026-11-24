@@ -21,6 +21,14 @@ Deferred (unchanged from the open questions): TS enqueue client, dashboard
 UI, delayed enqueue, idempotency keys, Vercel Queues/workflow backend, the
 [Cloudflare cron shim](cloudflare-cron-shim.md) as the sweep trigger.
 
+## Where jobs live (2026-11-24)
+
+Jobs moved out of `app/`: any `.rs` file in a `jobs/` folder beside `app/`,
+any number of `#[nextrs::job]` functions per file, named after the function,
+with the folder as the `crate::jobs` module tree.
+`app/jobs/<name>/job.rs` still works. Design and reasons:
+[upstream-plans/jobs-folder-convention.md](upstream-plans/jobs-folder-convention.md).
+
 ## Delivery through Vercel Queues (2026-11-24)
 
 The "Vercel Queues as a backend" research below ended with two open
