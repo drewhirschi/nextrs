@@ -1,6 +1,6 @@
 # Background jobs — first-party, built on WaitUntil
 
-- **Status:** v1 implemented 2026-08-04 on `feat/background-jobs` (7a688b3, never merged); ported to main 2026-10-03. v2 (dashboard, logs, return values, configurable back-off) is designed in [jobs-and-logs.md](jobs-and-logs.md)
+- **Status:** v1 implemented 2026-08-04 on `feat/background-jobs` (7a688b3, never merged); ported to main 2026-10-03. v2 (dashboard, logs, return values, configurable back-off) is designed in [jobs-and-logs.md](jobs-and-logs.md). Vercel Queues became the default delivery on Vercel on 2026-11-24 ([plan](upstream-plans/vercel-queues-jobs-backend.md))
 - **Builds on:** [waitUntil](upstream-plans/vercel-wait-until.md) (shipped in 0.4.1)
 
 ## What shipped in v1 (2026-08-04)
@@ -20,6 +20,38 @@ site /docs/conventions#background-jobs.
 Deferred (unchanged from the open questions): TS enqueue client, dashboard
 UI, delayed enqueue, idempotency keys, Vercel Queues/workflow backend, the
 [Cloudflare cron shim](cloudflare-cron-shim.md) as the sweep trigger.
+
+## Delivery through Vercel Queues (2026-11-24)
+
+The "Vercel Queues as a backend" research below ended with two open
+questions. The spike in
+[upstream-plans/vercel-queues-jobs-backend.md](upstream-plans/vercel-queues-jobs-backend.md)
+answered both (a vercel-rust function can carry the trigger; the callback is
+a plain POST with the message as the body and `ce-*` headers), and queues are
+now how a job reaches a runner on Vercel. What was built differs from the
+research in one way that matters: **rows stay**. The queue replaced the
+kick-off POST and the sweep, not the `JobStore`, so none of the "losses vs.
+DB rows" below apply.
+
+- `deliver()` picks a mode (`select_delivery`): Vercel Queues when on Vercel
+  and the deployment has a consumer function, HTTP self-POST otherwise.
+  `NEXTRS_JOBS_DELIVERY=http|vercel-queues` overrides it.
+- Queue mode sends `{ id, name }` to the topic `nx-jobs` with the request's
+  OIDC token and `Vqs-Deployment-Id`, and an optional `Vqs-Delay-Seconds`.
+- `nextrs::jobs::vercel_queues::consumer(router)` wraps the app router for a
+  second function, `api/jobs.rs`. Per delivery it decides from the row
+  (`redelivery_decision`: run / reclaim a stale run / leave a live run /
+  drop), runs the job to completion inside the request, records the outcome,
+  sends a delayed message for a retry, and acknowledges with the receipt
+  handle. A 2xx alone does not acknowledge.
+- `nextrs generate` writes the function's `queue/v2beta` trigger when
+  `api/jobs.rs` exists. `nextrs deploy` builds the function (also in a
+  server-bundle deploy), makes sure its `.vc-config.json` has the trigger,
+  and sets `NEXTRS_JOBS_CONSUMER=vercel-queues` in every function's
+  environment. That variable is how the main function knows a consumer
+  exists; without it a Vercel app keeps the self-POST and the sweep.
+- The HTTP path is unchanged: `NEXTRS_JOBS_SECRET`, the 202 run route behind
+  `WaitUntil`, self-retry for back-offs up to 60s, the sweep.
 
 ## Why
 
@@ -50,7 +82,7 @@ A first-party, type-safe jobs API:
   core or an opt-in layer; needs thought about which DB conventions we'd be
   imposing.
 
-## Vercel Queues as a backend (researched 2026-08-05 — promising, gated on a spike)
+## Vercel Queues as a backend (researched 2026-08-05 — spike done 2026-11-24, see above)
 
 Docs reviewed: /docs/queues{,/concepts,/api,/pricing}. Drew's read: likely
 much better than the DB backend on Vercel. Findings:

@@ -51,3 +51,4 @@ user docs.
 - [CLI reads process env only; `deploy` always builds on the host](cli-env-file-and-containerized-build.md)
 - [Realtime collections and Durable Object coordination](realtime-collections-and-durable-objects.md)
 - [Vercel builds on every push because "git deploys off" lives in a gitignored file](git-deploys-stub.md)
+- [Vercel Queues as the jobs backend on Vercel](vercel-queues-jobs-backend.md)

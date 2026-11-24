@@ -28,6 +28,7 @@ my-app/
 │   ├── client/                generated TypeScript package; do not edit
 │   └── dump-openapi.rs        framework codegen helper
 ├── api/index.rs               Vercel process adapter
+├── api/jobs.rs                Vercel Queues consumer for background jobs
 ├── public/                    static assets
 └── build.rs                   Cargo build hook for routes and TSX
 ```

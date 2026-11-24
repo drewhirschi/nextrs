@@ -51,6 +51,7 @@ mysite/
 │   ├── client/                  # linked generated npm package
 │   └── dump-openapi.rs          # hidden code-generation helper
 ├── api/index.rs                 # Vercel process adapter
+├── api/jobs.rs                  # Vercel Queues consumer for background jobs
 ├── public/                      # static assets
 ├── build.rs                     # route discovery and browser bundling
 ├── package.json                 # all JavaScript dependencies live here
@@ -186,11 +187,13 @@ frontend, template, asset, and environment files.
   app.
 - `api/index.rs` is a thin Vercel adapter required by Vercel's current Rust
   entry convention. Do not put application logic there.
+- `api/jobs.rs` is a second thin Vercel function. It runs
+  [background jobs](/docs/jobs) that Vercel Queues delivers to it.
 - `build.rs` is normal Rust build-script infrastructure. It discovers the
   `app/` tree, generates the route/OpenAPI registry, and bundles React pages.
 
-If Vercel is not a deployment target, remove `api/index.rs`, its `index` Cargo
-target, the Vercel-only dependencies, `vercel.json` (and the `[vercel]` table
+If Vercel is not a deployment target, remove `api/index.rs` and `api/jobs.rs`,
+their `index` and `jobs` Cargo targets, the Vercel-only dependencies, `vercel.json` (and the `[vercel]` table
 in `nextrs.toml`), and the prebuilt-deploy script together. Keep `src/app.rs`, `src/main.rs`, and `build.rs`.
 
 ## Where to go next

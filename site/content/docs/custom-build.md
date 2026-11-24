@@ -69,6 +69,9 @@ command exits successfully, `$NEXTRS_BUNDLE_OUTPUT` must satisfy:
    x86-64 Linux (ELF) binary with the executable bit set.
 3. **Every path in a bundle's `assets` exists inside its `.func/`
    directory**, at the same relative path.
+4. **An app with `api/jobs.rs` has `functions/api/jobs.func/executable`**,
+   the [jobs queue consumer](/docs/jobs#how-jobs-are-delivered).
+   `nextrs bundles build --vercel` builds it with the rest.
 
 A broken rule aborts the deploy before anything is uploaded and names the
 rule. nextrs then rewrites the files that derive purely from the plan and
@@ -77,7 +80,7 @@ manifest — so regions, routing, and Vercel crons can't drift from your config
 whatever the command wrote. If the output has no `static/`, `public/` is
 copied in.
 
-The easy way to satisfy all three is to run nextrs itself wherever the build
+The easy way to satisfy all of them is to run nextrs itself wherever the build
 happens:
 
 ```bash
