@@ -11,6 +11,7 @@ mod bundles;
 mod cron;
 mod deploy;
 mod env_file;
+mod jobs_queue;
 mod realtime;
 
 const DEFAULT_CLIENT_DIR: &str = ".nextrs/client";

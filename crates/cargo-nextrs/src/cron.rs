@@ -376,7 +376,8 @@ pub fn generate(root: &Path) -> Result<String, String> {
         .map_err(|error| format!("failed to create {}/.nextrs: {error}", root.display()))?;
     let settings = config.vercel.as_ref().cloned().unwrap_or_default();
     let vercel_json = root.join(VERCEL_CONFIG_FILE);
-    let mut json = render_vercel_json(&settings, &vercel)?;
+    let jobs_consumer = crate::jobs_queue::has_consumer(root);
+    let mut json = render_vercel_json(&settings, &vercel, jobs_consumer)?;
     let plan = crate::bundles::plan(root)?;
     if plan.enabled {
         json["buildCommand"] = json!(
@@ -396,8 +397,13 @@ pub fn generate(root: &Path) -> Result<String, String> {
         "# Generated NextRS state\n\nFiles in this directory are managed by NextRS. Do not edit `vercel.json` directly; configure deployment in `nextrs.toml` and cron schedules with `#[nextrs::cron(...)]`.\n",
     )?;
     summary.push(format!(
-        "{VERCEL_CONFIG_FILE}: generated with {} cron(s)",
-        vercel.len()
+        "{VERCEL_CONFIG_FILE}: generated with {} cron(s){}",
+        vercel.len(),
+        if jobs_consumer {
+            " and the jobs queue consumer"
+        } else {
+            ""
+        }
     ));
     if let Some(line) = sync_git_stub(root, settings.git_deploys.unwrap_or(false))? {
         summary.push(line);
@@ -780,7 +786,13 @@ pub(crate) fn run_wrangler(
 }
 
 /// The complete `vercel.json` for a nextrs app, from the `[vercel]` table.
-fn render_vercel_json(settings: &VercelConfig, crons: &[&CronEntry]) -> Result<Value, String> {
+/// `jobs_consumer`: the app has `api/jobs.rs`, so it is a second function
+/// with the jobs queue trigger.
+fn render_vercel_json(
+    settings: &VercelConfig,
+    crons: &[&CronEntry],
+    jobs_consumer: bool,
+) -> Result<Value, String> {
     let mut json = serde_json::Map::new();
     json.insert(
         "$schema".into(),
@@ -802,10 +814,18 @@ fn render_vercel_json(settings: &VercelConfig, crons: &[&CronEntry]) -> Result<V
                 .unwrap_or(DEFAULT_BUILD_COMMAND)
         ),
     );
-    json.insert(
-        "functions".into(),
-        json!({ "api/index.rs": { "runtime": settings.runtime.as_deref().unwrap_or(DEFAULT_VERCEL_RUNTIME) } }),
-    );
+    let runtime = settings
+        .runtime
+        .as_deref()
+        .unwrap_or(DEFAULT_VERCEL_RUNTIME);
+    let mut functions = json!({ "api/index.rs": { "runtime": runtime } });
+    if jobs_consumer {
+        functions[crate::jobs_queue::CONSUMER_SOURCE] = json!({
+            "runtime": runtime,
+            "experimentalTriggers": [crate::jobs_queue::trigger()],
+        });
+    }
+    json.insert("functions".into(), functions);
     json.insert(
         "headers".into(),
         json!([{
@@ -1093,6 +1113,32 @@ trailingSlash = false
     }
 
     #[test]
+    fn jobs_consumer_becomes_a_second_function_with_the_queue_trigger() {
+        let settings = VercelConfig::default();
+        let without = render_vercel_json(&settings, &[], false).unwrap();
+        assert!(without["functions"].get("api/jobs.rs").is_none());
+        let with = render_vercel_json(&settings, &[], true).unwrap();
+        assert_eq!(
+            with["functions"]["api/jobs.rs"],
+            json!({
+                "runtime": DEFAULT_VERCEL_RUNTIME,
+                "experimentalTriggers": [{
+                    "type": "queue/v2beta",
+                    "topic": "nx-jobs",
+                    "retryAfterSeconds": 60,
+                    "maxDeliveries": 32,
+                }],
+            })
+        );
+        // The main function is still the catch-all and carries no trigger.
+        assert_eq!(
+            with["functions"]["api/index.rs"],
+            without["functions"]["api/index.rs"]
+        );
+        assert_eq!(with["rewrites"], without["rewrites"]);
+    }
+
+    #[test]
     fn vercel_extra_rejects_framework_owned_keys() {
         for key in [
             "$schema",
@@ -1107,7 +1153,7 @@ trailingSlash = false
         ] {
             let source = format!("[extra]\n\"{key}\" = []\n");
             let settings: VercelConfig = toml::from_str(&source).unwrap();
-            let error = render_vercel_json(&settings, &[]).unwrap_err();
+            let error = render_vercel_json(&settings, &[], false).unwrap_err();
             assert!(error.contains("managed by NextRS"), "{key}: {error}");
         }
     }

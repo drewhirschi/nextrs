@@ -3,7 +3,9 @@
 //! 1. `generate` (`.nextrs/vercel.json` + cron plumbing from nextrs.toml)
 //! 2. prebuilt Vercel deploy: `vercel pull` → `vercel build` on this machine
 //!    → bundle the compiled function executable into its `.func` dir →
-//!    `vercel deploy --prebuilt`. Skips Vercel's build queue entirely.
+//!    (with `api/jobs.rs`) give the queue consumer its trigger and tell every
+//!    function it exists → `vercel deploy --prebuilt`. Skips Vercel's build
+//!    queue entirely.
 //! 3. `cron deploy` for cloudflare-provider crons (production only — a
 //!    preview URL isn't what the trigger points at).
 //!
@@ -185,8 +187,15 @@ pub fn deploy(root: &Path, options: &DeployOptions) -> Result<(), String> {
                     .into(),
             );
         }
-        for config_path in configs {
-            bundle_function(&config_path, &cwd)?;
+        for config_path in &configs {
+            bundle_function(config_path, &cwd)?;
+        }
+        // Queue-delivered jobs: the consumer keeps its trigger and every
+        // function learns a consumer exists. A no-op without api/jobs.rs.
+        if let Some(summary) =
+            crate::jobs_queue::finish_output(&root, &cwd.join(".vercel/output"), &configs)?
+        {
+            eprintln!("nextrs: {summary}");
         }
     }
 
