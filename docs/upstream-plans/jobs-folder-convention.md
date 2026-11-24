@@ -2,7 +2,7 @@
 
 - **Reported-in:** design discussion with Drew (no app report)
 - **Date:** 2026-11-24
-- **Status:** open   <!-- set to `fixed in <commit>` when the PR lands -->
+- **Status:** fixed in 29f3458 (macro), 6ad3a7d (framework), d46fb02 (scaffold + react-todos)
 - **Related:** [vercel-queues-jobs-backend.md](vercel-queues-jobs-backend.md),
   [background-jobs.md](../background-jobs.md)
 
