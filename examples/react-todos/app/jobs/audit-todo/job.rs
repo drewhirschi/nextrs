@@ -2,13 +2,17 @@
 //!
 //! Calling `crate::jobs::audit_todo(payload)` from a handler does NOT run
 //! this body: the `#[nextrs::job]` macro re-emits `audit_todo` as a typed
-//! enqueue wrapper that persists a job row and POSTs `/__nx/jobs/audit-todo`
-//! on this deployment. The body runs inside that request, behind the
-//! framework-managed `WaitUntil`, with retries (`max_attempts`) and a
-//! per-attempt timeout — no `WaitUntil`, HTTP, or retry code here.
+//! enqueue wrapper that persists a job row and hands it to a runner, with
+//! retries (`max_attempts`) and a per-attempt timeout — no `WaitUntil`,
+//! HTTP, queue, or retry code here.
+//!
+//! - On Vercel the row's id goes onto a Vercel Queues topic, and the
+//!   consumer function (api/jobs.rs) runs this body inside the delivery.
+//! - Locally the wrapper POSTs `/__nx/jobs/audit-todo` on this server, and
+//!   the body runs behind the framework-managed `WaitUntil`.
 //!
 //! `Extension<TodosCtx>` is app state, sourced from the executing request's
-//! extensions (the layer installed in main.rs / api/index.rs) — the same
+//! extensions (the layer `app()` installs, in every entry point) — the same
 //! mechanism route handlers and seed companions use.
 
 use axum::Extension;

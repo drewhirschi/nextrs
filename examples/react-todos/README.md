@@ -31,6 +31,7 @@ src/
 └── core/todos.rs               framework-independent domain logic
 
 api/index.rs                    Vercel process adapter
+api/jobs.rs                     Vercel Queues consumer: runs app/jobs/ on Vercel
 build.rs                        route, seed, and browser-bundle generation
 .nextrs/
 ├── dump-openapi.rs             hidden OpenAPI extraction helper

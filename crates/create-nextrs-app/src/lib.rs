@@ -410,6 +410,10 @@ fn print_adopt_report(
         println!("    name = \"index\"          # the Vercel function entry (api/index.rs)");
         println!("    path = \"api/index.rs\"");
         println!();
+        println!("    [[bin]]");
+        println!("    name = \"jobs\"           # the Vercel Queues consumer for background jobs");
+        println!("    path = \"api/jobs.rs\"");
+        println!();
         println!("    [build-dependencies]");
         println!("    nextrs = {}", dep.build_dependency());
         println!();
@@ -616,9 +620,11 @@ impl DependencySource {
 
     fn runtime_dependency(&self) -> String {
         match self {
-            Self::Version => format!(r#"{{ version = "{VERSION}", features = ["vercel"] }}"#),
+            Self::Version => {
+                format!(r#"{{ version = "{VERSION}", features = ["vercel", "jobs"] }}"#)
+            }
             Self::Path(path) => format!(
-                r#"{{ path = "{}", features = ["vercel"] }}"#,
+                r#"{{ path = "{}", features = ["vercel", "jobs"] }}"#,
                 toml_string(&path.display().to_string())
             ),
         }
@@ -658,6 +664,7 @@ fn template_files(
         ("src/main.rs", main_rs(crate_name)),
         (".nextrs/dump-openapi.rs", dump_openapi_rs(crate_name)),
         ("api/index.rs", api_index_rs(crate_name)),
+        ("api/jobs.rs", api_jobs_rs(crate_name)),
         ("nextrs.toml", nextrs_toml(crate_name, true)),
         ("vercel.json", VERCEL_GIT_STUB.to_string()),
         ("scripts/deploy-prebuilt.sh", deploy_prebuilt_sh()),
@@ -769,6 +776,8 @@ root—never inside `.nextrs/`.
 - `public/`: static files.
 - `.nextrs/`: generated framework state. Do not edit it.
 - `api/index.rs`: generated Vercel adapter. It contains no application logic.
+- `api/jobs.rs`: generated Vercel Queues consumer that runs background jobs
+  (`app/jobs/<name>/job.rs`). It contains no application logic.
 
 ## Generated API client
 
@@ -789,8 +798,12 @@ shim, relative generated path, or `tsconfig.paths` entry is required.
 The default scaffold includes Vercel support because Vercel currently requires
 `api/index.rs` as its Rust function entry. Both that adapter and local
 `src/main.rs` call `src/app.rs`. If Vercel is not a target, remove
-`api/index.rs`, its `index` Cargo target and Vercel-only dependencies, the
-generated `.nextrs/vercel.json`, and the root `vercel.json` together.
+`api/index.rs`, `api/jobs.rs`, their `index` and `jobs` Cargo targets and
+Vercel-only dependencies, the generated `.nextrs/vercel.json`, and the root
+`vercel.json` together.
+
+`api/jobs.rs` is a second function. On Vercel, background jobs are delivered
+to it through Vercel Queues, so they need no shared secret and no cron.
 
 The root `vercel.json` is committed and says one thing: do not build on push.
 Deploys are prebuilt (`nextrs deploy`); the real Vercel config is generated
@@ -831,11 +844,12 @@ name. Full reference: <https://nextrs-docs.vercel.app/docs/conventions>
 
 ## Never hand-roll what the scaffold generates
 
-`build.rs`, `src/main.rs`, `api/index.rs`, `nextrs.toml`,
+`build.rs`, `src/main.rs`, `api/index.rs`, `api/jobs.rs`, `nextrs.toml`,
 `scripts/deploy-prebuilt.sh`, and `.nextrs/` are generated wiring. Never edit
 generated output under `.nextrs/` or `public/dist/`; application seams are
 `app/**`, `components/**`, and `src/**`. `src/app.rs` is the shared Rust app,
-while `src/main.rs` and `api/index.rs` are process adapters.
+while `src/main.rs`, `api/index.rs`, and `api/jobs.rs` (the Vercel Queues
+consumer that runs background jobs) are process adapters.
 
 ## The client package and the bare-import rule
 
@@ -1021,6 +1035,11 @@ path = ".nextrs/dump-openapi.rs"
 name = "index"
 path = "api/index.rs"
 
+# Vercel Queues consumer that runs background jobs (app/jobs/). See api/jobs.rs.
+[[bin]]
+name = "jobs"
+path = "api/jobs.rs"
+
 [build-dependencies]
 nextrs = {build_dependency}
 
@@ -1197,6 +1216,38 @@ async fn main() -> Result<(), vercel_runtime::Error> {
     .replace("APP_CRATE", &crate_module)
 }
 
+/// The second Vercel function: the queue consumer that runs background jobs.
+/// `nextrs generate` gives it the `queue/v2beta` trigger because this file
+/// exists; with no jobs in `app/jobs/` it is simply never called.
+fn api_jobs_rs(crate_name: &str) -> String {
+    let crate_module = crate_name.replace('-', "_");
+    r#"// @generated Vercel Queues consumer for background jobs (app/jobs/).
+//
+// Do not put application logic here. This is a second Vercel function: Vercel
+// calls it once per message on the `nx-jobs` queue topic, and it runs the job
+// to completion, records the outcome, and acknowledges the message. It is not
+// reachable from outside the deployment. `nextrs generate` writes its queue
+// trigger because this file exists.
+//
+// Remove this file and the `jobs` Cargo target to deliver jobs by self-POST
+// with a cron-driven sweep instead (or if this project will not deploy to
+// Vercel).
+use nextrs::vercel::StreamingVercelLayer;
+use tower::ServiceBuilder;
+
+#[tokio::main]
+async fn main() -> Result<(), vercel_runtime::Error> {
+    let consumer = nextrs::jobs::vercel_queues::consumer(APP_CRATE::app());
+    let app = ServiceBuilder::new()
+        .layer(StreamingVercelLayer::new())
+        .service(consumer);
+
+    vercel_runtime::run(app).await
+}
+"#
+    .replace("APP_CRATE", &crate_module)
+}
+
 fn deploy_prebuilt_sh() -> String {
     r#"#!/bin/bash
 # Prebuilt Vercel deploy: build on YOUR machine, upload only artifacts.
@@ -1252,6 +1303,22 @@ for config_path in Path(".vercel/output/functions").glob("**/*.func/.vc-config.j
     config.pop("filePathMap", None)
     config_path.write_text(json.dumps(config, indent=2) + "\n")
     print(f"==> bundled {source_path} as {destination}")
+
+# Background jobs: when the output has the queue consumer (api/jobs.rs), tell
+# every function so jobs are delivered through Vercel Queues. `nextrs deploy`
+# does the same.
+configs = list(Path(".vercel/output/functions").glob("**/*.func/.vc-config.json"))
+def consumes_jobs(config):
+    return any(
+        t.get("type") == "queue/v2beta" and t.get("topic") == "nx-jobs"
+        for t in config.get("experimentalTriggers") or []
+    )
+if any(consumes_jobs(json.loads(p.read_text())) for p in configs):
+    for config_path in configs:
+        config = json.loads(config_path.read_text())
+        config.setdefault("environment", {})["NEXTRS_JOBS_CONSUMER"] = "vercel-queues"
+        config_path.write_text(json.dumps(config, indent=2) + "\n")
+    print("==> jobs deliver through Vercel Queues (consumer: api/jobs.rs)")
 PY
 
 vercel deploy --prebuilt "${FLAGS[@]}"
@@ -2295,6 +2362,9 @@ mod tests {
         assert!(names.contains(&"src/app.rs"));
         assert!(names.contains(&".nextrs/dump-openapi.rs"));
         assert!(names.contains(&"api/index.rs"));
+        // The queue consumer wraps the same shared app as the main function.
+        let consumer = &files.iter().find(|(n, _)| *n == "api/jobs.rs").unwrap().1;
+        assert!(consumer.contains("nextrs::jobs::vercel_queues::consumer(demo::app())"));
         // Only the "no builds on push" stub — the real config is generated.
         assert_eq!(
             files.iter().find(|(n, _)| *n == "vercel.json").unwrap().1,
@@ -2338,7 +2408,8 @@ mod tests {
             .as_str();
         assert!(cargo_toml.contains(r#"nextrs = { version = "0.7.0", features"#));
         assert!(cargo_toml.contains("tower-livereload"));
-        assert!(cargo_toml.contains(r#"features = ["vercel"]"#));
+        assert!(cargo_toml.contains(r#"features = ["vercel", "jobs"]"#));
+        assert!(cargo_toml.contains("name = \"jobs\"\npath = \"api/jobs.rs\""));
         assert!(cargo_toml.contains("vercel_runtime"));
         assert!(cargo_toml.contains(r#"path = "src/app.rs""#));
         assert!(cargo_toml.contains(r#"path = ".nextrs/dump-openapi.rs""#));
@@ -2659,8 +2730,8 @@ mod tests {
                 r#"nextrs = { path = "/work/nextrs/nextrs", features = ["build", "tsx"] }"#
             )
         );
-        assert!(
-            toml.contains(r#"nextrs = { path = "/work/nextrs/nextrs", features = ["vercel"] }"#)
-        );
+        assert!(toml.contains(
+            r#"nextrs = { path = "/work/nextrs/nextrs", features = ["vercel", "jobs"] }"#
+        ));
     }
 }

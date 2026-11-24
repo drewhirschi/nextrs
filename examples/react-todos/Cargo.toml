@@ -24,6 +24,12 @@ path = ".nextrs/dump-openapi.rs"
 name = "index"
 path = "api/index.rs"
 
+# Vercel Queues consumer for background jobs (a second function). See
+# api/jobs.rs; `nextrs generate` writes its queue trigger.
+[[bin]]
+name = "jobs"
+path = "api/jobs.rs"
+
 [features]
 default = ["exports"]
 exports = ["dep:csv"]
