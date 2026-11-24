@@ -2,7 +2,7 @@
 
 - **Reported-in:** onenote-extractor
 - **Date:** 2026-11-24
-- **Status:** fixed in f5b8261 (framework), 6b91fa0 (deploy), a19c874 (scaffold + react-todos)
+- **Status:** fixed in f5b8261 (framework), 6b91fa0 (deploy), a19c874 (scaffold + react-todos), b133d37 (rowless fallback)
 - **Related:** [background-jobs.md](../background-jobs.md) ("Vercel Queues as a
   backend": this answers its two open questions), [jobs-and-logs.md](../jobs-and-logs.md)
 
