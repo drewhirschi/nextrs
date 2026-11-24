@@ -126,7 +126,7 @@ export default function Todos() {
       <p className="muted">
         Open this page in two tabs: changes in one show up in the other
         (<code>nextrs::realtime</code>). Todos live in Turso when{" "}
-        <code>NEXTRS_DB_URL</code> is set, in process memory otherwise — one
+        <code>TURSO_DATABASE_URL</code> is set, in process memory otherwise — one
         file (<code>core/todos.rs</code>) decides. Add <code>boom</code> or{" "}
         <code>flaky: …</code> and look at <code>/__nx/admin</code>.
       </p>

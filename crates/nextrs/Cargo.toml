@@ -27,8 +27,9 @@ vercel = [
 # self-delivery POSTs.
 jobs = ["dep:reqwest"]
 # Turso/libsql backends for the framework's own tables (jobs, request logs),
-# selected automatically when NEXTRS_DB_URL / TURSO_DATABASE_URL (or a
-# store-specific NEXTRS_JOBS_DB_URL / NEXTRS_LOGS_DB_URL) is set.
+# selected when NEXTRS_DB_URL (or a store-specific NEXTRS_JOBS_DB_URL /
+# NEXTRS_LOGS_DB_URL) is set. The application's own database variables are
+# never used for these tables.
 libsql = ["dep:libsql"]
 jobs-libsql = ["jobs", "libsql"]
 # Enables `nextrs::logs`: the tracing layer that captures each request's (and

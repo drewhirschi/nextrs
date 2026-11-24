@@ -46,7 +46,7 @@ csv = { version = "1", optional = true }
 # `vercel` enables StreamingVercelLayer for the deploy entry; harmless locally.
 # `admin` enables background jobs (app/jobs/<name>/job.rs + /__nx/jobs), request
 # log capture (nextrs::logs), and the /__nx/admin dashboards; `libsql` stores
-# jobs and logs in Turso when NEXTRS_DB_URL / TURSO_DATABASE_URL is set;
+# jobs and logs in Turso when NEXTRS_DB_URL is set (the framework's own database);
 # `realtime` pushes todo changes to every open tab (src/live.rs).
 nextrs = { version = "0.7.0", features = ["vercel", "admin", "libsql", "realtime"] }
 # The todo store (src/core/todos.rs) uses the same Turso database in production.

@@ -32,8 +32,8 @@
 //! is harmless because [`JobStore::claim`] is atomic.
 //!
 //! Storage resolves lazily, once per process: an explicit [`set_store`] wins;
-//! else `NEXTRS_JOBS_DB_URL`/`NEXTRS_JOBS_DB_TOKEN` (falling back to
-//! `NEXTRS_DB_URL`/`TURSO_DATABASE_URL` and the matching tokens) selects the
+//! else `NEXTRS_JOBS_DB_URL`/`NEXTRS_JOBS_DB_TOKEN`, then
+//! `NEXTRS_DB_URL`/`NEXTRS_DB_TOKEN` — and nothing else — selects the
 //! libsql store (feature `libsql`); else the in-memory store. The in-memory
 //! store is never used on Vercel, where instances share nothing. With no
 //! store there:
@@ -552,9 +552,9 @@ pub(crate) fn store() -> Result<&'static Arc<dyn JobStore>, StoreError> {
     }
     if STORE.get().is_none() && on_vercel() {
         return Err(StoreError(
-            "nextrs jobs: no durable store on Vercel — set NEXTRS_DB_URL/_TOKEN \
-             (or TURSO_DATABASE_URL/_AUTH_TOKEN) and enable the `libsql` feature, \
-             or install one with nextrs::jobs::set_store()"
+            "nextrs jobs: no durable store on Vercel — set NEXTRS_DB_URL and \
+             NEXTRS_DB_TOKEN (or NEXTRS_JOBS_DB_URL/_TOKEN) and enable the `libsql` \
+             feature, or install one with nextrs::jobs::set_store()"
                 .into(),
         ));
     }

@@ -35,8 +35,8 @@ pub struct LibsqlJobStore {
     conn: tokio::sync::OnceCell<libsql::Connection>,
 }
 
-/// Build from env: `NEXTRS_JOBS_DB_URL` → `NEXTRS_DB_URL` →
-/// `TURSO_DATABASE_URL` (tokens likewise); `None` when none is set.
+/// Build from env: `NEXTRS_JOBS_DB_URL` → `NEXTRS_DB_URL` (tokens
+/// likewise); `None` when neither is set.
 pub(super) fn from_env() -> Option<LibsqlJobStore> {
     let (url, token) = crate::db::env_url(&["NEXTRS_JOBS_DB_URL"], &["NEXTRS_JOBS_DB_TOKEN"])?;
     Some(LibsqlJobStore::new(url, token))

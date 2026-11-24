@@ -200,6 +200,20 @@ Asked for after the first version: jobs should also work with no database.
 - A message that carries a payload is always handled rowless, even if a
   store was configured after it was sent.
 
+### The framework database is explicit
+
+Decided the same day: the jobs and logs tables resolve their database from
+`NEXTRS_JOBS_DB_URL` / `NEXTRS_LOGS_DB_URL`, then `NEXTRS_DB_URL`, and
+nothing else. `TURSO_DATABASE_URL`, usually the application's own database,
+is no longer a fallback (it was through 0.7.0), so framework tables never
+land in an app database by accident. **This changes deployed apps on
+upgrade:** one that relied on the fallback has no job store until it sets
+`NEXTRS_DB_URL` (to the same database, to keep its tables where they are).
+Until then its jobs run rowless with the queue consumer, or fail at enqueue
+without it, and its logs fall back to memory. The framework logs one warning
+that names the variable. react-todos now keeps its todos in
+`TURSO_DATABASE_URL` and leaves `NEXTRS_DB_URL` to the framework.
+
 ## Verified on a preview (2026-11-24, react-todos, Hobby, pdx1)
 
 Two preview deployments of `examples/react-todos` built by `nextrs deploy

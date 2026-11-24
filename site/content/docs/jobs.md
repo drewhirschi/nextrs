@@ -184,6 +184,12 @@ Nothing switches this on. If the app runs on Vercel with the consumer
 function and no database is configured, the job's payload travels in the
 message. Set `NEXTRS_DB_URL` and jobs enqueued from then on get rows.
 
+The framework's database is its own, separate from your application's. It
+is looked up in `NEXTRS_JOBS_DB_URL`, then `NEXTRS_DB_URL`, and nowhere else.
+Your app's `TURSO_DATABASE_URL` is never used for job rows. (Up to 0.7.0 it
+was a fallback; an app that relied on it must now set `NEXTRS_DB_URL`, to
+the same database if you want the tables to stay where they are.)
+
 Without a database, keep jobs shorter than five minutes (the queue's
 visibility timeout) or safe to run twice, and keep payloads small: the
 payload is the message.
@@ -205,7 +211,7 @@ nextrs::jobs::announce_local_addr(listener.local_addr().unwrap());
 
 | Env | Purpose |
 |---|---|
-| `NEXTRS_DB_URL` / `TURSO_DATABASE_URL` (+ `_TOKEN`) | Where job rows live (`__nextrs_jobs`, created automatically). Unset: memory locally; on Vercel, [no rows](#with-and-without-a-database). |
+| `NEXTRS_JOBS_DB_URL`, else `NEXTRS_DB_URL` (+ `_TOKEN`) | Where job rows live (`__nextrs_jobs`, created automatically). Unset: memory locally; on Vercel, [no rows](#with-and-without-a-database). |
 | `NEXTRS_JOBS_SECRET` | Required on Vercel only without `api/jobs.rs`: instances deliver jobs to each other with it. |
 | `NEXTRS_JOBS_RETENTION_DAYS` | Finished rows to keep (default 30). |
 | `NEXTRS_JOBS_DELIVERY` | `http` or `vercel-queues`. Unset: Vercel Queues on Vercel when the deployment has the consumer function, otherwise HTTP. |

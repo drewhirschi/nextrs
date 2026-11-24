@@ -9,10 +9,11 @@
 //!
 //! Two backends, chosen at startup:
 //!
-//! - **Turso/libsql** when `NEXTRS_DB_URL` (or `TURSO_DATABASE_URL`) is set —
-//!   production. Serverless instances don't share memory, so a deployed app
-//!   needs one shared store: two tabs (or a job and a request) must see the
-//!   same list. The same database holds the framework's job and log tables.
+//! - **Turso/libsql** when `TURSO_DATABASE_URL` is set — production.
+//!   Serverless instances don't share memory, so a deployed app needs one
+//!   shared store: two tabs (or a job and a request) must see the same list.
+//!   This is the application's database. The framework's job and log tables
+//!   live in a separate one, named by `NEXTRS_DB_URL`.
 //! - **Memory** otherwise — local dev and tests, zero setup.
 //!
 //! Like any real data layer, every call can fail ([`TodosError`]).
@@ -79,15 +80,15 @@ impl Default for TodosCtx {
 }
 
 impl TodosCtx {
-    /// Turso when `NEXTRS_DB_URL` / `TURSO_DATABASE_URL` is set, else memory.
+    /// Turso when `TURSO_DATABASE_URL` is set, else memory.
     pub fn new() -> Self {
         let var = |names: &[&str]| {
             names
                 .iter()
                 .find_map(|n| std::env::var(n).ok().filter(|v| !v.is_empty()))
         };
-        match var(&["NEXTRS_DB_URL", "TURSO_DATABASE_URL"]) {
-            Some(url) => Self::libsql(url, var(&["NEXTRS_DB_TOKEN", "TURSO_AUTH_TOKEN"]).unwrap_or_default()),
+        match var(&["TURSO_DATABASE_URL"]) {
+            Some(url) => Self::libsql(url, var(&["TURSO_AUTH_TOKEN"]).unwrap_or_default()),
             None => Self::memory(),
         }
     }

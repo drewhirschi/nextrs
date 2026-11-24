@@ -462,8 +462,8 @@ pub fn set_store(store: Arc<dyn LogStore>) -> Result<(), Arc<dyn LogStore>> {
 }
 
 /// Resolve the process-wide log store: an explicit [`set_store`]; else, with
-/// the `libsql` feature, `NEXTRS_LOGS_DB_URL` / `NEXTRS_DB_URL` /
-/// `TURSO_DATABASE_URL`; else memory.
+/// the `libsql` feature, `NEXTRS_LOGS_DB_URL` then `NEXTRS_DB_URL`; else
+/// memory.
 pub fn store() -> &'static Arc<dyn LogStore> {
     #[cfg(feature = "libsql")]
     {
