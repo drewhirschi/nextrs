@@ -52,6 +52,12 @@ DB rows" below apply.
   exists; without it a Vercel app keeps the self-POST and the sweep.
 - The HTTP path is unchanged: `NEXTRS_JOBS_SECRET`, the 202 run route behind
   `WaitUntil`, self-retry for back-offs up to 60s, the sweep.
+- **Rowless fallback.** With queue delivery and no store configured on
+  Vercel, the message carries `{ id, name, payload, attempt, max_attempts }`
+  and there is no row (`select_record`). The consumer runs it and sends
+  attempt `n + 1` as a new delayed message on failure. No status, history,
+  dashboard or Retry, and no cross-instance double-run guard. A store, when
+  configured, always wins.
 
 ## Why
 

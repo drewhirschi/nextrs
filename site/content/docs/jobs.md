@@ -112,8 +112,11 @@ crash     → nothing acknowledged → the queue delivers the message again
 - **No secret and no cron.** A consumer function can't be called from
   outside the deployment, so `NEXTRS_JOBS_SECRET` isn't needed, and nothing
   has to call `/__nx/jobs/sweep`.
-- **The row is still the record.** The message carries only the job's id and
-  name. Status, attempts, results, the admin pages, and Retry work the same.
+- **The row is still the record** when there is a database. The message
+  carries only the job's id and name, and status, attempts, results, the
+  admin pages, and Retry work the same.
+  [Without a database](#with-and-without-a-database) the message carries the
+  job itself.
 - **A redelivery never starts a second copy of a live run.** While a job is
   still inside its timeout, a redelivered message is left alone.
 - **Old rows** are deleted by the consumer, once per instance, after
@@ -163,6 +166,31 @@ behind `WaitUntil`.
 
 `NEXTRS_JOBS_DELIVERY=http` or `=vercel-queues` overrides the choice.
 
+## With and without a database
+
+Jobs keep a row per job when they have somewhere to keep it, and work
+without one when they don't.
+
+| | With a database | Without one (Vercel + `api/jobs.rs`) |
+|---|---|---|
+| Runs, retries, exact back-off | yes | yes |
+| Where the job lives | a row in `__nextrs_jobs` | the queue message (payload, attempt number) |
+| `handle.status()` | the row | `None` |
+| Admin pages, stored result, attempt history, Retry | yes | no; attempts are in your function logs only |
+| A redelivered message can't start a second copy | yes, the row is claimed | only on the same instance |
+| How long a job can keep retrying | no limit | 7 days, the queue's limit |
+
+Nothing switches this on. If the app runs on Vercel with the consumer
+function and no database is configured, the job's payload travels in the
+message. Set `NEXTRS_DB_URL` and jobs enqueued from then on get rows.
+
+Without a database, keep jobs shorter than five minutes (the queue's
+visibility timeout) or safe to run twice, and keep payloads small: the
+payload is the message.
+
+Without a database and without `api/jobs.rs`, enqueue on Vercel is an error.
+A self-POST has nothing to carry the job if the request is lost.
+
 ## Enable it
 
 ```toml
@@ -177,14 +205,15 @@ nextrs::jobs::announce_local_addr(listener.local_addr().unwrap());
 
 | Env | Purpose |
 |---|---|
-| `NEXTRS_DB_URL` / `TURSO_DATABASE_URL` (+ `_TOKEN`) | Where job rows live (`__nextrs_jobs`, created automatically). Memory when unset, which is fine for dev. |
+| `NEXTRS_DB_URL` / `TURSO_DATABASE_URL` (+ `_TOKEN`) | Where job rows live (`__nextrs_jobs`, created automatically). Unset: memory locally; on Vercel, [no rows](#with-and-without-a-database). |
 | `NEXTRS_JOBS_SECRET` | Required on Vercel only without `api/jobs.rs`: instances deliver jobs to each other with it. |
 | `NEXTRS_JOBS_RETENTION_DAYS` | Finished rows to keep (default 30). |
 | `NEXTRS_JOBS_DELIVERY` | `http` or `vercel-queues`. Unset: Vercel Queues on Vercel when the deployment has the consumer function, otherwise HTTP. |
 
-On Vercel, enqueue fails loudly when the database is missing, or the secret
-when delivery is by POST. It never falls back to something that would
-silently lose jobs.
+On Vercel with delivery by POST, enqueue fails loudly when the database or
+the secret is missing. With queue delivery and no database, a job whose
+message can't be sent is an error from the enqueue call, because nothing
+else holds it.
 
 ## See and retry jobs
 

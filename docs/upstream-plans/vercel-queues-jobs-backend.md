@@ -131,9 +131,9 @@ With Queues (on Vercel, when the deployment has a consumer function):
   a deployed app. `NEXTRS_JOBS_DELIVERY=http|vercel-queues` overrides the
   choice.
 
-Not in this change: a rowless mode (payload in the message, no database).
-It would remove the last piece of required setup, but it loses job history and
-the dashboard, and needs its own design.
+A rowless mode (payload in the message, no database) was first left out of
+this change, then added the same day as a fallback: see "Rowless fallback"
+under "As built".
 
 ## As built (2026-11-24)
 
@@ -180,6 +180,26 @@ The design above, with these specifics:
 - **The sweep still works in queue mode** (it sends due rows to the queue).
   Nothing needs it, but it is a backstop for a row whose send failed.
 
+### Rowless fallback
+
+Asked for after the first version: jobs should also work with no database.
+
+- `select_record(store_available, delivery)`: rows whenever a store resolves;
+  rowless when none does and delivery is the queue; still an error for HTTP
+  delivery with no store on Vercel.
+- The message is then `{ id, name, payload, attempt, max_attempts }`. The
+  consumer runs it with no store (`run_attempt(None, …)`), and on a retryable
+  failure sends the same job as attempt `n + 1` with the back-off as
+  `Vqs-Delay-Seconds`, then acknowledges.
+- A failed first send is an error from the enqueue call
+  (`EnqueueError::Store`), not `delivered: false`: nothing else holds the job.
+- `JobHandle::status()` returns `Ok(None)`.
+- There is no claim, so the only double-run guard is an in-process set of
+  running `id#attempt` keys. A redelivery to another instance while a job
+  runs past the 5-minute visibility timeout starts a second copy.
+- A message that carries a payload is always handled rowless, even if a
+  store was configured after it was sent.
+
 ## Verified on a preview (2026-11-24, react-todos, Hobby, pdx1)
 
 Two preview deployments of `examples/react-todos` built by `nextrs deploy
@@ -208,11 +228,23 @@ Seen, from the deployments' runtime logs:
   acknowledged, attempt 2 was delivered 2.4 s later (22:18:26.38) as a new
   message and succeeded (`open_todos=2`), acknowledged.
 
+A third preview, `dpl_Bxv1oseADvs9cphuY4RVcVkoUTR4`, was built from the
+branch as committed, with the rowless fallback and no temporary code. With no
+database on the project, two todos were created:
+
+- `plain rowless check`: enqueued at 22:48:58.60, the real `audit-todo` body
+  ran in the consumer at 22:48:58.82 with the real payload (`id: 5`) and
+  succeeded; acknowledged.
+- `flaky: rowless check`: attempt 1 ran at 22:48:57.96 and failed, the
+  consumer sent attempt 2 with a 2 s delay and acknowledged, attempt 2 ran at
+  22:49:00.33 and succeeded; acknowledged.
+
 Not verified on Vercel:
 
 - A job row in a real database, written by the main function and claimed by
-  the consumer. The libsql store is covered by its own tests, and the
-  consumer logic by unit tests against a fake queue endpoint.
+  the consumer (the row-backed path end to end). The libsql store is covered
+  by its own tests, and the consumer logic by unit tests against a fake queue
+  endpoint.
 - Reclaim after an instance dies mid-run (unit-tested only).
 - The `vercel build` deploy path, where vercel-rust builds `api/jobs.rs`.
   The spike showed `vercel build` copies the trigger; the nextrs step that
@@ -241,15 +273,15 @@ Not verified on Vercel:
 - `cargo test -p cargo-nextrs`: the generated trigger, the consumer group
   name, and marking a build output.
 - Preview: see "Verified on a preview" above.
-- Still to do once react-todos has a database: enqueue `audit-todo` from a
-  request and see the row reach `succeeded` in `/__nx/admin/jobs`, written by
-  the consumer. A retry is a new message, so `ce-vqsdeliverycount` stays 1
+- Still to do with a database on a Vercel project: enqueue `audit-todo` from
+  a request and see the row reach `succeeded` in `/__nx/admin/jobs`, written
+  by the consumer. A retry is a new message, so `ce-vqsdeliverycount` stays 1
   and the row's `attempts` is what counts up.
 
 ## Open
 
-- react-todos has no database on Vercel, so its job (and the admin pages)
-  cannot work there in any delivery mode until one is configured.
+- react-todos has no database on Vercel, so its job runs rowless there and
+  its admin pages have nothing to show until one is configured.
 - Production behaviour of `Vqs-Deployment-Id`: a message sent by one
   production deployment while a newer one is promoted — which deployment's
   consumer receives it?
