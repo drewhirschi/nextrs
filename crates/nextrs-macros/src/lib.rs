@@ -525,14 +525,22 @@ fn seed_companion(item: proc_macro2::TokenStream, url: &str) -> Option<proc_macr
     }
 }
 
-/// Annotate the function in an `app/jobs/<name>/job.rs` as a background job.
+/// Annotate a function as a background job.
 ///
-/// The job's stable name is derived from the directory under `app/jobs/`
-/// (nested directories join with `/`), the same way [`macro@api`] derives a
-/// URL from the file location — the convention encodes the name once.
+/// Jobs live in the `jobs/` folder beside `app/`: any `.rs` file, at any
+/// depth, any number of jobs per file. The build registers every tagged
+/// function there and exposes the folder as the module tree `crate::jobs`
+/// (`jobs/billing/invoices.rs` → `crate::jobs::billing::invoices`). Tagging a
+/// function outside that folder is a compile error, because nothing would
+/// register it.
+///
+/// A job's stable name is its function's name, or `name = "…"`. It is not
+/// derived from the file path, so moving a file never orphans queued work.
+/// (`app/jobs/<name>/job.rs`, the original location, still works: one job
+/// per file, named after its directory.)
 ///
 /// ```ignore
-/// // in app/jobs/audit-todo/job.rs
+/// // in jobs/todos.rs
 /// // all optional; defaults: 5 attempts, 60s timeout, 30s back-off doubling to 1h
 /// #[nextrs::job(max_attempts = 5, timeout_secs = 120, backoff_secs = 2, max_backoff_secs = 60)]
 /// pub async fn audit_todo(
@@ -543,10 +551,11 @@ fn seed_companion(item: proc_macro2::TokenStream, url: &str) -> Option<proc_macr
 ///
 /// Calling `audit_todo(payload)` from app code does **not** run the body: the
 /// macro renames the body away and re-emits the original name as a typed
-/// enqueue wrapper that persists a job row and POSTs the job's own route
-/// (`/__nx/jobs/<name>`) on this deployment. The body runs inside *that*
-/// request, behind the framework-managed `WaitUntil` — user code never touches
-/// `WaitUntil`, timeouts, or retries. `Err`, panic, or timeout mark the row
+/// enqueue wrapper that records the job and hands it to a runner (the queue
+/// consumer on Vercel; elsewhere a POST to the job's own route,
+/// `/__nx/jobs/<name>`, where it runs behind the framework-managed
+/// `WaitUntil`). User code never touches queues, `WaitUntil`, timeouts, or
+/// retries. `Err`, panic, or timeout mark the row
 /// failed and it retries with exponential back-off (`backoff_secs · 2^(n-1)`,
 /// capped at `max_backoff_secs`) up to `max_attempts`. An `Ok` value is
 /// stored as the row's `result`; every attempt (duration, error, captured
@@ -554,17 +563,21 @@ fn seed_companion(item: proc_macro2::TokenStream, url: &str) -> Option<proc_macr
 /// `nextrs::jobs::current()` says which attempt is running.
 ///
 /// Emitted alongside the wrapper (all `#[doc(hidden)]`, consumed by the
-/// build-time codegen): `__nextrs_job_run` (JSON-payload runner the framework
-/// route calls), `__NEXTRS_JOB_NAME`, `__NEXTRS_JOB_TIMEOUT_MS`,
-/// `__NEXTRS_JOB_MAX_ATTEMPTS`, `__NEXTRS_JOB_BACKOFF_MS`,
-/// `__NEXTRS_JOB_MAX_BACKOFF_MS`.
+/// build-time codegen), each suffixed with the function's name so a file can
+/// hold several jobs: `__nextrs_job_run_<fn>` (the JSON-payload runner) and
+/// `__nextrs_job_entry_<fn>()` (the job's registration). In
+/// `app/jobs/<name>/job.rs` the fixed names that location has always exported
+/// (`__nextrs_job_run`, `__NEXTRS_JOB_NAME`, …) are emitted too.
 #[proc_macro_attribute]
 pub fn job(args: TokenStream, item: TokenStream) -> TokenStream {
     let file = Span::call_site().file();
-    let Some(name) = job_name_from_file(&file) else {
+    let Some(place) = job_place_from_file(&file) else {
+        // Only files the build script scans are registered with the router.
+        // A job tagged anywhere else could be enqueued but would never run.
         let msg = format!(
-            "#[nextrs::job] functions must live in app/jobs/<name>/job.rs \
-             (this file is `{file}`)"
+            "#[nextrs::job] functions must live in the `jobs/` folder beside `app/` \
+             (any .rs file, any depth), or in app/jobs/<name>/job.rs — those are the \
+             files the build registers. This file is `{file}`"
         );
         let mut out: TokenStream = format!("::core::compile_error!({msg:?});")
             .parse()
@@ -572,7 +585,7 @@ pub fn job(args: TokenStream, item: TokenStream) -> TokenStream {
         out.extend(item);
         return out;
     };
-    match job_expand(args.into(), item.clone().into(), &name) {
+    match job_expand(args.into(), item.clone().into(), &place) {
         Ok(ts) => ts.into(),
         Err(e) => {
             // Emit the error alongside the original item so downstream errors
@@ -598,13 +611,57 @@ fn job_name_from_file(file: &str) -> Option<String> {
     Some(name.to_string())
 }
 
+/// Where a `#[nextrs::job]` function was written, which decides its default
+/// name and which generated items the build script expects.
+#[derive(Debug, PartialEq)]
+enum JobPlace {
+    /// The `jobs/` folder beside `app/`: any file, any number of jobs per
+    /// file. The job is named after its function.
+    JobsFolder,
+    /// `app/jobs/<name>/job.rs`, the original convention: one job per file,
+    /// named after its directory.
+    AppJobsDir(String),
+}
+
+/// Classify the tagged file. `None` when the build script would never see it.
+fn job_place_from_file(file: &str) -> Option<JobPlace> {
+    if let Some(name) = job_name_from_file(file) {
+        return Some(JobPlace::AppJobsDir(name));
+    }
+    let file = file.replace('\\', "/");
+    let (dirs, _file_name) = file.rsplit_once('/')?;
+    // Not app/jobs/: only `job.rs` is compiled under app/, and that is
+    // handled above.
+    let in_jobs = dirs.split('/').any(|dir| dir == "jobs");
+    let in_app_jobs = format!("/{dirs}/").contains("/app/jobs/");
+    (in_jobs && !in_app_jobs && file.ends_with(".rs")).then_some(JobPlace::JobsFolder)
+}
+
+/// A job's name is part of its run route (`/__nx/jobs/<name>`) and is what
+/// queued work refers to: `/`-separated segments of letters, digits, `_`, `-`.
+fn job_name_error(name: &str) -> Option<&'static str> {
+    if name.is_empty() || name.split('/').any(|segment| segment.is_empty()) {
+        return Some("a job name cannot be empty or have empty `/` segments");
+    }
+    if !name
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '/'))
+    {
+        return Some("a job name may only use letters, digits, `_`, `-`, and `/`");
+    }
+    if name == "sweep" {
+        return Some("`sweep` is reserved (it is /__nx/jobs/sweep)");
+    }
+    None
+}
+
 /// The full `#[nextrs::job]` expansion. Separated from the attribute entry
-/// point so tests can drive it with an explicit name (spans have no file in
+/// point so tests can drive it with an explicit place (spans have no file in
 /// unit tests).
 fn job_expand(
     args: proc_macro2::TokenStream,
     item: proc_macro2::TokenStream,
-    name: &str,
+    place: &JobPlace,
 ) -> syn::Result<proc_macro2::TokenStream> {
     use quote::quote;
     use syn::parse::Parser;
@@ -615,6 +672,7 @@ fn job_expand(
     let mut timeout_ms: u64 = 60_000;
     let mut backoff_ms: u64 = 30_000;
     let mut max_backoff_ms: u64 = 3_600_000;
+    let mut explicit_name: Option<syn::LitStr> = None;
     let parsed =
         syn::punctuated::Punctuated::<syn::MetaNameValue, syn::Token![,]>::parse_terminated
             .parse2(args)?;
@@ -624,6 +682,21 @@ fn job_expand(
             .get_ident()
             .map(|i| i.to_string())
             .unwrap_or_default();
+        if key == "name" {
+            match &nv.value {
+                syn::Expr::Lit(syn::ExprLit {
+                    lit: syn::Lit::Str(s),
+                    ..
+                }) => explicit_name = Some(s.clone()),
+                other => {
+                    return Err(syn::Error::new_spanned(
+                        other,
+                        "#[nextrs::job]: `name` takes a string literal",
+                    ));
+                }
+            }
+            continue;
+        }
         let lit_int = match &nv.value {
             syn::Expr::Lit(syn::ExprLit {
                 lit: syn::Lit::Int(i),
@@ -646,8 +719,8 @@ fn job_expand(
             _ => {
                 return Err(syn::Error::new_spanned(
                     &nv.path,
-                    "#[nextrs::job]: unknown argument (expected `max_attempts`, `timeout_secs`, \
-                     `backoff_secs`, or `max_backoff_secs`)",
+                    "#[nextrs::job]: unknown argument (expected `name`, `max_attempts`, \
+                     `timeout_secs`, `backoff_secs`, or `max_backoff_secs`)",
                 ))
             }
         }
@@ -735,11 +808,32 @@ fn job_expand(
         },
     };
 
-    // ---- emission.
-    // (1) The user's body, renamed. Only `__nextrs_job_run` calls it.
-    let mut impl_fn = func.clone();
+    // ---- the name: explicit, else the directory (app/jobs/<name>/job.rs),
+    // else the function. Never the file path of a jobs/ file: moving a file
+    // must not rename a job that has work queued under its old name.
     let orig_ident = func.sig.ident.clone();
-    impl_fn.sig.ident = syn::Ident::new("__nextrs_job_impl", orig_ident.span());
+    let name = match (&explicit_name, place) {
+        (Some(lit), _) => lit.value(),
+        (None, JobPlace::AppJobsDir(dir)) => dir.clone(),
+        (None, JobPlace::JobsFolder) => orig_ident.to_string(),
+    };
+    if let Some(problem) = job_name_error(&name) {
+        let message = format!("#[nextrs::job]: {problem} (got {name:?})");
+        return Err(match &explicit_name {
+            Some(lit) => syn::Error::new_spanned(lit, message),
+            None => syn::Error::new_spanned(&orig_ident, message),
+        });
+    }
+    let name = name.as_str();
+
+    // ---- emission. Every generated item carries the function's name, so a
+    // file can hold any number of jobs.
+    // (1) The user's body, renamed. Only the runner calls it.
+    let mut impl_fn = func.clone();
+    let impl_ident = quote::format_ident!("__nextrs_job_impl_{}", orig_ident);
+    let run_ident = quote::format_ident!("__nextrs_job_run_{}", orig_ident);
+    let entry_ident = quote::format_ident!("__nextrs_job_entry_{}", orig_ident);
+    impl_fn.sig.ident = impl_ident.clone();
     impl_fn.attrs.push(syn::parse_quote!(#[doc(hidden)]));
 
     // (2) The runner: JSON in, typed call, Display-stringified error out.
@@ -773,7 +867,7 @@ fn job_expand(
     });
     let call = if fallible {
         quote! {
-            match __nextrs_job_impl(#(#call_args),*).await {
+            match #impl_ident(#(#call_args),*).await {
                 Ok(v) => ::nextrs::serde_json::to_value(&v)
                     .map_err(|e| ::std::format!("return value did not serialize: {e}")),
                 Err(e) => Err(::std::string::ToString::to_string(&e)),
@@ -781,7 +875,7 @@ fn job_expand(
         }
     } else {
         quote! {
-            __nextrs_job_impl(#(#call_args),*).await;
+            #impl_ident(#(#call_args),*).await;
             Ok(::nextrs::serde_json::Value::Null)
         }
     };
@@ -796,17 +890,38 @@ fn job_expand(
     };
     let wrapper_doc = format!(
         "Enqueue the `{name}` background job.\n\n\
-         Persists a job row and kicks off `POST /__nx/jobs/{name}` on this \
-         deployment; the job body runs there, behind the framework-managed \
-         `WaitUntil`, with retries and a {timeout_ms} ms timeout. Returns \
-         immediately with a [`JobHandle`](::nextrs::jobs::JobHandle)."
+         Calling this does not run the job body. It records the job and hands \
+         it to a runner (the queue consumer on Vercel, `POST /__nx/jobs/{name}` \
+         elsewhere), where the body runs with retries and a {timeout_ms} ms \
+         timeout. Returns immediately with a \
+         [`JobHandle`](::nextrs::jobs::JobHandle)."
     );
+
+    // (4) app/jobs/<name>/job.rs only: the fixed names that location has
+    // always exported, which older generated registries refer to.
+    let legacy_names = match place {
+        JobPlace::AppJobsDir(_) => quote! {
+            #[doc(hidden)]
+            pub use self::#run_ident as __nextrs_job_run;
+            #[doc(hidden)]
+            pub const __NEXTRS_JOB_NAME: &::core::primitive::str = #name;
+            #[doc(hidden)]
+            pub const __NEXTRS_JOB_TIMEOUT_MS: ::core::primitive::u64 = #timeout_ms;
+            #[doc(hidden)]
+            pub const __NEXTRS_JOB_MAX_ATTEMPTS: ::core::primitive::u32 = #max_attempts;
+            #[doc(hidden)]
+            pub const __NEXTRS_JOB_BACKOFF_MS: ::core::primitive::u64 = #backoff_ms;
+            #[doc(hidden)]
+            pub const __NEXTRS_JOB_MAX_BACKOFF_MS: ::core::primitive::u64 = #max_backoff_ms;
+        },
+        JobPlace::JobsFolder => quote! {},
+    };
 
     Ok(quote! {
         #impl_fn
 
         #[doc(hidden)]
-        pub async fn __nextrs_job_run(
+        pub async fn #run_ident(
             __payload_json: ::nextrs::serde_json::Value,
             _ext: &::nextrs::http::Extensions,
         ) -> ::core::result::Result<::nextrs::serde_json::Value, ::std::string::String> {
@@ -815,27 +930,28 @@ fn job_expand(
             #call
         }
 
+        /// The job's registration: what the generated registry adds.
         #[doc(hidden)]
-        pub const __NEXTRS_JOB_NAME: &::core::primitive::str = #name;
-        #[doc(hidden)]
-        pub const __NEXTRS_JOB_TIMEOUT_MS: ::core::primitive::u64 = #timeout_ms;
-        #[doc(hidden)]
-        pub const __NEXTRS_JOB_MAX_ATTEMPTS: ::core::primitive::u32 = #max_attempts;
-        #[doc(hidden)]
-        pub const __NEXTRS_JOB_BACKOFF_MS: ::core::primitive::u64 = #backoff_ms;
-        #[doc(hidden)]
-        pub const __NEXTRS_JOB_MAX_BACKOFF_MS: ::core::primitive::u64 = #max_backoff_ms;
+        pub fn #entry_ident() -> ::nextrs::conventions::JobEntry {
+            ::nextrs::conventions::JobEntry {
+                name: #name,
+                run: ::nextrs::conventions::job_run_fn(|payload, ext| async move {
+                    #run_ident(payload, &ext).await
+                }),
+                timeout_ms: #timeout_ms,
+                max_attempts: #max_attempts,
+                backoff_ms: #backoff_ms,
+                max_backoff_ms: #max_backoff_ms,
+            }
+        }
+
+        #legacy_names
 
         #[doc = #wrapper_doc]
         pub async fn #orig_ident(
             #wrapper_sig
         ) -> ::core::result::Result<::nextrs::jobs::JobHandle, ::nextrs::jobs::EnqueueError> {
-            ::nextrs::jobs::enqueue(
-                __NEXTRS_JOB_NAME,
-                #payload_value,
-                __NEXTRS_JOB_MAX_ATTEMPTS,
-            )
-            .await
+            ::nextrs::jobs::enqueue(#name, #payload_value, #max_attempts).await
         }
     })
 }
@@ -1730,8 +1846,112 @@ mod tests {
     }
 
     fn expand_job(args: &str, src: &str) -> Result<String, syn::Error> {
-        job_expand(args.parse().unwrap(), src.parse().unwrap(), "audit-todo")
-            .map(|ts| ts.to_string())
+        job_expand(
+            args.parse().unwrap(),
+            src.parse().unwrap(),
+            &JobPlace::AppJobsDir("audit-todo".into()),
+        )
+        .map(|ts| ts.to_string())
+    }
+
+    fn expand_job_in_folder(args: &str, src: &str) -> Result<String, syn::Error> {
+        job_expand(
+            args.parse().unwrap(),
+            src.parse().unwrap(),
+            &JobPlace::JobsFolder,
+        )
+        .map(|ts| ts.to_string())
+    }
+
+    #[test]
+    fn job_place_comes_from_the_file() {
+        use JobPlace::*;
+        assert_eq!(job_place_from_file("jobs/todos.rs"), Some(JobsFolder));
+        assert_eq!(
+            job_place_from_file("jobs/billing/invoices.rs"),
+            Some(JobsFolder)
+        );
+        assert_eq!(
+            job_place_from_file("/home/me/my-app/jobs/billing/invoices.rs"),
+            Some(JobsFolder)
+        );
+        assert_eq!(
+            job_place_from_file("examples/react-todos/app/jobs/audit-todo/job.rs"),
+            Some(AppJobsDir("audit-todo".into()))
+        );
+        // Files the build script never scans: a tag there would enqueue work
+        // that nothing runs.
+        assert_eq!(job_place_from_file("src/billing.rs"), None);
+        assert_eq!(job_place_from_file("app/api/todos/route.rs"), None);
+        assert_eq!(job_place_from_file("app/jobs/helpers.rs"), None);
+        assert_eq!(job_place_from_file("jobs.rs"), None);
+    }
+
+    #[test]
+    fn a_job_in_the_jobs_folder_is_named_after_its_function() {
+        let c = expand_job_in_folder(
+            "max_attempts = 3",
+            "pub async fn send_invoice(payload: Invoice) -> Result<(), String> { todo!() }",
+        )
+        .unwrap();
+        assert!(c.contains("name : \"send_invoice\""), "{c}");
+        assert!(c.contains("jobs :: enqueue (\"send_invoice\""), "{c}");
+        // Its generated items carry the function name, so files hold many jobs.
+        assert!(c.contains("async fn __nextrs_job_impl_send_invoice"), "{c}");
+        assert!(
+            c.contains("pub async fn __nextrs_job_run_send_invoice"),
+            "{c}"
+        );
+        assert!(c.contains("pub fn __nextrs_job_entry_send_invoice"), "{c}");
+        assert!(c.contains("max_attempts : 3u32"), "{c}");
+        // None of the fixed names app/jobs/<name>/job.rs exports.
+        assert!(!c.contains("__NEXTRS_JOB_NAME"), "{c}");
+        assert!(!c.contains("as __nextrs_job_run"), "{c}");
+    }
+
+    #[test]
+    fn two_jobs_in_one_file_do_not_collide() {
+        let src = "pub async fn a(p: P) {} ";
+        let first = expand_job_in_folder("", src).unwrap();
+        let second = expand_job_in_folder("", "pub async fn b(p: P) {}").unwrap();
+        for item in [
+            "__nextrs_job_impl_",
+            "__nextrs_job_run_",
+            "__nextrs_job_entry_",
+        ] {
+            assert!(first.contains(&format!("{item}a")) && !first.contains(&format!("{item}b")));
+            assert!(second.contains(&format!("{item}b")) && !second.contains(&format!("{item}a")));
+        }
+    }
+
+    #[test]
+    fn job_name_can_be_set_and_is_checked() {
+        let c = expand_job_in_folder(
+            "name = \"billing/send-invoice\"",
+            "pub async fn send_invoice(p: P) {}",
+        )
+        .unwrap();
+        assert!(c.contains("name : \"billing/send-invoice\""), "{c}");
+        // An explicit name also wins over the app/jobs directory name.
+        let c = expand_job("name = \"audit\"", "pub async fn audit_todo(p: P) {}").unwrap();
+        assert!(
+            c.contains("__NEXTRS_JOB_NAME : & :: core :: primitive :: str = \"audit\""),
+            "{c}"
+        );
+
+        for bad in ["\"\"", "\"a b\"", "\"a//b\"", "\"sweep\""] {
+            let err = expand_job_in_folder(&format!("name = {bad}"), "pub async fn x(p: P) {}")
+                .unwrap_err()
+                .to_string();
+            assert!(
+                err.contains("job name") || err.contains("reserved"),
+                "{bad}: {err}"
+            );
+        }
+        let err = expand_job_in_folder("name = 3", "pub async fn x(p: P) {}").unwrap_err();
+        assert!(err.to_string().contains("string literal"));
+        // A function called `sweep` needs another name.
+        assert!(expand_job_in_folder("", "pub async fn sweep(p: P) {}").is_err());
     }
 
     #[test]
@@ -1742,12 +1962,39 @@ mod tests {
         )
         .unwrap();
         // (1) body renamed, (2) runner, (3) consts, (4) wrapper under the name.
-        assert!(c.contains("async fn __nextrs_job_impl"), "{}", c);
-        assert!(c.contains("__nextrs_job_run"), "{}", c);
-        assert!(c.contains("__NEXTRS_JOB_NAME : & :: core :: primitive :: str = \"audit-todo\""), "{}", c);
-        assert!(c.contains("__NEXTRS_JOB_TIMEOUT_MS : :: core :: primitive :: u64 = 60000u64"), "{}", c);
-        assert!(c.contains("__NEXTRS_JOB_MAX_ATTEMPTS : :: core :: primitive :: u32 = 5u32"), "{}", c);
-        assert!(c.contains("pub async fn audit_todo (payload : AuditTodo)"), "{}", c);
+        assert!(c.contains("async fn __nextrs_job_impl_audit_todo"), "{}", c);
+        assert!(
+            c.contains("pub async fn __nextrs_job_run_audit_todo"),
+            "{}",
+            c
+        );
+        assert!(c.contains("pub fn __nextrs_job_entry_audit_todo"), "{}", c);
+        // The fixed names this location has always exported are still there.
+        assert!(
+            c.contains("__nextrs_job_run_audit_todo as __nextrs_job_run"),
+            "{}",
+            c
+        );
+        assert!(
+            c.contains("__NEXTRS_JOB_NAME : & :: core :: primitive :: str = \"audit-todo\""),
+            "{}",
+            c
+        );
+        assert!(
+            c.contains("__NEXTRS_JOB_TIMEOUT_MS : :: core :: primitive :: u64 = 60000u64"),
+            "{}",
+            c
+        );
+        assert!(
+            c.contains("__NEXTRS_JOB_MAX_ATTEMPTS : :: core :: primitive :: u32 = 5u32"),
+            "{}",
+            c
+        );
+        assert!(
+            c.contains("pub async fn audit_todo (payload : AuditTodo)"),
+            "{}",
+            c
+        );
         assert!(c.contains("jobs :: enqueue"), "{}", c);
         assert!(c.contains("JobHandle"), "{}", c);
         // Fallible body: error stringified via Display into the job row.
