@@ -24,6 +24,7 @@ const WATCH_PATHS: &[&str] = &[
     "app",
     "build.rs",
     "components",
+    "jobs",
     "client/package-lock.json",
     "client/package.json",
     "client/src",

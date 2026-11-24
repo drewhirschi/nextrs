@@ -21,7 +21,7 @@ vercel = [
     "dep:http-body-util",
     "dep:hyper",
 ]
-# Enables `nextrs::jobs`: first-party background jobs (app/jobs/<name>/job.rs
+# Enables `nextrs::jobs`: first-party background jobs (the jobs/ folder
 # + #[nextrs::job]) — typed enqueue wrappers, the /__nx/jobs/* routes, retries
 # with back-off, and the in-memory dev store. Pulls in reqwest for the
 # self-delivery POSTs.

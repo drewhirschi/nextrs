@@ -1,7 +1,8 @@
 //! First-party background jobs.
 //!
-//! A job is a `pub async fn` in `app/jobs/<name>/job.rs` annotated with
-//! `#[nextrs::job]`. Calling that function from app code does not run the
+//! A job is a `pub async fn` annotated with `#[nextrs::job]`, in any `.rs`
+//! file of the `jobs/` folder beside `app/` (the folder is the module tree
+//! under `crate::jobs`; `app/jobs/<name>/job.rs` also still works). Calling that function from app code does not run the
 //! body — the macro re-emits the name as a typed *enqueue* wrapper that
 //! persists a job row and then *delivers* it to a runner, one of two ways:
 //!
@@ -614,6 +615,35 @@ pub fn announce_local_addr(addr: std::net::SocketAddr) {
     }
 }
 
+/// Names of the jobs every router built in this process registered. `None`
+/// until a router has been built.
+static REGISTERED: Mutex<Option<std::collections::HashSet<String>>> = Mutex::new(None);
+
+/// Record the jobs a router registered (the router does, at build — also
+/// with none, so "this app has a router and no such job" is knowable).
+pub(crate) fn note_registered(names: impl IntoIterator<Item = &'static str>) {
+    if let Ok(mut registered) = REGISTERED.lock() {
+        registered
+            .get_or_insert_with(Default::default)
+            .extend(names.into_iter().map(str::to_owned));
+    }
+}
+
+/// A job that can be enqueued but that no router would run: its function is
+/// tagged somewhere the build does not register. Caught at enqueue, where it
+/// is an error with a fix, rather than as work that silently never runs.
+fn unregistered(name: &str) -> Option<String> {
+    let registered = REGISTERED.lock().ok()?;
+    let registered = registered.as_ref()?;
+    (!registered.contains(name)).then(|| {
+        format!(
+            "nextrs jobs: `{name}` is not a registered job, so nothing would run it. \
+             #[nextrs::job] functions are registered from the `jobs/` folder beside `app/` \
+             (and app/jobs/<name>/job.rs); move the function there and rebuild"
+        )
+    })
+}
+
 static MAX_TIMEOUT_MS: OnceLock<u64> = OnceLock::new();
 
 /// Record the slowest registered job's timeout (the router does, at build).
@@ -822,6 +852,9 @@ pub async fn enqueue(
     payload: serde_json::Value,
     max_attempts: u32,
 ) -> Result<JobHandle, EnqueueError> {
+    if let Some(problem) = unregistered(name) {
+        return Err(EnqueueError::Config(problem));
+    }
     // Only HTTP delivery needs the shared secret; a queue consumer is not
     // reachable from outside the deployment.
     if on_vercel() && delivery_mode() == DeliveryMode::Http && jobs_secret().is_none() {
@@ -1499,6 +1532,18 @@ mod tests {
         );
         // HTTP delivery has nothing to carry the job: still a loud error.
         assert_eq!(select_record(false, Http), None);
+    }
+
+    #[test]
+    fn enqueue_refuses_a_job_no_router_registered() {
+        note_registered(["known-job"]);
+        assert_eq!(unregistered("known-job"), None);
+        let problem = unregistered("tagged-in-src").unwrap();
+        assert!(
+            problem.contains("`tagged-in-src` is not a registered job"),
+            "{problem}"
+        );
+        assert!(problem.contains("jobs/"), "{problem}");
     }
 
     #[test]

@@ -70,7 +70,7 @@ pub type PrefetchDataFn = Box<
         + Sync,
 >;
 
-/// Type-erased runner for a background job (from `app/jobs/<name>/job.rs`):
+/// Type-erased runner for a background job (a `#[nextrs::job]` function):
 /// the macro-generated `__nextrs_job_run` behind a boxed closure. Takes the
 /// stored JSON payload plus the executing request's extensions (app state via
 /// `Extension<T>` layers), returns the job's Display-stringified error.
@@ -83,10 +83,12 @@ pub type JobRunFn = Box<
         + Sync,
 >;
 
-/// A background job registered by codegen from `app/jobs/<name>/job.rs`.
+/// A background job registered by codegen: a `#[nextrs::job]` function in
+/// the `jobs/` folder beside `app/` (or in `app/jobs/<name>/job.rs`).
 /// Mounted at `POST /__nx/jobs/<name>` by the router (feature `jobs`).
 pub struct JobEntry {
-    /// Stable name derived from the directory under `app/jobs/`.
+    /// Stable name: the function's name (or `name = "…"`); the directory
+    /// name for `app/jobs/<name>/job.rs`.
     pub name: &'static str,
     pub run: JobRunFn,
     /// Per-attempt timeout (`__NEXTRS_JOB_TIMEOUT_MS`).
@@ -158,7 +160,7 @@ pub struct RouteRegistry {
     /// by codegen via [`Self::mark_react_page`]; same discovery source as the
     /// shell's `NX_APP_ROUTES`.
     pub react_pages: Vec<String>,
-    /// Background jobs (from `app/jobs/<name>/job.rs`), mounted under
+    /// Background jobs (the `jobs/` folder), mounted under
     /// `/__nx/jobs/` when the `jobs` feature is enabled.
     pub jobs: Vec<JobEntry>,
 }
