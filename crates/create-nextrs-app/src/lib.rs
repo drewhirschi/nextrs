@@ -665,6 +665,7 @@ fn template_files(
         (".nextrs/dump-openapi.rs", dump_openapi_rs(crate_name)),
         ("api/index.rs", api_index_rs(crate_name)),
         ("api/jobs.rs", api_jobs_rs(crate_name)),
+        ("jobs/README.md", jobs_readme_md()),
         ("nextrs.toml", nextrs_toml(crate_name, true)),
         ("vercel.json", VERCEL_GIT_STUB.to_string()),
         ("scripts/deploy-prebuilt.sh", deploy_prebuilt_sh()),
@@ -777,7 +778,8 @@ root—never inside `.nextrs/`.
 - `.nextrs/`: generated framework state. Do not edit it.
 - `api/index.rs`: generated Vercel adapter. It contains no application logic.
 - `api/jobs.rs`: generated Vercel Queues consumer that runs background jobs
-  (`app/jobs/<name>/job.rs`). It contains no application logic.
+  (`#[nextrs::job]` functions in a `jobs/` folder beside `app/`). It contains
+  no application logic.
 
 ## Generated API client
 
@@ -847,7 +849,7 @@ name. Full reference: <https://nextrs-docs.vercel.app/docs/conventions>
 `build.rs`, `src/main.rs`, `api/index.rs`, `api/jobs.rs`, `nextrs.toml`,
 `scripts/deploy-prebuilt.sh`, and `.nextrs/` are generated wiring. Never edit
 generated output under `.nextrs/` or `public/dist/`; application seams are
-`app/**`, `components/**`, and `src/**`. `src/app.rs` is the shared Rust app,
+`app/**`, `components/**`, `jobs/**`, and `src/**`. `src/app.rs` is the shared Rust app,
 while `src/main.rs`, `api/index.rs`, and `api/jobs.rs` (the Vercel Queues
 consumer that runs background jobs) are process adapters.
 
@@ -1035,7 +1037,7 @@ path = ".nextrs/dump-openapi.rs"
 name = "index"
 path = "api/index.rs"
 
-# Vercel Queues consumer that runs background jobs (app/jobs/). See api/jobs.rs.
+# Vercel Queues consumer that runs background jobs (jobs/). See api/jobs.rs.
 [[bin]]
 name = "jobs"
 path = "api/jobs.rs"
@@ -1216,12 +1218,44 @@ async fn main() -> Result<(), vercel_runtime::Error> {
     .replace("APP_CRATE", &crate_module)
 }
 
+/// The `jobs/` folder exists from the start (the build watches it once it is
+/// there), with the convention written down where the jobs will go.
+fn jobs_readme_md() -> String {
+    r#"# jobs/
+
+Background jobs. Any `.rs` file here, at any depth, can hold jobs: tag a
+function `#[nextrs::job]`.
+
+```rust
+// jobs/welcome.rs
+#[nextrs::job(max_attempts = 3)]
+pub async fn send_welcome(payload: Welcome) -> Result<(), String> {
+    // call into src/ — a job is an entry point, like a route handler
+}
+```
+
+Calling it enqueues it; the body runs in the background, with retries:
+
+```rust
+crate::jobs::welcome::send_welcome(Welcome { user_id }).await?;
+```
+
+- The folders are the module tree (`jobs/billing/invoices.rs` is
+  `crate::jobs::billing::invoices`), and a file can hold any number of jobs.
+- A job is named after its function. `#[nextrs::job(name = "…")]` sets it.
+- To keep job history and use the admin pages, set `NEXTRS_DB_URL`.
+
+Guide: https://nextrs-docs.vercel.app/docs/jobs
+"#
+    .to_string()
+}
+
 /// The second Vercel function: the queue consumer that runs background jobs.
 /// `nextrs generate` gives it the `queue/v2beta` trigger because this file
-/// exists; with no jobs in `app/jobs/` it is simply never called.
+/// exists; with no `jobs/` folder it is simply never called.
 fn api_jobs_rs(crate_name: &str) -> String {
     let crate_module = crate_name.replace('-', "_");
-    r#"// @generated Vercel Queues consumer for background jobs (app/jobs/).
+    r#"// @generated Vercel Queues consumer for background jobs (the jobs/ folder).
 //
 // Do not put application logic here. This is a second Vercel function: Vercel
 // calls it once per message on the `nx-jobs` queue topic, and it runs the job
@@ -2362,6 +2396,7 @@ mod tests {
         assert!(names.contains(&"src/app.rs"));
         assert!(names.contains(&".nextrs/dump-openapi.rs"));
         assert!(names.contains(&"api/index.rs"));
+        assert!(names.contains(&"jobs/README.md"));
         // The queue consumer wraps the same shared app as the main function.
         let consumer = &files.iter().find(|(n, _)| *n == "api/jobs.rs").unwrap().1;
         assert!(consumer.contains("nextrs::jobs::vercel_queues::consumer(demo::app())"));

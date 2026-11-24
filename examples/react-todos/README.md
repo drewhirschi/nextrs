@@ -31,7 +31,8 @@ src/
 └── core/todos.rs               framework-independent domain logic
 
 api/index.rs                    Vercel process adapter
-api/jobs.rs                     Vercel Queues consumer: runs app/jobs/ on Vercel
+api/jobs.rs                     Vercel Queues consumer: runs jobs/ on Vercel
+jobs/todos.rs                   background jobs (#[nextrs::job]); crate::jobs::todos
 build.rs                        route, seed, and browser-bundle generation
 .nextrs/
 ├── dump-openapi.rs             hidden OpenAPI extraction helper

@@ -1,19 +1,25 @@
-//! Demo background job — the `app/jobs/<name>/job.rs` convention.
+//! Background jobs about todos — the `jobs/` folder convention.
 //!
-//! Calling `crate::jobs::audit_todo(payload)` from a handler does NOT run
-//! this body: the `#[nextrs::job]` macro re-emits `audit_todo` as a typed
-//! enqueue wrapper that persists a job row and hands it to a runner, with
-//! retries (`max_attempts`) and a per-attempt timeout — no `WaitUntil`,
-//! HTTP, queue, or retry code here.
+//! Every `.rs` file under `jobs/` (beside `app/`) is a module under
+//! `crate::jobs`, and every `#[nextrs::job]` function in it is a job, named
+//! after the function. This file is `crate::jobs::todos`; a file can hold as
+//! many jobs as it likes.
 //!
-//! - On Vercel the row's id goes onto a Vercel Queues topic, and the
-//!   consumer function (api/jobs.rs) runs this body inside the delivery.
-//! - Locally the wrapper POSTs `/__nx/jobs/audit-todo` on this server, and
+//! Calling `crate::jobs::todos::audit_todo(payload)` from a handler does NOT
+//! run this body: the macro re-emits `audit_todo` as a typed enqueue wrapper
+//! that records the job and hands it to a runner, with retries
+//! (`max_attempts`) and a per-attempt timeout — no `WaitUntil`, HTTP, queue,
+//! or retry code here.
+//!
+//! - On Vercel the job goes onto a Vercel Queues topic, and the consumer
+//!   function (api/jobs.rs) runs this body inside the delivery.
+//! - Locally the wrapper POSTs `/__nx/jobs/audit_todo` on this server, and
 //!   the body runs behind the framework-managed `WaitUntil`.
 //!
-//! `Extension<TodosCtx>` is app state, sourced from the executing request's
-//! extensions (the layer `app()` installs, in every entry point) — the same
-//! mechanism route handlers and seed companions use.
+//! A job is an entry point, like a route handler: keep the real logic in
+//! `src/` and call it from here. `Extension<TodosCtx>` is app state, sourced
+//! from the executing request's extensions (the layer `app()` installs, in
+//! every entry point) — the same mechanism route handlers use.
 
 use axum::Extension;
 use react_todos::core::todos::TodosCtx;
@@ -34,7 +40,12 @@ pub struct Audited {
 }
 
 // Retries: 3 attempts, 2s back-off doubling (2s, 4s, …) capped at 30s.
-#[nextrs::job(max_attempts = 3, timeout_secs = 30, backoff_secs = 2, max_backoff_secs = 30)]
+#[nextrs::job(
+    max_attempts = 3,
+    timeout_secs = 30,
+    backoff_secs = 2,
+    max_backoff_secs = 30
+)]
 pub async fn audit_todo(
     Extension(ctx): Extension<TodosCtx>,
     payload: AuditTodo,

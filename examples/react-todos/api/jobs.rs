@@ -3,7 +3,7 @@
 // DO NOT PUT APPLICATION LOGIC HERE. This is a second Vercel function next to
 // api/index.rs. Vercel calls it once per message on the `nx-jobs` queue topic
 // (the `queue/v2beta` trigger `nextrs generate` writes for this file); it
-// claims the job row, runs the job from app/jobs/ to completion inside that
+// claims the job row, runs the job from jobs/ to completion inside that
 // request, records the outcome, and acknowledges the message. It is not
 // reachable from outside the deployment.
 //
