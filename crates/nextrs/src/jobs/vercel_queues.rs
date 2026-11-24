@@ -41,6 +41,17 @@
 //!
 //! A consumer function is not reachable from outside the deployment, so this
 //! path needs no `NEXTRS_JOBS_SECRET` and no cron-driven sweep.
+//!
+//! # Without a store
+//!
+//! With no [`JobStore`](super::JobStore) configured on Vercel there is no row
+//! to point at, so the message carries the whole job instead: payload,
+//! attempt number, retry budget. The consumer runs it and sends attempt
+//! `n + 1` as a new delayed message when it fails. Retries and back-off work
+//! the same; what is gone is everything that reads a row — status, history,
+//! stored results, the admin pages, Retry — and the claim that stops a
+//! redelivered message from running a job twice. Configure a store and jobs
+//! enqueued from then on get rows again.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
@@ -59,6 +70,10 @@ pub const CONSUMER_ENV: &str = "NEXTRS_JOBS_CONSUMER";
 
 /// Vercel Queues accepts a delivery delay of at most seven days.
 const MAX_DELAY_SECS: u64 = 7 * 24 * 60 * 60;
+
+/// Largest delivery body the consumer reads. A row-backed message is a few
+/// dozen bytes; a rowless one carries the job's payload.
+const MAX_MESSAGE_BYTES: usize = 4 * 1024 * 1024;
 
 /// A `running` row is stale once it has been untouched for its job's timeout
 /// plus this much (the same slack the sweep uses).
@@ -339,13 +354,23 @@ pub(crate) async fn send(
     id: &JobId,
     delay: Option<std::time::Duration>,
 ) -> Result<(), String> {
-    let envelope = JobEnvelope {
-        id: id.clone(),
-        name: Some(name.to_string()),
-    };
+    let envelope = JobEnvelope::for_row(id, Some(name));
     let delay_secs = delay.and_then(|d| delay_seconds(d.as_millis() as i64));
     QueueClient::from_env(None)?
         .send(TOPIC, &envelope, delay_secs)
+        .await
+}
+
+/// Send a rowless job: the whole job, first attempt, in the message.
+pub(crate) async fn send_rowless(
+    name: &str,
+    id: &JobId,
+    payload: serde_json::Value,
+    max_attempts: u32,
+) -> Result<(), String> {
+    let envelope = JobEnvelope::rowless(id, name, payload, 1, max_attempts.max(1));
+    QueueClient::from_env(None)?
+        .send(TOPIC, &envelope, None)
         .await
 }
 
@@ -437,21 +462,102 @@ pub(crate) async fn process(
         };
     };
 
-    match super::run_attempt(store, entry, row, ext).await {
+    match super::run_attempt(Some(store), entry, row, ext).await {
         AttemptOutcome::Succeeded => Handled::Succeeded,
         AttemptOutcome::Dead => Handled::Dead,
         AttemptOutcome::Unrecorded => Handled::Unsafe,
         AttemptOutcome::Retry { delay_ms } => {
-            let envelope = JobEnvelope {
-                id: id.clone(),
-                name: Some(entry.name.to_string()),
-            };
+            let envelope = JobEnvelope::for_row(id, Some(entry.name));
             match client.send(TOPIC, &envelope, delay_seconds(delay_ms)).await {
                 Ok(()) => Handled::Retried,
                 Err(e) => {
                     // Leave this delivery unacknowledged: the queue brings it
                     // back, finds the row `failed`, and runs the retry then.
                     tracing::error!(job = entry.name, id = %id, error = %e,
+                        "retry message was not sent; leaving the delivery for redelivery");
+                    Handled::Unsafe
+                }
+            }
+        }
+    }
+}
+
+/// Rowless attempts running in this process, by `id#attempt`. With no row to
+/// claim, this is the only double-run guard: a message redelivered to the
+/// instance that is still running it is left alone. A redelivery to another
+/// instance is not caught — keep rowless jobs shorter than the queue's
+/// 5-minute visibility timeout, or safe to run twice.
+static ROWLESS_RUNNING: std::sync::Mutex<Option<std::collections::HashSet<String>>> =
+    std::sync::Mutex::new(None);
+
+struct RowlessRun(String);
+
+impl RowlessRun {
+    fn begin(key: String) -> Option<Self> {
+        let mut running = ROWLESS_RUNNING.lock().ok()?;
+        // Build the guard only for a new key: a guard for a duplicate would
+        // remove the first run's entry when it drops.
+        let fresh = running
+            .get_or_insert_with(Default::default)
+            .insert(key.clone());
+        drop(running);
+        fresh.then(|| Self(key))
+    }
+}
+
+impl Drop for RowlessRun {
+    fn drop(&mut self) {
+        if let Ok(mut running) = ROWLESS_RUNNING.lock() {
+            if let Some(set) = running.as_mut() {
+                set.remove(&self.0);
+            }
+        }
+    }
+}
+
+/// Handle one delivery of a rowless job: the message carries the payload and
+/// the attempt number, so run it, and on a retryable failure send the next
+/// attempt as a new delayed message. Nothing is recorded anywhere but the
+/// logs.
+pub(crate) async fn process_rowless(
+    client: &QueueClient,
+    entry: &crate::conventions::JobEntry,
+    envelope: JobEnvelope,
+    ext: http::Extensions,
+) -> Handled {
+    let attempt = envelope.attempt.unwrap_or(1).max(1);
+    let max_attempts = envelope.max_attempts.unwrap_or(entry.max_attempts).max(1);
+    let Some(_running) = RowlessRun::begin(format!("{}#{attempt}", envelope.id)) else {
+        return Handled::Left;
+    };
+    let now = now_ms();
+    let payload = envelope.payload.unwrap_or(serde_json::Value::Null);
+    let row = JobRow {
+        id: envelope.id.clone(),
+        name: entry.name.to_string(),
+        payload: payload.clone(),
+        status: JobStatus::Running,
+        attempts: attempt,
+        max_attempts,
+        next_run_at: None,
+        last_error: None,
+        created_at: now,
+        updated_at: now,
+        result: None,
+        history: Vec::new(),
+    };
+    match super::run_attempt(None, entry, row, ext).await {
+        AttemptOutcome::Succeeded => Handled::Succeeded,
+        AttemptOutcome::Dead => Handled::Dead,
+        AttemptOutcome::Unrecorded => Handled::Unsafe,
+        AttemptOutcome::Retry { delay_ms } => {
+            let next =
+                JobEnvelope::rowless(&envelope.id, entry.name, payload, attempt + 1, max_attempts);
+            match client.send(TOPIC, &next, delay_seconds(delay_ms)).await {
+                Ok(()) => Handled::Retried,
+                Err(e) => {
+                    // Not acknowledged: the queue delivers this attempt again.
+                    tracing::error!(job = entry.name, id = %envelope.id, error = %e,
                         "retry message was not sent; leaving the delivery for redelivery");
                     Handled::Unsafe
                 }
@@ -478,10 +584,15 @@ pub(crate) async fn handle_delivery(
             return (StatusCode::INTERNAL_SERVER_ERROR, e).into_response();
         }
     };
-    let body = axum::body::to_bytes(req.into_body(), 64 * 1024)
+    let body = axum::body::to_bytes(req.into_body(), MAX_MESSAGE_BYTES)
         .await
         .unwrap_or_default();
     let handled = match serde_json::from_slice::<JobEnvelope>(&body) {
+        // A message that carries its payload is a rowless job, whatever
+        // this process has for a store now.
+        Ok(envelope) if envelope.payload.is_some() => {
+            process_rowless(&client, entry, envelope, ext).await
+        }
         Ok(envelope) => match super::store() {
             Ok(store) => process(store.as_ref(), &client, entry, &envelope.id, ext).await,
             Err(e) => {
@@ -558,7 +669,7 @@ async fn consume(inner: &axum::Router, req: axum::extract::Request) -> axum::res
         Err(reason) => return (StatusCode::NOT_FOUND, reason).into_response(),
     };
     let (mut parts, body) = req.into_parts();
-    let bytes = match axum::body::to_bytes(body, 64 * 1024).await {
+    let bytes = match axum::body::to_bytes(body, MAX_MESSAGE_BYTES).await {
         Ok(bytes) => bytes,
         Err(e) => return (StatusCode::BAD_REQUEST, e.to_string()).into_response(),
     };
@@ -623,7 +734,8 @@ async fn acknowledge_unroutable(delivery: &Delivery) {
 /// once per instance.
 async fn prune_once() {
     static PRUNED: AtomicBool = AtomicBool::new(false);
-    if PRUNED.swap(true, Ordering::Relaxed) {
+    // Nothing to prune without a store (rowless jobs).
+    if PRUNED.swap(true, Ordering::Relaxed) || super::store().is_err() {
         return;
     }
     if let Err(e) = super::prune_expired().await {
@@ -849,10 +961,7 @@ mod tests {
     #[tokio::test]
     async fn send_posts_the_envelope_to_the_topic_with_the_delay() {
         let (fake, client) = FakeQueue::start().await;
-        let envelope = JobEnvelope {
-            id: JobId("j1".into()),
-            name: Some("audit-todo".into()),
-        };
+        let envelope = JobEnvelope::for_row(&JobId("j1".into()), Some("audit-todo"));
         client.send(TOPIC, &envelope, None).await.unwrap();
         client.send(TOPIC, &envelope, Some(8)).await.unwrap();
         let seen = fake.seen();
@@ -1079,6 +1188,98 @@ mod tests {
             store.get(&id).await.unwrap().unwrap().status,
             JobStatus::Queued
         );
+    }
+
+    #[tokio::test]
+    async fn a_rowless_job_runs_from_its_message_alone() {
+        let (fake, client) = FakeQueue::start().await;
+        let job = entry(1, 3); // fails attempt 1
+        let first = JobEnvelope::rowless(
+            &JobId("r1".into()),
+            "t",
+            serde_json::json!({"k": "v"}),
+            1,
+            3,
+        );
+        let handled = process_rowless(&client, &job, first, http::Extensions::new()).await;
+        assert_eq!(handled, Handled::Retried);
+        assert!(handled.acknowledge());
+        // The retry is a new message for attempt 2, with the payload again.
+        let sent = fake.seen().pop().unwrap();
+        assert_eq!(sent.delay.as_deref(), Some("2"));
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&sent.body).unwrap(),
+            serde_json::json!({
+                "id": "r1", "name": "t", "payload": {"k": "v"}, "attempt": 2, "max_attempts": 3
+            })
+        );
+        let second: JobEnvelope = serde_json::from_str(&sent.body).unwrap();
+        let handled = process_rowless(&client, &job, second, http::Extensions::new()).await;
+        assert_eq!(handled, Handled::Succeeded);
+        assert_eq!(fake.seen().len(), 1, "a success sends nothing more");
+    }
+
+    #[tokio::test]
+    async fn a_rowless_job_stops_at_its_last_attempt() {
+        let (fake, client) = FakeQueue::start().await;
+        let last = JobEnvelope::rowless(&JobId("r2".into()), "t", serde_json::json!({}), 3, 3);
+        let handled = process_rowless(&client, &entry(9, 3), last, http::Extensions::new()).await;
+        assert_eq!(handled, Handled::Dead);
+        assert!(handled.acknowledge());
+        assert!(fake.seen().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_rowless_retry_that_cannot_be_sent_is_left_for_redelivery() {
+        let (fake, client) = FakeQueue::start().await;
+        fake.send_status.store(500, Ordering::Relaxed);
+        let first = JobEnvelope::rowless(&JobId("r3".into()), "t", serde_json::json!({}), 1, 3);
+        let handled = process_rowless(&client, &entry(1, 3), first, http::Extensions::new()).await;
+        assert_eq!(handled, Handled::Unsafe);
+        assert!(!handled.acknowledge(), "acknowledging would lose the job");
+    }
+
+    #[tokio::test]
+    async fn a_rowless_attempt_already_running_here_is_left_alone() {
+        let (_fake, client) = FakeQueue::start().await;
+        let (started_tx, started_rx) = tokio::sync::oneshot::channel::<()>();
+        let (finish_tx, finish_rx) = tokio::sync::oneshot::channel::<()>();
+        let started_tx = Arc::new(Mutex::new(Some(started_tx)));
+        let finish_rx = Arc::new(tokio::sync::Mutex::new(Some(finish_rx)));
+        let slow = crate::conventions::JobEntry {
+            name: "t",
+            run: crate::conventions::job_run_fn(move |_payload, _ext| {
+                let started_tx = Arc::clone(&started_tx);
+                let finish_rx = Arc::clone(&finish_rx);
+                async move {
+                    if let Some(tx) = started_tx.lock().unwrap().take() {
+                        let _ = tx.send(());
+                    }
+                    if let Some(rx) = finish_rx.lock().await.take() {
+                        let _ = rx.await;
+                    }
+                    Ok(serde_json::Value::Null)
+                }
+            }),
+            timeout_ms: 30_000,
+            max_attempts: 3,
+            backoff_ms: 2_000,
+            max_backoff_ms: 30_000,
+        };
+        let message =
+            || JobEnvelope::rowless(&JobId("r4".into()), "t", serde_json::json!({}), 1, 3);
+        let first = process_rowless(&client, &slow, message(), http::Extensions::new());
+        let redelivery = async {
+            started_rx.await.unwrap();
+            // The same message again while the first run is still going.
+            let handled = process_rowless(&client, &slow, message(), http::Extensions::new()).await;
+            finish_tx.send(()).unwrap();
+            handled
+        };
+        let (first, redelivery) = tokio::join!(first, redelivery);
+        assert_eq!(first, Handled::Succeeded);
+        assert_eq!(redelivery, Handled::Left);
+        assert!(!redelivery.acknowledge());
     }
 
     #[tokio::test]

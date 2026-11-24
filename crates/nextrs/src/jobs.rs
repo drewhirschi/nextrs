@@ -34,9 +34,15 @@
 //! Storage resolves lazily, once per process: an explicit [`set_store`] wins;
 //! else `NEXTRS_JOBS_DB_URL`/`NEXTRS_JOBS_DB_TOKEN` (falling back to
 //! `NEXTRS_DB_URL`/`TURSO_DATABASE_URL` and the matching tokens) selects the
-//! libsql store (feature `libsql`); else the in-memory store. On Vercel a missing DB —
-//! or, for HTTP delivery, a missing `NEXTRS_JOBS_SECRET` — fails loud at
-//! enqueue: never a silently non-durable queue in production.
+//! libsql store (feature `libsql`); else the in-memory store. The in-memory
+//! store is never used on Vercel, where instances share nothing. With no
+//! store there:
+//!
+//! - queue delivery carries the whole job in its message instead of a row
+//!   (payload, attempt number). It runs and retries the same, but there is
+//!   no status, history or Retry — see [`vercel_queues`].
+//! - HTTP delivery fails loud at enqueue, as does a missing
+//!   `NEXTRS_JOBS_SECRET`: never a silently non-durable queue in production.
 
 use std::collections::HashMap;
 use std::future::Future;
@@ -240,7 +246,7 @@ impl std::fmt::Display for EnqueueError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             EnqueueError::Payload(e) => write!(f, "job payload did not serialize: {e}"),
-            EnqueueError::Store(e) => write!(f, "job row insert failed: {e}"),
+            EnqueueError::Store(e) => write!(f, "job was not stored: {e}"),
             EnqueueError::Config(msg) => f.write_str(msg),
         }
     }
@@ -270,9 +276,15 @@ pub struct JobHandle {
 }
 
 impl JobHandle {
-    /// Read the job's current row (status, attempts, last error).
+    /// Read the job's current row (status, attempts, last error). `None`
+    /// when there is no row — including a job enqueued without a store on
+    /// Vercel, which lives only in its queue message.
     pub async fn status(&self) -> Result<Option<JobRow>, StoreError> {
-        store()?.get(&self.id).await
+        match store() {
+            Ok(store) => store.get(&self.id).await,
+            Err(_) if delivery_mode() == DeliveryMode::VercelQueues => Ok(None),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -706,6 +718,67 @@ pub(crate) struct JobEnvelope {
     pub id: JobId,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
+    /// Rowless jobs only (no store configured): the message is the record,
+    /// so it carries the payload and where the retries stand.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub payload: Option<serde_json::Value>,
+    /// 1-based attempt this message is for (rowless only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub attempt: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_attempts: Option<u32>,
+}
+
+impl JobEnvelope {
+    /// The envelope of a job that has a row: just where to find it.
+    pub(crate) fn for_row(id: &JobId, name: Option<&str>) -> Self {
+        Self {
+            id: id.clone(),
+            name: name.map(str::to_owned),
+            payload: None,
+            attempt: None,
+            max_attempts: None,
+        }
+    }
+
+    /// The envelope of a rowless job: everything a runner needs.
+    pub(crate) fn rowless(
+        id: &JobId,
+        name: &str,
+        payload: serde_json::Value,
+        attempt: u32,
+        max_attempts: u32,
+    ) -> Self {
+        Self {
+            id: id.clone(),
+            name: Some(name.to_string()),
+            payload: Some(payload),
+            attempt: Some(attempt),
+            max_attempts: Some(max_attempts),
+        }
+    }
+}
+
+/// Where a job's record lives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum RecordMode {
+    /// A row in the [`JobStore`]: status, history, results, Retry.
+    Rows,
+    /// No store: the queue message carries the payload and attempt number.
+    /// The job runs and retries, but nothing can be looked up afterwards.
+    Rowless,
+}
+
+/// Pick where a job's record lives. Rows whenever a store is available.
+/// Without one (which only happens on Vercel — elsewhere the in-memory store
+/// stands in), queue delivery can still carry the job by itself; HTTP
+/// delivery cannot, because the sweep and the run route both need the row.
+pub(crate) fn select_record(store_available: bool, delivery: DeliveryMode) -> Option<RecordMode> {
+    match (store_available, delivery) {
+        (true, _) => Some(RecordMode::Rows),
+        (false, DeliveryMode::VercelQueues) => Some(RecordMode::Rowless),
+        (false, DeliveryMode::Http) => None,
+    }
 }
 
 /// How a queued row reaches a runner.
@@ -759,8 +832,27 @@ pub async fn enqueue(
                 .into(),
         ));
     }
-    let store = store().map_err(|e| EnqueueError::Config(e.0))?;
     let id = generate_job_id();
+    let store = match store() {
+        Ok(store) => store,
+        Err(e) => match select_record(false, delivery_mode()) {
+            // No store, but a queue: the message itself is the job. A send
+            // that fails here loses the job, so it is an error, not
+            // `delivered: false`.
+            Some(_) => {
+                return match vercel_queues::send_rowless(name, &id, payload, max_attempts).await {
+                    Ok(()) => Ok(JobHandle {
+                        id,
+                        delivered: true,
+                    }),
+                    Err(err) => Err(EnqueueError::Store(StoreError(format!(
+                        "no job store is configured and the job's queue message was not sent: {err}"
+                    )))),
+                };
+            }
+            None => return Err(EnqueueError::Config(e.0)),
+        },
+    };
     let now = now_ms();
     store
         .insert(JobRow {
@@ -810,10 +902,7 @@ async fn deliver_http(name: &str, id: &JobId) -> Result<(), String> {
     let mut req = http_client()
         .post(&url)
         .header(JOBS_SECRET_HEADER, secret)
-        .json(&JobEnvelope {
-            id: id.clone(),
-            name: None,
-        });
+        .json(&JobEnvelope::for_row(id, None));
     // Protected preview deployments 401 self-requests unless bypassed.
     if let Ok(bypass) = std::env::var("VERCEL_AUTOMATION_BYPASS_SECRET") {
         if !bypass.is_empty() {
@@ -881,10 +970,11 @@ pub(crate) enum AttemptOutcome {
     Unrecorded,
 }
 
-/// Run one claimed job to completion and record the outcome in `store`.
+/// Run one claimed job to completion and record the outcome in `store`
+/// (`None` for a rowless job: there is nothing to record it in).
 /// Delivering the retry is the caller's business — it differs by mode.
 pub(crate) async fn run_attempt(
-    store: &dyn JobStore,
+    store: Option<&dyn JobStore>,
     entry: &crate::conventions::JobEntry,
     row: JobRow,
     ext: http::Extensions,
@@ -924,7 +1014,11 @@ pub(crate) async fn run_attempt(
     match error {
         None => {
             let result = result.unwrap_or(serde_json::Value::Null);
-            if let Err(e) = store.mark_succeeded(&row.id, attempt, result).await {
+            let recorded = match store {
+                Some(store) => store.mark_succeeded(&row.id, attempt, result).await,
+                None => Ok(()),
+            };
+            if let Err(e) = recorded {
                 tracing::error!(job = entry.name, id = %row.id, error = %e, "mark_succeeded failed");
                 return AttemptOutcome::Unrecorded;
             }
@@ -935,7 +1029,11 @@ pub(crate) async fn run_attempt(
             let delay_ms = (row.attempts < row.max_attempts)
                 .then(|| backoff_ms(row.attempts, entry.backoff_ms, entry.max_backoff_ms));
             let next = delay_ms.map(|delay| now_ms() + delay);
-            if let Err(e) = store.mark_failed(&row.id, attempt, next).await {
+            let recorded = match store {
+                Some(store) => store.mark_failed(&row.id, attempt, next).await,
+                None => Ok(()),
+            };
+            if let Err(e) = recorded {
                 tracing::error!(job = entry.name, id = %row.id, error = %e, "mark_failed failed");
                 return AttemptOutcome::Unrecorded;
             }
@@ -976,7 +1074,8 @@ pub(crate) async fn run_and_record(
             return;
         }
     };
-    let AttemptOutcome::Retry { delay_ms } = run_attempt(store.as_ref(), entry, row, ext).await
+    let AttemptOutcome::Retry { delay_ms } =
+        run_attempt(Some(store.as_ref()), entry, row, ext).await
     else {
         return;
     };
@@ -1367,14 +1466,39 @@ mod tests {
         let http: JobEnvelope = serde_json::from_str(r#"{"id":"a"}"#).unwrap();
         assert_eq!((http.id.0.as_str(), http.name.as_deref()), ("a", None));
         assert_eq!(serde_json::to_string(&http).unwrap(), r#"{"id":"a"}"#);
-        let queue = JobEnvelope {
-            id: JobId("a".into()),
-            name: Some("audit-todo".into()),
-        };
+        let queue = JobEnvelope::for_row(&JobId("a".into()), Some("audit-todo"));
         assert_eq!(
             serde_json::to_string(&queue).unwrap(),
             r#"{"id":"a","name":"audit-todo"}"#
         );
+        // A rowless message carries the whole job.
+        let rowless = JobEnvelope::rowless(
+            &JobId("a".into()),
+            "audit-todo",
+            serde_json::json!({"x": 1}),
+            2,
+            3,
+        );
+        assert_eq!(
+            serde_json::to_value(&rowless).unwrap(),
+            serde_json::json!({
+                "id": "a", "name": "audit-todo", "payload": {"x": 1}, "attempt": 2, "max_attempts": 3
+            })
+        );
+    }
+
+    #[test]
+    fn jobs_are_rowless_only_without_a_store_and_with_a_queue() {
+        use DeliveryMode::{Http, VercelQueues};
+        // A store always wins: history, status and Retry are worth having.
+        assert_eq!(select_record(true, VercelQueues), Some(RecordMode::Rows));
+        assert_eq!(select_record(true, Http), Some(RecordMode::Rows));
+        assert_eq!(
+            select_record(false, VercelQueues),
+            Some(RecordMode::Rowless)
+        );
+        // HTTP delivery has nothing to carry the job: still a loud error.
+        assert_eq!(select_record(false, Http), None);
     }
 
     #[test]
