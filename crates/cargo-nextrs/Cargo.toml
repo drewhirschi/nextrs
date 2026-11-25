@@ -21,8 +21,10 @@ path = "src/dev_main.rs"
 
 [dependencies]
 nextrs = { path = "../nextrs", version = "0.8.0", features = ["server-bundles"] }
-cargo-nextrs-dev = { path = "../cargo-nextrs-dev", version = "0.1.2" }
-create-nextrs-app = { path = "../create-nextrs-app", version = "0.1.8" }
+command-group = "5"
+ctrlc = "3"
+ignore = "0.4"
+notify-debouncer-full = "0.7"
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 toml = "0.8"

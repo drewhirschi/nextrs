@@ -461,7 +461,7 @@ fn sync_git_stub(root: &Path, git_deploys: bool) -> Result<Option<String>, Strin
     let existing = fs::read_to_string(&path).ok();
     match (git_deploys, existing.as_deref()) {
         (false, None) => {
-            write(&path, create_nextrs_app::VERCEL_GIT_STUB)?;
+            write(&path, crate::scaffold::VERCEL_GIT_STUB)?;
             Ok(Some(format!(
                 "{VERCEL_GIT_STUB_FILE}: written (turns off Vercel builds on push) — commit it"
             )))
@@ -1197,7 +1197,7 @@ trailingSlash = false
 
     #[test]
     fn git_stub_is_recognised_strictly() {
-        assert!(is_git_stub(create_nextrs_app::VERCEL_GIT_STUB));
+        assert!(is_git_stub(crate::scaffold::VERCEL_GIT_STUB));
         assert!(is_git_stub(r#"{"git":{"deploymentEnabled":false}}"#));
         assert!(!is_git_stub(r#"{"git":{"deploymentEnabled":true}}"#));
         assert!(!is_git_stub(r#"{"git":{"deploymentEnabled":false},"crons":[]}"#));

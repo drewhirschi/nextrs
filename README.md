@@ -140,9 +140,7 @@ pattern.
 ```text
 crates/nextrs/             framework and build pipeline
 crates/nextrs-macros/      #[nextrs::api]
-crates/cargo-nextrs/       unified `nextrs` / `cargo nextrs` CLI
-crates/create-nextrs-app/  scaffold library + deprecated wrapper
-crates/cargo-nextrs-dev/   dev runner library + deprecated wrapper
+crates/cargo-nextrs/       unified `nextrs` / `cargo nextrs` CLI (new, dev, client, deploy)
 examples/react-todos/      end-to-end example
 site/                      documentation site and demo app
 ```

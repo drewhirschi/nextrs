@@ -10,9 +10,11 @@ mod admin;
 mod bundles;
 mod cron;
 mod deploy;
+pub mod dev;
 mod env_file;
 mod jobs_queue;
 mod realtime;
+mod scaffold;
 
 const DEFAULT_CLIENT_DIR: &str = ".nextrs/client";
 
@@ -56,7 +58,7 @@ pub fn run_with_args(args: impl IntoIterator<Item = OsString>) -> Result<(), Str
         CommandLine::New(args) => create_app(args),
         CommandLine::Dev(args) => {
             prepare_generated_client_for_dev()?;
-            cargo_nextrs_dev::run_with_args(args).map_err(io_error)
+            dev::run_with_args(args).map_err(io_error)
         }
         CommandLine::ClientGenerate(options) => generate_client(options),
         CommandLine::Generate { root } | CommandLine::CronGenerate { root } => {
@@ -379,7 +381,7 @@ fn create_app(args: Vec<OsString>) -> Result<(), String> {
                 .map_err(|arg| format!("new arguments must be valid UTF-8: {arg:?}"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    create_nextrs_app::run_with_args_named("nextrs new", args).map_err(io_error)
+    scaffold::run_with_args_named("nextrs new", args).map_err(io_error)
 }
 
 fn required_string(args: &mut impl Iterator<Item = OsString>, flag: &str) -> Result<String, String> {

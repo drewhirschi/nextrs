@@ -4,8 +4,6 @@ members = [
     "crates/nextrs",
     "crates/nextrs-macros",
     "crates/cargo-nextrs",
-    "crates/cargo-nextrs-dev",
-    "crates/create-nextrs-app",
     "site",
     "examples/react-todos",
     "crates/cargo-nextrs/tests/fixtures/server-bundles",

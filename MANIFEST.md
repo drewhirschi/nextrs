@@ -16,9 +16,7 @@ Cargo workspace at the repo root — a pure virtual manifest (no root package). 
 |---|---|
 | `crates/nextrs/` | The framework crate (library). Source at `crates/nextrs/src/{lib,conventions,discovery,router,seed,prefetch,openapi,vercel,build,docs,bundle}.rs`. `vercel`, `build` and `docs` (both gated by the `build` feature), and `bundle` (gated by the `tsx` feature) are feature-gated. |
 | `crates/nextrs-macros/` | Proc-macro crate paired with `nextrs`. |
-| `crates/cargo-nextrs/` | Unified CLI. One package installs `cargo-nextrs` (`cargo nextrs`), `nextrs`, and a temporary `cargo-nextrs-dev` compatibility launcher. Owns `new`, `dev`, and `client generate` dispatch. |
-| `crates/cargo-nextrs-dev/` | Dev-runner library used by the unified CLI, plus the deprecated standalone `cargo nextrs-dev` wrapper. |
-| `crates/create-nextrs-app/` | React-first scaffold library used by `nextrs new`, plus the deprecated `create-nextrs-app` wrapper. Scaffold templates live in `src/lib.rs`. |
+| `crates/cargo-nextrs/` | Unified CLI. One package installs `cargo-nextrs` (`cargo nextrs`), `nextrs`, and a temporary `cargo-nextrs-dev` compatibility launcher. Owns the scaffolder (`src/scaffold.rs`), dev runner (`src/dev.rs`), client generation, bundles, deploy, cron, realtime, and admin commands. |
 | `site/` | Self-contained docs/demo app: shared Rust app (`src/app.rs`), local entry (`src/main.rs`), Vercel adapter (`api/index.rs`), hidden generated client (`.nextrs/client`), React `app/` and `components/`, `build.rs`, and `public/`. `cd site && cargo dev` → http://localhost:3000. The Vercel deploy target uses Root Directory = `site`. |
 
 The framework is a normal Rust library. The user writes convention files under

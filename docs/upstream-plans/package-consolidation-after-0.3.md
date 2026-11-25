@@ -1,7 +1,7 @@
 # Consolidate the published CLI packages after cargo-nextrs 0.3
 
 - **Recorded:** 2026-08-29
-- **Status:** ready for a follow-up implementation PR — NOT built as of 2026-11-16 (see the update below)
+- **Status:** implemented (2026-11-24) — `create-nextrs-app` (frozen at `0.1.8`) and `cargo-nextrs-dev` (frozen at `0.1.2`) consolidated into `cargo-nextrs` and removed from the workspace
 - **Predecessor:** PR 41, squash-merged as `fc8112b`
 
 ## Release state

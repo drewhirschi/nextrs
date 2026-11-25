@@ -9,13 +9,10 @@ single serverless function.
 - `crates/nextrs` — the framework crate (router, bundler, conventions, macros re-export).
 - `crates/nextrs-macros` — proc-macros (depend on `nextrs`, not this directly).
 - `crates/cargo-nextrs` — the unified CLI behind both `cargo nextrs` and
-  `nextrs`; dispatches `new`, `dev`, and `client generate`, and temporarily
-  ships the legacy dev-launcher name.
-- `crates/create-nextrs-app` — scaffold library used by `nextrs new`, plus the
-  deprecated `create-nextrs-app` wrapper. Its templates live in `src/lib.rs`
-  and generate `src/app.rs`, process adapters, and the hidden client package.
-- `crates/cargo-nextrs-dev` — dev-runner library used by the unified CLI, plus
-  the deprecated standalone `cargo nextrs-dev` wrapper.
+  `nextrs`; owns the scaffolder (`src/scaffold.rs` — generates `src/app.rs`,
+  process adapters, and the hidden client package), the dev runner (`src/dev.rs`),
+  client generation, bundles, deploy, cron, realtime, and admin commands, and
+  temporarily ships the legacy `cargo-nextrs-dev` launcher binary.
 - `site/` — the docs site (self-contained Vercel deploy; see below).
 - `examples/react-todos` — worked example. Depends on published `nextrs`, patched to
   local source inside the workspace (see root `Cargo.toml` `[patch.crates-io]`).
@@ -127,7 +124,7 @@ inside a deployment; a `vercel env pull` token is a development token.
 ## Framework vs. generated-app changes (important)
 
 A fix in `crates/nextrs` reaches existing apps on their next `cargo update`/rebuild. A fix
-in `crates/create-nextrs-app/src/lib.rs` templates only reaches **newly generated** apps —
+in `crates/cargo-nextrs/src/scaffold.rs` templates only reaches **newly generated** apps —
 existing apps keep the wiring baked in at creation time. When both apply, prefer putting
 reusable logic in the framework crate and having the scaffold call it, so existing apps
 can adopt it with a one-line change.
