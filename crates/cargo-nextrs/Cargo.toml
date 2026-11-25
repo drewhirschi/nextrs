@@ -1,6 +1,6 @@
 [package]
 name = "cargo-nextrs"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -20,7 +20,7 @@ name = "cargo-nextrs-dev"
 path = "src/dev_main.rs"
 
 [dependencies]
-nextrs = { path = "../nextrs", version = "0.8.0", features = ["server-bundles"] }
+nextrs = { path = "../nextrs", version = "0.8.1", features = ["server-bundles"] }
 command-group = "5"
 ctrlc = "3"
 ignore = "0.4"
