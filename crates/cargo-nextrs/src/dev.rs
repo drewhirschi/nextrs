@@ -81,23 +81,10 @@ const CARGO_BUILD_ENV: &[&str] = &[
     "TARGET",
 ];
 
-fn main() {
-    eprintln!("warning: `cargo nextrs-dev` is deprecated; use `cargo nextrs dev` or `nextrs dev`");
-    if let Err(error) = run() {
-        eprintln!("error: {error}");
-        std::process::exit(1);
-    }
-}
-
-fn run() -> std::io::Result<()> {
-    run_with_args(env::args_os().skip(1))
-}
-
 /// Run the dev server with an explicit cargo-subcommand argument list.
 ///
-/// This is public so the unified `cargo-nextrs` package can expose
-/// `cargo nextrs dev` while the legacy `cargo-nextrs-dev` binary remains a
-/// compatibility entry point for existing `.cargo/config.toml` aliases.
+/// Exposed for `nextrs dev`, `cargo nextrs dev`, and the compatibility
+/// `cargo-nextrs-dev` launcher.
 pub fn run_with_args(args: impl IntoIterator<Item = OsString>) -> std::io::Result<()> {
     let mut options = Options::parse(args)?;
     let root = env::current_dir()?;

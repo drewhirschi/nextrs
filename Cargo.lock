@@ -397,10 +397,12 @@ name = "cargo-nextrs"
 version = "0.4.0"
 dependencies = [
  "argon2",
- "cargo-nextrs-dev",
- "create-nextrs-app",
+ "command-group",
+ "ctrlc",
  "dotenvy",
+ "ignore",
  "nextrs",
+ "notify-debouncer-full",
  "password-hash",
  "regex",
  "serde",
@@ -409,18 +411,6 @@ dependencies = [
  "tempfile",
  "toml",
  "ureq",
-]
-
-[[package]]
-name = "cargo-nextrs-dev"
-version = "0.1.2"
-dependencies = [
- "command-group",
- "ctrlc",
- "ignore",
- "notify-debouncer-full",
- "serde",
- "serde_json",
 ]
 
 [[package]]
@@ -562,10 +552,6 @@ checksum = "9481c1c90cbf2ac953f07c8d4a58aa3945c425b7185c9154d67a65e4230da511"
 dependencies = [
  "cfg-if",
 ]
-
-[[package]]
-name = "create-nextrs-app"
-version = "0.1.8"
 
 [[package]]
 name = "crossbeam-deque"

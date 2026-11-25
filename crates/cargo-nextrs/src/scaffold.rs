@@ -20,19 +20,8 @@ pub const VERCEL_GIT_STUB: &str = r#"{
 }
 "#;
 
-/// Run the scaffolder with an explicit argument list.
-///
-/// This is the shared implementation behind both the legacy
-/// `create-nextrs-app` executable and `nextrs new`.
-pub fn run_with_args(args: impl IntoIterator<Item = String>) -> io::Result<()> {
-    run_with_args_named("create-nextrs-app", args)
-}
-
 /// Run the scaffolder under a caller-provided command name.
-///
-/// The unified CLI uses this to show `nextrs new` in help while the legacy
-/// launcher continues to show `create-nextrs-app`.
-pub fn run_with_args_named(
+pub(crate) fn run_with_args_named(
     command_name: &str,
     args: impl IntoIterator<Item = String>,
 ) -> io::Result<()> {

@@ -1,22 +1,21 @@
 # Publishing nextrs to crates.io
 
-Status (2026-11-24): the framework, unified CLI, and compatibility tools are
-published on crates.io.
+Status (2026-11-24): the framework and unified CLI are published on crates.io as
+three packages.
 
 | crate | workspace | crates.io status |
 | --- | --- | --- |
 | `nextrs` | **0.8.0** | **0.8.0** |
 | `nextrs-macros` | **0.1.10** | **0.1.10** |
 | `cargo-nextrs` | **0.4.0** | **0.4.0** |
-| `create-nextrs-app` | **0.1.8** | **0.1.8** |
-| `cargo-nextrs-dev` | **0.1.2** | **0.1.2** (`nextrs dev` watches `jobs/`) |
 
-`create-nextrs-app` still has to be published with every release because
-`cargo-nextrs` depends on it as a library (the scaffold templates pin the
-framework version). Removing that is the plan in
-`docs/upstream-plans/package-consolidation-after-0.3.md` — not yet built.
+The standalone `create-nextrs-app` (last published `0.1.8`) and `cargo-nextrs-dev`
+(last published `0.1.2`) packages have been retired and removed from the
+workspace; their scaffold and dev-runner implementations now live directly inside
+`cargo-nextrs` (`src/scaffold.rs` and `src/dev.rs`). Existing crates.io releases
+remain unyanked so old installation instructions keep resolving.
 
-The intended user install is now exclusively:
+The intended user install is exclusively:
 
 ```bash
 cargo install cargo-nextrs
@@ -33,20 +32,16 @@ Publish **in this order** (deps first) with a `cargo login` done once on the mac
 ```bash
 cargo publish -p nextrs-macros      # only when its version changed
 cargo publish -p nextrs             # only when its version changed
-cargo publish -p cargo-nextrs-dev   # publish its library target first
-cargo publish -p create-nextrs-app  # publish its scaffold library next
 cargo publish -p cargo-nextrs       # unified CLI always goes last
 ```
 
-When either compatibility library changes, publish it before publishing a new
-`cargo-nextrs` version, then update the corresponding dependency version in
-`crates/cargo-nextrs/Cargo.toml`. Published versions are immutable.
+Published versions are immutable.
 
 - Bump `nextrs`'s pinned `nextrs-macros = { version = ... }` dep together with the
   macros version.
-- Keep `create-nextrs-app/src/lib.rs`'s emitted `nextrs = "0.x"` in lockstep with the
-  released `nextrs` version (currently `0.8.0`) so the scaffold never pins an
-  unpublished version. The scaffold tests assert this value.
+- Keep `crates/cargo-nextrs/src/scaffold.rs`'s emitted `nextrs = "0.x"` in lockstep
+  with the released `nextrs` version (currently `0.8.0`) so the scaffold never pins
+  an unpublished version. The scaffold tests assert this value.
 - Verify the package contents and install surface before publishing:
 
   ```bash
