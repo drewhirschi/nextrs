@@ -6,7 +6,8 @@ order = 16
 +++
 
 Available since nextrs 0.7.0 and the 0.3.1 CLI. Delivery through Vercel
-Queues is in the release after 0.7.0.
+Queues, jobs without a database, and the `jobs/` folder need nextrs 0.8.0 and
+the 0.4.0 CLI.
 
 Some work must not be lost when it fails: sending an email, syncing a
 webhook, writing an audit record. `nextrs::WaitUntil` runs work after the

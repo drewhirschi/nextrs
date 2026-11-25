@@ -74,7 +74,7 @@ name = "jobs"
 path = "api/jobs.rs"
 
 [dependencies]
-nextrs = { version = "0.7", features = ["vercel", "jobs"] }
+nextrs = { version = "0.8", features = ["vercel", "jobs"] }
 tower = "0.5"
 vercel_runtime = { version = "2", features = ["axum"] }
 ```
