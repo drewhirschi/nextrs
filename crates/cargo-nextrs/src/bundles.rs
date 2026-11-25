@@ -192,6 +192,24 @@ pub fn build(
     }) {
         return Err(format!("package {} has no binary {bin:?}", package["name"]));
     }
+    if options.vercel
+        && crate::jobs_queue::has_consumer(&root)
+        && !package["targets"].as_array().unwrap().iter().any(|t| {
+            t["name"] == crate::jobs_queue::CONSUMER_BIN
+                && t["kind"]
+                    .as_array()
+                    .is_some_and(|k| k.contains(&json!("bin")))
+        })
+    {
+        return Err(format!(
+            "{} exists but package {} has no binary {:?}; add `[[bin]] name = \"{}\"`, `path = \"{}\"` to Cargo.toml",
+            crate::jobs_queue::CONSUMER_SOURCE,
+            package["name"],
+            crate::jobs_queue::CONSUMER_BIN,
+            crate::jobs_queue::CONSUMER_BIN,
+            crate::jobs_queue::CONSUMER_SOURCE,
+        ));
+    }
     let output = output.map(Path::to_path_buf).unwrap_or_else(|| {
         root.join(if options.vercel {
             ".vercel/output"
@@ -248,100 +266,153 @@ fn build_into(
             bundle.name,
             bundle.features.join(", ")
         );
-        let mut command = Command::new("cargo");
-        command
-            .current_dir(root)
-            .env("NEXTRS_SERVER_BUNDLE", &bundle.name)
-            .arg(if options.vercel { "zigbuild" } else { "build" })
-            .args([
-                "--locked",
-                "--bin",
-                bin,
-                "--no-default-features",
-                "--message-format=json-render-diagnostics",
-            ])
-            .stderr(Stdio::inherit());
-        if !options.dev {
-            command.arg("--release");
-        }
-        if options.vercel {
-            command.args(["--target", "x86_64-unknown-linux-gnu.2.26"]);
-        }
-        if !bundle.features.is_empty() {
-            command.arg("--features").arg(bundle.features.join(","));
-        }
-        let output = command.output().map_err(|e| format!("cargo: {e}"))?;
-        if !output.status.success() {
-            return Err(format!("server bundle {} failed to compile", bundle.name));
-        }
-        let receipt_path = String::from_utf8_lossy(&output.stdout).lines()
-            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-            .find(|event| event["reason"] == "build-script-executed" && event["package_id"] == package_id)
-            .and_then(|event| event["out_dir"].as_str().map(|dir| Path::new(dir).join("nextrs-server-bundle.json")))
-            .ok_or("application build script did not report server bundle selection; update nextrs and call emit_registry from build.rs")?;
-        let receipt: Value = fs::read(&receipt_path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok())
-            .ok_or("missing server bundle receipt; update the application's nextrs dependency to a version supporting server bundles")?;
-        if receipt["bundle"] != bundle.name || receipt["routes"] != json!(bundle.routes) {
-            return Err(format!(
-                "server bundle {} codegen disagrees with deployment plan; refusing to package it",
-                bundle.name
-            ));
-        }
-        let executable = String::from_utf8_lossy(&output.stdout)
-            .lines()
-            .filter_map(|line| serde_json::from_str::<Value>(line).ok())
-            .filter(|event| {
-                event["reason"] == "compiler-artifact" && event["target"]["name"] == bin
-            })
-            .filter_map(|event| event["executable"].as_str().map(PathBuf::from))
-            .last()
-            .ok_or_else(|| format!("cargo returned no executable for {}", bundle.name))?;
+        let executable = compile(root, options, bundle, bin, package_id)?;
         let directory = if options.vercel {
             function_dir(stage, &bundle.name)
         } else {
             stage.join(&bundle.name)
         };
-        fs::create_dir_all(&directory).map_err(|e| e.to_string())?;
-        fs::copy(&executable, directory.join("executable")).map_err(|e| e.to_string())?;
-        for asset in &bundle.assets {
-            if matches!(
-                asset
-                    .components()
-                    .next()
-                    .and_then(|p| p.as_os_str().to_str()),
-                Some(
-                    "executable"
-                        | ".vc-config.json"
-                        | ".nextrs"
-                        | ".vercel"
-                        | "target"
-                        | "target-vercel"
-                )
-            ) {
-                return Err(format!("reserved bundle asset path {}", asset.display()));
-            }
-            // Check intermediate directories too; a file reached through a
-            // symlink must not escape the declared application resource tree.
-            let mut source = root.to_path_buf();
-            for component in asset.components() {
-                source.push(component);
-                if fs::symlink_metadata(&source)
-                    .map_err(|e| format!("{}: {e}", source.display()))?
-                    .file_type()
-                    .is_symlink()
-                {
-                    return Err(format!("asset {} traverses a symlink", asset.display()));
-                }
-            }
-            copy_tree(&source, &directory.join(asset))?;
-        }
+        package(root, bundle, &executable, &directory)?;
         artifacts.insert(bundle.name.clone(), json!({"executable_bytes":fs::metadata(&executable).map_err(|e| e.to_string())?.len(), "features":bundle.features, "assets":bundle.assets}));
+    }
+    // The jobs queue consumer is one more function: the default bundle's
+    // selection and features, built from api/jobs.rs instead of api/index.rs.
+    if options.vercel && crate::jobs_queue::has_consumer(root) {
+        let default = default_bundle(plan)?;
+        eprintln!(
+            "nextrs: building the jobs queue consumer ({})",
+            crate::jobs_queue::CONSUMER_SOURCE
+        );
+        let executable = compile(
+            root,
+            options,
+            default,
+            crate::jobs_queue::CONSUMER_BIN,
+            package_id,
+        )?;
+        package(
+            root,
+            default,
+            &executable,
+            &crate::jobs_queue::function_dir(stage),
+        )?;
     }
     write_json(&stage.join("bundle-artifacts.json"), &artifacts)?;
     if options.vercel && root.join("public").is_dir() {
         copy_tree(&root.join("public"), &stage.join("static"))?;
     }
     write_plan_metadata(root, plan, stage, options.vercel)
+}
+
+fn default_bundle(plan: &BundlePlan) -> Result<&nextrs::server_bundles::Bundle, String> {
+    plan.bundles
+        .get("default")
+        .ok_or_else(|| "the bundle plan has no default bundle for the jobs queue consumer".into())
+}
+
+/// Compile `bin` for one bundle's route selection and features; returns the
+/// executable cargo produced.
+fn compile(
+    root: &Path,
+    options: &BuildOptions,
+    bundle: &nextrs::server_bundles::Bundle,
+    bin: &str,
+    package_id: &str,
+) -> Result<PathBuf, String> {
+    let mut command = Command::new("cargo");
+    command
+        .current_dir(root)
+        .env("NEXTRS_SERVER_BUNDLE", &bundle.name)
+        .arg(if options.vercel { "zigbuild" } else { "build" })
+        .args([
+            "--locked",
+            "--bin",
+            bin,
+            "--no-default-features",
+            "--message-format=json-render-diagnostics",
+        ])
+        .stderr(Stdio::inherit());
+    if !options.dev {
+        command.arg("--release");
+    }
+    if options.vercel {
+        command.args(["--target", "x86_64-unknown-linux-gnu.2.26"]);
+    }
+    if !bundle.features.is_empty() {
+        command.arg("--features").arg(bundle.features.join(","));
+    }
+    let output = command.output().map_err(|e| format!("cargo: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "server bundle {} ({bin}) failed to compile",
+            bundle.name
+        ));
+    }
+    let receipt_path = String::from_utf8_lossy(&output.stdout).lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .find(|event| event["reason"] == "build-script-executed" && event["package_id"] == package_id)
+        .and_then(|event| event["out_dir"].as_str().map(|dir| Path::new(dir).join("nextrs-server-bundle.json")))
+        .ok_or("application build script did not report server bundle selection; update nextrs and call emit_registry from build.rs")?;
+    let receipt: Value = fs::read(&receipt_path).ok().and_then(|bytes| serde_json::from_slice(&bytes).ok())
+        .ok_or("missing server bundle receipt; update the application's nextrs dependency to a version supporting server bundles")?;
+    if receipt["bundle"] != bundle.name || receipt["routes"] != json!(bundle.routes) {
+        return Err(format!(
+            "server bundle {} codegen disagrees with deployment plan; refusing to package it",
+            bundle.name
+        ));
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| serde_json::from_str::<Value>(line).ok())
+        .filter(|event| event["reason"] == "compiler-artifact" && event["target"]["name"] == bin)
+        .filter_map(|event| event["executable"].as_str().map(PathBuf::from))
+        .last()
+        .ok_or_else(|| format!("cargo returned no executable for {} ({bin})", bundle.name))
+}
+
+/// Lay one function out in `directory`: the executable plus the bundle's
+/// declared assets.
+fn package(
+    root: &Path,
+    bundle: &nextrs::server_bundles::Bundle,
+    executable: &Path,
+    directory: &Path,
+) -> Result<(), String> {
+    fs::create_dir_all(directory).map_err(|e| e.to_string())?;
+    fs::copy(executable, directory.join("executable")).map_err(|e| e.to_string())?;
+    for asset in &bundle.assets {
+        if matches!(
+            asset
+                .components()
+                .next()
+                .and_then(|p| p.as_os_str().to_str()),
+            Some(
+                "executable"
+                    | ".vc-config.json"
+                    | ".nextrs"
+                    | ".vercel"
+                    | "target"
+                    | "target-vercel"
+            )
+        ) {
+            return Err(format!("reserved bundle asset path {}", asset.display()));
+        }
+        // Check intermediate directories too; a file reached through a
+        // symlink must not escape the declared application resource tree.
+        let mut source = root.to_path_buf();
+        for component in asset.components() {
+            source.push(component);
+            if fs::symlink_metadata(&source)
+                .map_err(|e| format!("{}: {e}", source.display()))?
+                .file_type()
+                .is_symlink()
+            {
+                return Err(format!("asset {} traverses a symlink", asset.display()));
+            }
+        }
+        copy_tree(&source, &directory.join(asset))?;
+    }
+    Ok(())
 }
 
 /// Everything in the output that derives from the plan and `nextrs.toml`
@@ -363,6 +434,19 @@ fn write_plan_metadata(
     let mut config = json!({"handler":"executable","runtime":"executable","runtimeLanguage":"rust","architecture":"x86_64","environment":{},"supportsResponseStreaming":true});
     if !settings.regions.is_empty() {
         config["regions"] = json!(settings.regions);
+    }
+    // With a jobs queue consumer, every function is told it exists (that is
+    // what switches job delivery to the queue) and the consumer's own config
+    // carries the trigger.
+    let jobs_consumer = crate::jobs_queue::has_consumer(root);
+    if jobs_consumer {
+        crate::jobs_queue::mark_consumer_present(&mut config);
+        let mut consumer = config.clone();
+        crate::jobs_queue::ensure_trigger(&mut consumer);
+        write_json(
+            &crate::jobs_queue::function_dir(output).join(".vc-config.json"),
+            &consumer,
+        )?;
     }
     for bundle in plan.bundles.values() {
         write_json(
@@ -428,6 +512,7 @@ pub fn build_with_command(root: &Path, command: &str, output: &Path) -> Result<(
         return Err(format!("[build] command `{command}` failed with {status}"));
     }
     verify_vercel_output(&plan, output)
+        .and_then(|()| verify_jobs_consumer(&root, output))
         .map_err(|rule| format!("[build] command `{command}` broke a packaging rule: {rule}\n  See https://nextrs.hirschi.dev/docs/custom-build"))?;
     // Plan-derived files stay framework-owned whatever the command wrote.
     write_plan_metadata(&root, &plan, output, true)?;
@@ -451,12 +536,32 @@ pub fn verify(root: &Path, output: Option<&Path>) -> Result<(), String> {
         .map(Path::to_path_buf)
         .unwrap_or_else(|| root.join(".vercel/output"));
     verify_vercel_output(&plan, &output)?;
+    verify_jobs_consumer(&root, &output)?;
     eprintln!(
         "nextrs: {} follows the packaging rules ({} bundle(s))",
         output.display(),
         plan.bundles.len()
     );
     Ok(())
+}
+
+/// An app with `api/jobs.rs` must ship the consumer's executable: its
+/// function config is written either way, and a config without an executable
+/// is a function that cannot start.
+fn verify_jobs_consumer(root: &Path, output: &Path) -> Result<(), String> {
+    if !crate::jobs_queue::has_consumer(root) {
+        return Ok(());
+    }
+    let executable = crate::jobs_queue::function_dir(output).join("executable");
+    if executable.is_file() {
+        Ok(())
+    } else {
+        Err(format!(
+            "{} exists but the output has no jobs queue consumer at {}",
+            crate::jobs_queue::CONSUMER_SOURCE,
+            executable.display()
+        ))
+    }
 }
 
 /// The packaging rules for a custom-built Vercel output.

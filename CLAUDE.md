@@ -116,6 +116,14 @@ crates.io — publish-then-verify, sometimes before the PR merges. Tolerated for
 now (2026-07-03); if it starts to chafe, the fix is a preview-deploy path that
 vendors the workspace source instead.
 
+**The example has two Vercel functions.** `api/index.rs` serves the app;
+`api/jobs.rs` is the Vercel Queues consumer that runs `app/jobs/`. Job
+delivery switches to the queue only when `nextrs deploy` finds `api/jobs.rs`
+(it writes the trigger and sets `NEXTRS_JOBS_CONSUMER` in each function's
+environment), so a jobs change needs a preview deploy to be exercised on
+Vercel — locally jobs still use the self-POST. Queue sends work only from
+inside a deployment; a `vercel env pull` token is a development token.
+
 ## Framework vs. generated-app changes (important)
 
 A fix in `crates/nextrs` reaches existing apps on their next `cargo update`/rebuild. A fix

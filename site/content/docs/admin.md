@@ -85,8 +85,8 @@ tracing_subscriber::registry()
 
 | Env | Purpose |
 |---|---|
-| `NEXTRS_DB_URL` / `TURSO_DATABASE_URL` (+ `_TOKEN`) | Where records live (`__nextrs_logs`). Memory when unset, which is fine for dev. |
-| `NEXTRS_LOGS_RETENTION_DAYS` | Days to keep (default 14), enforced by the jobs sweep. |
+| `NEXTRS_LOGS_DB_URL`, else `NEXTRS_DB_URL` (+ `_TOKEN`) | Where records live (`__nextrs_logs`). Memory when unset, which is fine for dev. Your app's `TURSO_DATABASE_URL` is not used; up to 0.7.0 it was a fallback. |
+| `NEXTRS_LOGS_RETENTION_DAYS` | Days to keep (default 14), enforced by the jobs sweep, or by the [jobs queue consumer](/docs/jobs#how-jobs-are-delivered) on Vercel. |
 | `NEXTRS_LOGS_SAMPLE` | Sample rate for fast, successful, quiet requests (default 1.0). |
 | `NEXTRS_LOGS=0` | Turn capture off. |
 

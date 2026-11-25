@@ -51,6 +51,10 @@ async fn main() -> Result<(), vercel_runtime::Error> {
 Both processes call the same `app()`, so routes and application layers cannot
 drift.
 
+The scaffold also supplies `api/jobs.rs`, a second function that runs
+[background jobs](/docs/jobs#how-jobs-are-delivered) delivered through Vercel
+Queues. It wraps the same `app()` and contains no application logic either.
+
 The corresponding Cargo targets and runtime dependencies are:
 
 ```toml
@@ -65,8 +69,12 @@ path = "src/main.rs"
 name = "index"
 path = "api/index.rs"
 
+[[bin]]
+name = "jobs"
+path = "api/jobs.rs"
+
 [dependencies]
-nextrs = { version = "0.5", features = ["vercel"] }
+nextrs = { version = "0.7", features = ["vercel", "jobs"] }
 tower = "0.5"
 vercel_runtime = { version = "2", features = ["axum"] }
 ```
@@ -87,7 +95,13 @@ root:
   "installCommand": "npm ci",
   "buildCommand": "npm run client:prepare && cargo build --release --bin index && npm run client:build",
   "functions": {
-    "api/index.rs": { "runtime": "vercel-rust@4.0.11" }
+    "api/index.rs": { "runtime": "vercel-rust@4.0.11" },
+    "api/jobs.rs": {
+      "runtime": "vercel-rust@4.0.11",
+      "experimentalTriggers": [
+        { "type": "queue/v2beta", "topic": "nx-jobs", "retryAfterSeconds": 60, "maxDeliveries": 32 }
+      ]
+    }
   },
   "headers": [
     {
@@ -106,7 +120,10 @@ root:
 
 The `functions` block is mandatory because `vercel-rust` is a community
 runtime and is not selected automatically. The catch-all passes the original
-path to Axum, including dynamic segments.
+path to Axum, including dynamic segments. The `api/jobs.rs` entry is written
+only when that file exists; its trigger makes Vercel call the function for
+each message on the jobs queue topic, and the function is not reachable from
+outside the deployment.
 
 The build sequence is intentional:
 
@@ -230,8 +247,8 @@ corresponding protection-bypass header.
 
 If Vercel is not a target, remove the whole adapter surface together:
 
-- `api/index.rs`;
-- the `index` Cargo target;
+- `api/index.rs` and `api/jobs.rs`;
+- the `index` and `jobs` Cargo targets;
 - `vercel_runtime`, `tower` if otherwise unused, and the nextrs `vercel`
   feature if otherwise unused;
 - `vercel.json`, the `[vercel]` table in `nextrs.toml`, and the prebuilt

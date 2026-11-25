@@ -22,6 +22,15 @@
 - **Short back-offs (≤ 60s) self-retry** inside the failed run's
   `WaitUntil`. Longer ones wait for the sweep. Locally a 30s in-process
   sweeper runs.
+- **On Vercel the kick is a Vercel Queues message (2026-11-24)**, not the
+  signed internal POST described below, when the deployment has the
+  `api/jobs.rs` consumer function. The consumer runs the job inside the
+  delivery request; a retry is a delayed message, so every back-off is exact
+  and no sweeper is needed; a run whose instance died is redelivered by the
+  queue and reclaimed. Rows, attempts, logs and the dashboards are unchanged.
+  Design and measurements:
+  [upstream-plans/vercel-queues-jobs-backend.md](upstream-plans/vercel-queues-jobs-backend.md).
+  The "Sub-minute retries" open question below is closed for Vercel by this.
 - **`nextrs admin set-password`** writes `NEXTRS_ADMIN_USER` and the hash to
   `.env.local` and prints the `vercel env add` lines. `nextrs deploy` does not
   push them.

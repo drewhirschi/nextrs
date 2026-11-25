@@ -35,8 +35,8 @@ pub struct LibsqlJobStore {
     conn: tokio::sync::OnceCell<libsql::Connection>,
 }
 
-/// Build from env: `NEXTRS_JOBS_DB_URL` → `NEXTRS_DB_URL` →
-/// `TURSO_DATABASE_URL` (tokens likewise); `None` when none is set.
+/// Build from env: `NEXTRS_JOBS_DB_URL` → `NEXTRS_DB_URL` (tokens
+/// likewise); `None` when neither is set.
 pub(super) fn from_env() -> Option<LibsqlJobStore> {
     let (url, token) = crate::db::env_url(&["NEXTRS_JOBS_DB_URL"], &["NEXTRS_JOBS_DB_TOKEN"])?;
     Some(LibsqlJobStore::new(url, token))
@@ -307,6 +307,27 @@ impl super::JobStore for LibsqlJobStore {
                 .await
                 .map_err(|e| StoreError(format!("reclaim_stale: {e}")))?;
             Ok(affected as u32)
+        })
+    }
+
+    fn reclaim_one(&self, id: &JobId, cutoff: i64) -> StoreFuture<'_, bool> {
+        let id = id.clone();
+        Box::pin(async move {
+            let affected = self
+                .conn()
+                .await?
+                .execute(
+                    "UPDATE __nextrs_jobs
+                     SET status = CASE WHEN attempts >= max_attempts THEN 'dead' ELSE 'failed' END,
+                         next_run_at = CASE WHEN attempts >= max_attempts THEN NULL ELSE ?2 END,
+                         last_error = COALESCE(last_error, 'reclaimed: instance died mid-run'),
+                         updated_at = ?2
+                     WHERE id = ?3 AND status = 'running' AND updated_at < ?1",
+                    libsql::params![cutoff, now_ms(), id.0.clone()],
+                )
+                .await
+                .map_err(|e| StoreError(format!("reclaim_one: {e}")))?;
+            Ok(affected > 0)
         })
     }
 

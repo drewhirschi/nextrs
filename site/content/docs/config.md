@@ -85,6 +85,7 @@ Copy settings that NextRS models into `[vercel]`:
 | `installCommand` | `install_command` |
 | `buildCommand` | `build_command` |
 | `functions.api/index.rs.runtime` | `runtime` |
+| `functions.api/jobs.rs` (the [jobs queue consumer](/docs/jobs#how-jobs-are-delivered)) | nothing: generated when `api/jobs.rs` exists |
 | `git.deploymentEnabled` | `git_deploys` |
 
 Put other non-framework top-level settings under `[vercel.extra]`. For example,
