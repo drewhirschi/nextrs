@@ -32,6 +32,7 @@ const NX_SWAP_SCRIPT: &str = concat!(
     "var s=document.getElementById('__nx_slot__');",
     "var t=document.getElementById('__nx_page__');",
     "if(!s||!t)return;",
+    "if(window.__nx_loading_unmount){try{window.__nx_loading_unmount();}catch(_){}delete window.__nx_loading_unmount;}",
     "var c=t.content.cloneNode(true);",
     "c.querySelectorAll('script').forEach(function(o){",
     "var n=document.createElement('script');",
@@ -1311,6 +1312,7 @@ mod tests {
         assert!(page_template < dashboard);
         assert!(dashboard < swap_script);
         assert!(swap_script < layout_close);
+        assert!(body.contains("__nx_loading_unmount"));
     }
 
     #[tokio::test]
