@@ -52,6 +52,7 @@ mysite/
 │   └── dump-openapi.rs          # hidden code-generation helper
 ├── api/index.rs                 # Vercel process adapter
 ├── api/jobs.rs                  # Vercel Queues consumer for background jobs
+├── jobs/                        # background jobs: #[nextrs::job] functions
 ├── public/                      # static assets
 ├── build.rs                     # route discovery and browser bundling
 ├── package.json                 # all JavaScript dependencies live here

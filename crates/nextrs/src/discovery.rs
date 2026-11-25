@@ -40,7 +40,8 @@ pub struct DiscoveredRoute {
     /// `prefetch.rs` (legacy name `props.rs`) — server data for a `page.tsx`
     /// (Rust-only; requires the page slot to be `.tsx`, enforced by codegen).
     pub prefetch: Option<PathBuf>,
-    /// `job.rs` (background job) — only meaningful under `app/jobs/<name>/`,
+    /// `job.rs` (background job, the original location; new jobs go in the
+    /// `jobs/` folder beside `app/`) — only meaningful under `app/jobs/<name>/`,
     /// enforced by codegen. The job's stable name is the directory path under
     /// `app/jobs/`.
     pub job: Option<PathBuf>,

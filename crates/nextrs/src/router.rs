@@ -498,8 +498,12 @@ fn build_route_table(
     // Background jobs: one authed POST route per registered job, plus sweep
     // and status. Apps without jobs don't reserve the prefix.
     #[cfg(feature = "jobs")]
-    if !jobs.is_empty() {
-        router = router.merge(build_jobs_endpoints(Arc::clone(&jobs)));
+    {
+        // Also with no jobs: enqueue checks a job's name against this.
+        crate::jobs::note_registered(jobs.iter().map(|job| job.name));
+        if !jobs.is_empty() {
+            router = router.merge(build_jobs_endpoints(Arc::clone(&jobs)));
+        }
     }
     #[cfg(not(feature = "jobs"))]
     let _ = &jobs;

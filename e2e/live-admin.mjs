@@ -118,7 +118,7 @@ try {
   });
   const auth = { authorization: `Basic ${btoa("e2e:e2e-password")}` };
   const flakyJob = async () => {
-    const res = await fetch(`${base}/__nx/admin/api/jobs?name=audit-todo`, { headers: auth });
+    const res = await fetch(`${base}/__nx/admin/api/jobs?name=audit_todo`, { headers: auth });
     const { jobs } = await res.json();
     return jobs.find((j) => j.payload?.title === flaky);
   };

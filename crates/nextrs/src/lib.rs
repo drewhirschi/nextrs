@@ -83,7 +83,7 @@ pub use nextrs_macros::cron;
 /// `rsx! { <main>...</main> }` — JSX-shaped HTML for Rust server components,
 /// returning [`rsx::Rsx`]. See [`nextrs_macros::rsx`] and `docs/rsx-server-components.md`.
 pub use nextrs_macros::rsx;
-/// `#[nextrs::job]` — a background job in `app/jobs/<name>/job.rs` with retries and back-off.
+/// `#[nextrs::job]` — a background job in the `jobs/` folder beside `app/`, with retries and back-off.
 /// See [`nextrs_macros::job`] and [`jobs`] (feature `jobs`).
 pub use nextrs_macros::job;
 

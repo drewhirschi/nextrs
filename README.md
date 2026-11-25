@@ -29,6 +29,7 @@ my-app/
 │   └── dump-openapi.rs        framework codegen helper
 ├── api/index.rs               Vercel process adapter
 ├── api/jobs.rs                Vercel Queues consumer for background jobs
+├── jobs/                      background jobs: #[nextrs::job] functions
 ├── public/                    static assets
 └── build.rs                   Cargo build hook for routes and TSX
 ```
