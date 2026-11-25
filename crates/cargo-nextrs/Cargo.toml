@@ -1,6 +1,6 @@
 [package]
 name = "cargo-nextrs"
-version = "0.3.1"
+version = "0.4.0"
 edition = "2024"
 rust-version = "1.85"
 license = "Apache-2.0"
@@ -20,9 +20,9 @@ name = "cargo-nextrs-dev"
 path = "src/dev_main.rs"
 
 [dependencies]
-nextrs = { path = "../nextrs", version = "0.7.0", features = ["server-bundles"] }
-cargo-nextrs-dev = { path = "../cargo-nextrs-dev", version = "0.1.1" }
-create-nextrs-app = { path = "../create-nextrs-app", version = "0.1.7" }
+nextrs = { path = "../nextrs", version = "0.8.0", features = ["server-bundles"] }
+cargo-nextrs-dev = { path = "../cargo-nextrs-dev", version = "0.1.2" }
+create-nextrs-app = { path = "../create-nextrs-app", version = "0.1.8" }
 serde = { version = "1", features = ["derive"] }
 serde_json = { version = "1", features = ["preserve_order"] }
 toml = "0.8"
