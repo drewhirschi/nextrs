@@ -1,13 +1,13 @@
 # Publishing nextrs to crates.io
 
-Status (2026-11-24): the framework and unified CLI are published on crates.io as
+Status (2026-11-25): the framework and unified CLI are published on crates.io as
 three packages.
 
 | crate | workspace | crates.io status |
 | --- | --- | --- |
-| `nextrs` | **0.8.0** | **0.8.0** |
+| `nextrs` | **0.8.1** | **0.8.1** |
 | `nextrs-macros` | **0.1.10** | **0.1.10** |
-| `cargo-nextrs` | **0.4.0** | **0.4.0** |
+| `cargo-nextrs` | **0.4.1** | **0.4.1** |
 
 The standalone `create-nextrs-app` (last published `0.1.8`) and `cargo-nextrs-dev`
 (last published `0.1.2`) packages have been retired and removed from the
@@ -40,7 +40,7 @@ Published versions are immutable.
 - Bump `nextrs`'s pinned `nextrs-macros = { version = ... }` dep together with the
   macros version.
 - Keep `crates/cargo-nextrs/src/scaffold.rs`'s emitted `nextrs = "0.x"` in lockstep
-  with the released `nextrs` version (currently `0.8.0`) so the scaffold never pins
+  with the released `nextrs` version (currently `0.8.1`) so the scaffold never pins
   an unpublished version. The scaffold tests assert this value.
 - Verify the package contents and install surface before publishing:
 
