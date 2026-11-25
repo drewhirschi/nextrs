@@ -1578,7 +1578,12 @@ fn loading_entry_wrapper(loading_path: &Path) -> String {
 import {{ createRoot }} from "react-dom/client";
 import Loading from "{loading}";
 
-createRoot(document.getElementById("__nx_loading_root__")!).render(<Loading />);
+const el = document.getElementById("__nx_loading_root__");
+if (el) {{
+  const root = createRoot(el);
+  root.render(<Loading />);
+  (window as any).__nx_loading_unmount = () => root.unmount();
+}}
 "#,
         loading = loading_path.display(),
     )
@@ -2756,6 +2761,12 @@ console.log(Logo(), generated, dependency);
         let s = loading_entry_wrapper(Path::new("/abs/app/loading.tsx"));
         assert!(s.contains("__nx_loading_root__"));
         assert!(s.contains("import Loading from \"/abs/app/loading.tsx\";"));
+        assert!(
+            !s.contains("getElementById(\"__nx_loading_root__\")!"),
+            "loading entry must guard against a missing container when prefetch swaps first:\n{s}"
+        );
+        assert!(s.contains("if (el)"));
+        assert!(s.contains("__nx_loading_unmount"));
     }
 
     #[test]

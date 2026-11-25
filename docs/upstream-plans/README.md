@@ -53,3 +53,4 @@ user docs.
 - [Vercel builds on every push because "git deploys off" lives in a gitignored file](git-deploys-stub.md)
 - [Vercel Queues as the jobs backend on Vercel](vercel-queues-jobs-backend.md)
 - [Jobs live in a `jobs/` folder beside `app/`](jobs-folder-convention.md)
+- [Loading entry throws when its container is already gone](loading-entry-missing-container.md)
